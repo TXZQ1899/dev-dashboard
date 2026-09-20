@@ -1,0 +1,12 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^cd /Users/vian/WorkSpace/devops-analysis/environment-web && node -e \"const e=require\\('\\./lib/ecs-snapshot\\.json'\\); const j=require\\('\\./lib/jumpserver-snapshot\\.json'\\); console\\.log\\(JSON\\.stringify\\(e\\.instances\\[0\\]\\|\\|null,null,2\\)\\); console\\.log\\(JSON\\.stringify\\(j\\.assets\\[0\\]\\|\\|null,null,2\\)\\)\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^docker exec envscope-local python3 -c \"import json; print\\(json\\.dumps\\(json\\.load\\(open\\('/data/job\\.json'\\)\\),ensure_ascii=False\\)\\)\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

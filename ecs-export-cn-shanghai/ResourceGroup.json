@@ -1,0 +1,229 @@
+{
+    "requestId": "01A079E3-3F73-592F-B719-7282885E35CA",
+    "code": "200",
+    "httpStatusCode": "200",
+    "customData": {
+        "trace": "01A079E3-3F73-592F-B719-7282885E35CA",
+        "serverTime": 1788751331325
+    },
+    "data": {
+        "TotalCount": 19,
+        "PageSize": 100,
+        "RequestId": "01A079E3-3F73-592F-B719-7282885E35CA",
+        "PageNumber": 1,
+        "ResourceGroups": {
+            "ResourceGroup": [
+                {
+                    "Status": "OK",
+                    "AccountId": "1182781005114574",
+                    "DisplayName": "默认资源组",
+                    "Id": "rg-acfmwvwagoicztq",
+                    "CreateDate": "2018-11-16T14:26:38+08:00",
+                    "Tags": {
+                        "Tag": []
+                    },
+                    "Name": "default"
+                },
+                {
+                    "Status": "OK",
+                    "AccountId": "1182781005114574",
+                    "DisplayName": "基础架构",
+                    "Id": "rg-aek2b5y262nx3qy",
+                    "CreateDate": "2020-03-12T15:06:16+08:00",
+                    "Tags": {
+                        "Tag": []
+                    },
+                    "Name": "Infra"
+                },
+                {
+                    "Status": "OK",
+                    "AccountId": "1182781005114574",
+                    "DisplayName": "测试环境",
+                    "Id": "rg-aek2eecohzqbrdi",
+                    "CreateDate": "2020-03-20T09:54:46+08:00",
+                    "Tags": {
+                        "Tag": []
+                    },
+                    "Name": "UAT"
+                },
+                {
+                    "Status": "OK",
+                    "AccountId": "1182781005114574",
+                    "DisplayName": "中商",
+                    "Id": "rg-aek2myyrhxhjjgi",
+                    "CreateDate": "2020-04-20T10:03:16+08:00",
+                    "Tags": {
+                        "Tag": []
+                    },
+                    "Name": "zhongshang"
+                },
+                {
+                    "Status": "OK",
+                    "AccountId": "1182781005114574",
+                    "DisplayName": "dolphin_Project",
+                    "Id": "rg-aekzz4sgl6jvk3q",
+                    "CreateDate": "2020-12-10T10:14:36+08:00",
+                    "Tags": {
+                        "Tag": []
+                    },
+                    "Name": "dolphin"
+                },
+                {
+                    "Status": "OK",
+                    "AccountId": "1182781005114574",
+                    "DisplayName": "三亚亚特兰蒂斯VPC",
+                    "Id": "rg-aek2ei6jbvd7hua",
+                    "CreateDate": "2021-03-08T14:56:22+08:00",
+                    "Tags": {
+                        "Tag": []
+                    },
+                    "Name": "stump"
+                },
+                {
+                    "Status": "OK",
+                    "AccountId": "1182781005114574",
+                    "DisplayName": "UAT环境",
+                    "Id": "rg-aekz3ilb5t7jwnq",
+                    "CreateDate": "2021-04-13T11:23:45+08:00",
+                    "Tags": {
+                        "Tag": []
+                    },
+                    "Name": "TCPUAT"
+                },
+                {
+                    "Status": "OK",
+                    "AccountId": "1182781005114574",
+                    "DisplayName": "卡萨酷客酒店资源组",
+                    "Id": "rg-aek2avt6bga62ni",
+                    "CreateDate": "2021-04-16T19:48:13+08:00",
+                    "Tags": {
+                        "Tag": []
+                    },
+                    "Name": "casacookcn"
+                },
+                {
+                    "Status": "OK",
+                    "AccountId": "1182781005114574",
+                    "DisplayName": "爱必侬资源组",
+                    "Id": "rg-aek3ajzk6dvks6i",
+                    "CreateDate": "2021-05-11T09:33:52+08:00",
+                    "Tags": {
+                        "Tag": []
+                    },
+                    "Name": "Albion"
+                },
+                {
+                    "Status": "OK",
+                    "AccountId": "1182781005114574",
+                    "DisplayName": "TCP_Project",
+                    "Id": "rg-aekzzlovnwhgwvi",
+                    "CreateDate": "2021-05-28T14:20:04+08:00",
+                    "Tags": {
+                        "Tag": []
+                    },
+                    "Name": "TCPplatefrom"
+                },
+                {
+                    "Status": "OK",
+                    "AccountId": "1182781005114574",
+                    "DisplayName": "fotour_Project",
+                    "Id": "rg-aekzz3qdegzw2vy",
+                    "CreateDate": "2021-06-07T14:14:35+08:00",
+                    "Tags": {
+                        "Tag": []
+                    },
+                    "Name": "fotour"
+                },
+                {
+                    "Status": "OK",
+                    "AccountId": "1182781005114574",
+                    "DisplayName": "太仓复游城",
+                    "Id": "rg-aekzpmwhzwgvoxi",
+                    "CreateDate": "2022-01-04T11:05:17+08:00",
+                    "Tags": {
+                        "Tag": []
+                    },
+                    "Name": "taicang"
+                },
+                {
+                    "Status": "OK",
+                    "AccountId": "1182781005114574",
+                    "DisplayName": "大数据",
+                    "Id": "rg-aekzlfmj34nhhci",
+                    "CreateDate": "2022-05-05T16:05:09+08:00",
+                    "Tags": {
+                        "Tag": []
+                    },
+                    "Name": "bigdata"
+                },
+                {
+                    "Status": "OK",
+                    "AccountId": "1182781005114574",
+                    "DisplayName": "casaweb和爱必侬非hotel资源组",
+                    "Id": "rg-aekz2rixxu74u3q",
+                    "CreateDate": "2023-01-05T09:22:03+08:00",
+                    "Tags": {
+                        "Tag": []
+                    },
+                    "Name": "casa-nofotel"
+                },
+                {
+                    "Status": "OK",
+                    "AccountId": "1182781005114574",
+                    "DisplayName": "等保",
+                    "Id": "rg-aekzq43lzhfmfva",
+                    "CreateDate": "2023-03-24T13:31:02+08:00",
+                    "Tags": {
+                        "Tag": []
+                    },
+                    "Name": "app-security"
+                },
+                {
+                    "Status": "OK",
+                    "AccountId": "1182781005114574",
+                    "DisplayName": "商旅",
+                    "Id": "rg-aekzjjmjeh7wfsy",
+                    "CreateDate": "2023-05-06T14:43:18+08:00",
+                    "Tags": {
+                        "Tag": []
+                    },
+                    "Name": "ftrip"
+                },
+                {
+                    "Status": "OK",
+                    "AccountId": "1182781005114574",
+                    "DisplayName": "复游拍",
+                    "Id": "rg-aek2exr4md45say",
+                    "CreateDate": "2023-05-09T12:51:55+08:00",
+                    "Tags": {
+                        "Tag": []
+                    },
+                    "Name": "fphoto"
+                },
+                {
+                    "Status": "OK",
+                    "AccountId": "1182781005114574",
+                    "DisplayName": "AIGO",
+                    "Id": "rg-aekzltdpogn6zga",
+                    "CreateDate": "2025-08-07T16:18:20+08:00",
+                    "Tags": {
+                        "Tag": []
+                    },
+                    "Name": "AIGO"
+                },
+                {
+                    "Status": "OK",
+                    "AccountId": "1182781005114574",
+                    "DisplayName": "旅游管理",
+                    "Id": "rg-aek675x5devt26y",
+                    "CreateDate": "2026-04-23T12:15:55+08:00",
+                    "Tags": {
+                        "Tag": []
+                    },
+                    "Name": "fosunholiday"
+                }
+            ]
+        }
+    },
+    "successResponse": true
+}

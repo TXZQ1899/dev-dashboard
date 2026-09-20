@@ -1,0 +1,14 @@
+{
+  "RequestId": "01A09EAB-B43A-5EFA-A62E-6A62E3A85F3F",
+  "Rules": {
+    "Rule": [
+      {
+        "VServerGroupId": "rsp-uf6j5njnrgca7",
+        "RuleId": "rule-uf6820hrphe5o",
+        "ListenerSync": "on",
+        "Domain": "*.folidaymall.com",
+        "RuleName": "auto_named_rule"
+      }
+    ]
+  }
+}

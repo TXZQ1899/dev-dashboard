@@ -1,0 +1,41 @@
+{
+  "VServerGroupId": "rsp-uf6j5njnrgca7",
+  "Description": "https_443",
+  "Scheduler": "rr",
+  "HealthCheck": "off",
+  "DomainExtensions": {
+    "DomainExtension": []
+  },
+  "IdleTimeout": 15,
+  "LoadBalancerId": "lb-uf6ilo3pkp5rdccw53kt9",
+  "XForwardedFor_SLBID": "off",
+  "XForwardedFor_SLBPORT": "off",
+  "Bandwidth": -1,
+  "Gzip": "on",
+  "ServerCertificateId": "1182781005114574_19a7c76178d_-2004459417_988617003",
+  "XForwardedFor_SLBIP": "off",
+  "Tags": {
+    "Tag": []
+  },
+  "Status": "running",
+  "RequestTimeout": 60,
+  "ListenerPort": 443,
+  "TLSCipherPolicy": "tls_cipher_policy_1_0",
+  "RequestId": "01A09EAB-B2A9-5243-865A-2323581A5462",
+  "Rules": {
+    "Rule": [
+      {
+        "VServerGroupId": "rsp-uf6j5njnrgca7",
+        "RuleId": "rule-uf6820hrphe5o",
+        "Domain": "*.folidaymall.com",
+        "RuleName": "auto_named_rule"
+      }
+    ]
+  },
+  "StickySession": "off",
+  "AclStatus": "off",
+  "XForwardedFor": "on",
+  "XForwardedFor_ClientSrcPort": "on",
+  "XForwardedFor_proto": "on",
+  "EnableHttp2": "on"
+}
