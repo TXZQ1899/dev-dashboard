@@ -124,7 +124,14 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
             responses=iter([(0,'1000'),(0,'0')]);terminal.run=lambda *a,**k:next(responses)
             chunks=['SUDOabc_BEGIN\n']
             if mode!='passwordless': chunks+=['SUDOabc_PASSWORD']
-            chunks+=['Sorry, try again.\n'] if mode=='password_error' else ['root@host:~# ']
+            if mode=='password_error':
+                # After "Sorry, try again", elevate sends Ctrl+C + empty Enters
+                # and waits for the _EXIT marker (shell prints it once sudo exits)
+                # before returning. Without the _EXIT chunk the wait loop would
+                # exhaust the mock recv() iterator.
+                chunks+=['Sorry, try again.\n', 'SUDOabc_EXIT:1\n']
+            else:
+                chunks+=['root@host:~# ']
             chunks=iter(chunks);terminal.recv=lambda:next(chunks)
             with patch.object(inv.uuid,'uuid4') as uid:
                 uid.return_value.hex='abc'
@@ -132,7 +139,7 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
             self.assertEqual(status,mode)
             self.assertIn(' -i;',sent[0]);self.assertNotIn('private-password',sent[0])
             self.assertEqual(sent.count('private-password\r'),0 if mode=='passwordless' else 1)
-            if mode=='password_error':self.assertEqual(sent[-1],'\x03')
+            if mode=='password_error':self.assertTrue(sent[-1].startswith('\x03') and '\r' in sent[-1])
 
     def test_wrong_sudo_password_falls_back_to_user_configs(self):
         main_conf = b'http { include /etc/nginx/conf.d/*.conf; }'
@@ -164,6 +171,38 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
         self.assertEqual({f['path'] for f in row['nginxConfigurations']},{'/etc/nginx/nginx.conf','/etc/nginx/conf.d/app.conf'})
         self.assertTrue(any(r['domains']==['app.test'] for r in row['nginxRoutes']))
         self.assertTrue(any('未获得 sudo 权限' in w for w in row['warnings']))
+
+    def test_elevate_waits_for_sudo_exit_before_returning_password_error(self):
+        # Regression: elevate() used to return 'password_error' immediately
+        # after sending Ctrl+C, leaving the PTY inside sudo's password retry
+        # loop. The next run() command was read as another password attempt
+        # and timed out. elevate() must now wait for the _EXIT marker that
+        # confirms sudo has exited and the folidev shell has taken over.
+        # Here sudo treats the first Ctrl+C as another wrong attempt (common
+        # when tgetpass has ISIG disabled); only after the empty Enters
+        # exhaust the retry limit does sudo exit and print _EXIT.
+        terminal=object.__new__(inv.Terminal)
+        terminal.password='private-password';terminal.account={'username':'folidev'}
+        sent=[];terminal.send=sent.append
+        terminal.run=lambda *a,**k:(0,'1000')
+        chunks=iter([
+            'SUDOabc_BEGIN\n',
+            'SUDOabc_PASSWORD',                              # sudo asks for password
+            'Sorry, try again.\nSUDOabc_PASSWORD',           # wrong; sudo asks again (Ctrl+C counted as wrong)
+            'Sorry, try again.\nSUDOabc_PASSWORD',           # empty Enter counted as wrong
+            'sudo: 3 incorrect password attempts\nSUDOabc_EXIT:1\n',  # sudo exits; shell prints _EXIT
+        ])
+        terminal.recv=lambda:next(chunks)
+        with patch.object(inv.uuid,'uuid4') as uid:
+            uid.return_value.hex='abc'
+            status,reason=terminal.elevate()
+        self.assertEqual(status,'password_error')
+        self.assertEqual(reason,'sudo 密码错误')
+        # Must have sent Ctrl+C + empty Enters, NOT just Ctrl+C and returned.
+        self.assertTrue(sent[-1].startswith('\x03'))
+        self.assertIn('\r',sent[-1])
+        # Must not have sent the password more than once.
+        self.assertEqual(sent.count('private-password\r'),1)
 
     def test_wrong_sudo_password_no_nginx_process_stays_not_running(self):
         class Terminal:

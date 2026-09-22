@@ -255,8 +255,20 @@ class Terminal:
             body=buf.split(marker,1)[1]
             wrong=re.search(r'Sorry, try again|incorrect password|authentication failure|对不起.*重试|抱歉.*重试|密码.*错误',body,re.I)
             if supplied and (wrong or body.rstrip().endswith(prompt) and body.count(prompt)>1):
+                # Sudo rejected the password. Send Ctrl+C plus enough empty
+                # Enters to exhaust sudo's default 3-attempt retry limit, then
+                # WAIT for the _EXIT marker (printed by the folidev shell
+                # after sudo exits). Returning earlier leaves the PTY inside
+                # sudo's password retry loop, so the next command (ps) is read
+                # as another password attempt and times out in run().
+                self.send('\x03\r\r\r\r\r\r\r\r\r\r')
+                wait=time.monotonic()+10
+                while time.monotonic()<wait:
+                    buf=clean(buf+self.recv())[-30000:]
+                    if marker in buf and re.search(r'(?m)^'+token+r'_EXIT:\d+', buf.split(marker,1)[1]):
+                        return 'password_error','sudo 密码错误'
                 self.send('\x03')
-                return 'password_error','sudo 密码错误'
+                return 'timeout','sudo -i 超时'
             if body.rstrip().endswith(prompt) and not supplied:
                 self.send(self.password+'\r'); supplied=True
                 continue
