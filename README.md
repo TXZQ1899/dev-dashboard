@@ -1,98 +1,574 @@
-# DevOps 应用和服务器导出
+# Env-Scope
 
-**当前采集入口**：EnvScope 看板容器的 `http://localhost:3001/settings`（Cookie 配置、一键同步、北京时间每日定时、同步历史与版本切换），数据保存在 Docker 命名卷 `envscope-data`，详见 [environment-web/SETTINGS.md](environment-web/SETTINGS.md)。
+Env-Scope 是一个面向应用部署、基础设施资源与网络访问链路的采集、关联、拓扑与治理工具。
 
-本目录保留的是单项只读导出工具。宿主机每日调度（旧 `run_daily_collection.py --update-web`）与 `DAILY_COLLECTION.md` 已随调度迁移移除，仅保留以下脚本供容器内采集复用或按需手工运行。
+当前系统已经能够采集并关联多类数据，包括：
 
-Codeup 代码组导出见 [CODEUP_GROUPS.md](CODEUP_GROUPS.md)：`python3 export_codeup_groups.py`，读取 Codeup Cookie 并输出代码组 Excel。
+- DevOps 应用、环境与部署实例
+- Codeup / GitLab 仓库
+- DNS 解析
+- EIP
+- NAT 网关 / DNAT
+- ECS
+- CLB / SLB
+- JumpServer 资产
+- Nginx 进程、配置、Route 与 Upstream
+- 基于 IP 的资源宽表
+- 基于 Node / Edge 的 Topology Graph
 
-详细运行日志导出见 [DEVOPS_DETAILS.md](DEVOPS_DETAILS.md)：`python3 export_devops_details.py --app-name fosun-aggregation-openapi`，按应用和环境保存汇总及各步骤日志。
+项目当前的发展重点已经从“资源采集”进入：
 
-## Codeup 仓库去重与权限检查
+1. **Topology**：把分散资源串成完整部署和访问链路。
+2. **Path Explorer**：查询 Domain → Application、Application → Host 等路径。
+3. **Risk Analyzer**：发现单点、伪 HA、共机、链路缺失等问题。
+4. **Architecture Renderer**：生成可视化部署架构图。
 
-```bash
-python3 check_codeup_access.py --input path/to/applications.csv
+---
+
+## 1. 项目目标
+
+Env-Scope 希望回答三类问题。
+
+### 1.1 Inventory：我们有什么资源？
+
+例如：
+
+- 某 IP 是哪台 ECS？
+- 是否纳入 JumpServer？
+- 上面部署了哪些应用？
+- 对应哪个代码仓库？
+- 是否关联 EIP / NAT / CLB？
+
+### 1.2 Topology：这些资源如何连接？
+
+例如：
+
+```text
+Domain
+  → DNS
+  → EIP
+  → NAT / CLB
+  → Nginx
+  → Upstream
+  → Endpoint(IP:Port)
+  → Deployment
+  → Application
 ```
 
-默认读取当前目录的 `codeup-cookie.txt`（单行 Cookie 请求头值，可带 `Cookie:` 前缀）。省略 `--input` 时选择最近修改的 `exports/*/applications.csv`；脚本自己在输出时创建 `exports/`，宿主机历史导出目录已随旧流程移除，按需自行指定输入。不回显、不写入 Cookie。无需安装依赖。
+### 1.3 Governance：这个架构有什么问题？
 
-结果在新的 `exports/codeup-access-时间戳/` 目录：
+例如：
 
-- `repository_access.csv`：git仓库名、git地址、是否能访问、说明、HTTP状态、错误代码、关联应用数。
-- `summary.json`：输入、去重数量、各状态数量和检查范围。
+- 生产应用只有一个 Host
+- 多实例实际部署在同一台服务器
+- 多 Host 但全部位于同一 AZ
+- CLB ServerGroup 实际只有一个 Backend
+- Nginx 入口是单点
+- 一台服务器承载过多生产应用
+- Domain 无法追踪到最终 Application
+- 采集数据过旧、缺失或只能模糊匹配
 
-以主机名和完整仓库路径去重，统一 HTTPS/HTTP/SSH、`.git` 和末尾斜杠，保留大小写敏感的仓库路径；不同组织或代码组下的同名仓库不会合并。空地址和异常地址保留一条“未检查”记录方便修正。CSV 地址统一为 HTTPS Git 地址，名称取路径末段。
+---
 
-`是` 表示 Codeup 网页仓库查询成功；`否` 表示接口明确拒绝或仓库不存在/不可见；网络错误、未知响应标为 `无法确认`。登录异常时保留已有结果，剩余仓库标为 `未检查`，退出码为 2。Cookie 只发送到固定的 `https://codeup.aliyun.com`，不跟随重定向。旧版 `code.aliyun.com` 和其他 GitLab 域名不会使用该 Cookie，标为“未检查”，需各自平台登录态才能进一步验证。
+## 2. 当前数据来源
 
-使用前端实际调用的只读 `GET /portal/path_info?path=/组织/组/仓库`，依据 `success` 和 `result.pathResource` 判断，不能仅凭网页 HTTP 200 判断。检查的是网页读取权限，不是 SSH 密钥或 Git HTTPS clone 凭据。阿里云公开 OpenAPI 使用个人访问令牌而非此 Cookie，参考[官方 GetRepository 文档](https://help.aliyun.com/zh/yunxiao/developer-reference/getrepository-query-the-code-base)。网页内部接口以后可能变化，未知响应不会误判为有权限。
+| 数据域 | 主要用途 |
+|---|---|
+| DevOps | 应用、环境、部署 IP、端口、仓库、分支、发布时间 |
+| Codeup / GitLab | 仓库、代码组、仓库与应用关系 |
+| DNS | Domain、A/AAAA/CNAME 等解析关系 |
+| EIP | 公网 IP 与云资源绑定 |
+| NAT / DNAT | External Endpoint → Internal Endpoint |
+| ECS | Host、私网/公网 IP、Zone、规格等 |
+| CLB / SLB | Listener、Rule、ServerGroup、Backend |
+| JumpServer | 资产、分组、主机信息 |
+| Nginx | server_name、listen、location、proxy_pass、upstream、backend |
+| Resource Wide Table | 以 IP 为中心的资源盘点与来源汇总 |
+| Topology Graph | 以 Node / Edge 为中心的部署和访问拓扑 |
 
-其他选项：`--cookie-file 文件`、`--output 新目录`、`--timeout 25`、`--delay 0.2`；`--dedupe-only` 只去重，不联网或读取 Cookie。
+字段细节见：
 
-Python 3.9+，无需安装第三方依赖。在可访问公司内网的机器上运行。
+- [`RESOURCE_SCHEMAS.md`](RESOURCE_SCHEMAS.md)
 
-## 使用
+AI 开发约束与项目工作方式见：
 
-1. 用自己的账号登录 DevOps，打开应用列表。
-2. 浏览器开发者工具 → Network（网络），刷新列表，选择 `/theone-web/ops/app/list` 请求。
-3. 从 Request Headers（请求头）复制 `Cookie` 的完整值。不要复制响应中的 `Set-Cookie`，也不需要把 Cookie 发给任何人。
-4. 执行脚本，在终端提示时粘贴 Cookie（不回显、不写入输出文件）：
+- [`PROJECT_GUIDE.md`](PROJECT_GUIDE.md)
+
+---
+
+## 3. 运行模型：Docker 是正式运行边界
+
+Env-Scope 的正式运行方式是 **Docker 容器**。
+
+`environment-web` 会被构建为 Docker 镜像，并在容器中启动。后续功能设计、代码实现、测试和运行方式都应以容器环境为默认目标，而不是以宿主机直接执行为默认前提。
+
+正式运行模型：
+
+```text
+environment-web source
+        ↓
+npm / vinext build
+        ↓
+Docker image
+        ↓
+Docker container
+        ↓
+Env-Scope runtime
+```
+
+容器内负责：
+
+- Web UI
+- 数据采集
+- 数据同步
+- 数据查询
+- Topology Builder
+- topology 数据生成
+- Path Explorer
+- 后续 Risk Analyzer
+- 后续 Architecture Renderer
+- 定时任务与版本切换
+
+也就是说，后续新增任务默认都应满足：
+
+> **在 Docker 容器中可以直接运行、验证和交付。**
+
+不要新增依赖宿主机固定路径、宿主机 cron、宿主机全局 Node/Python 包或宿主机私有运行状态的实现，除非任务明确要求。
+
+### 3.1 当前采集入口
+
+当前采集入口为容器中的 Env-Scope 看板：
+
+```text
+http://localhost:3001/settings
+```
+
+该页面负责：
+
+- Cookie 配置
+- 一键同步
+- 北京时间每日定时
+- 同步历史
+- 数据版本切换
+
+持久化数据保存在 Docker 命名卷：
+
+```text
+envscope-data
+```
+
+容器应被视为可替换的运行实例；需要持久化的数据不得只写入容器临时文件系统。
+
+### 3.2 历史宿主机方式
+
+历史的宿主机每日调度方式已经移除。
+
+单项 Python 脚本继续保留，用于：
+
+- 容器内采集复用
+- 开发期手工调试
+- 单项数据验证
+
+手工从宿主机执行脚本只属于开发/诊断方式，不是正式生产运行架构。
+
+---
+
+## 4. 主要目录职责
+
+具体目录以当前仓库为准，核心职责建议保持如下边界：
+
+```text
+env-scope/
+├── README.md
+├── RESOURCE_SCHEMAS.md
+├── PROJECT_GUIDE.md
+├── AGENTS.md
+├── .github/
+│   └── copilot-instructions.md
+├── project_rules.md
+├── environment-web/
+│   ├── lib/
+│   │   ├── topology/
+│   │   └── ...
+│   └── ...
+├── tests/
+└── ...
+```
+
+### 4.1 采集层
+
+负责从各来源获取原始事实，不负责为了“让拓扑连起来”而推断不存在的关系。
+
+### 4.2 Resource Inventory
+
+`/resources` 宽表以 IP 为主要键，适合：
+
+- 资源盘点
+- 来源比对
+- 纳管检查
+- IP 维度查询
+
+### 4.3 Topology
+
+Topology 层使用统一 Node / Edge 模型，适合：
+
+- 完整链路追踪
+- Graph Traversal
+- 架构图
+- 风险分析
+
+不要继续把所有拓扑能力堆进 IP 宽表。
+
+---
+
+## 5. Topology 核心思想
+
+### 5.1 Endpoint 是关键关联点
+
+Endpoint 建议至少由以下字段确定身份：
+
+```text
+IP + Port + Protocol
+```
+
+例如：
+
+```text
+endpoint:10.179.1.10:8080:tcp
+```
+
+它是以下来源的交汇点：
+
+- DevOps Deployment
+- Nginx Backend
+- CLB Backend
+- NAT / DNAT Target
+
+只按 IP 做关联容易把同机不同端口、不同服务错误合并。
+
+### 5.2 Host 是逻辑主机
+
+同一台机器可能同时出现在：
+
+- ECS
+- JumpServer
+- DevOps Deployment
+
+Topology 中应尽量归并为同一个逻辑 `HOST`，并保留各来源 evidence。
+
+### 5.3 不确定关系必须显式表达
+
+关系可信度统一使用：
+
+```text
+EXACT
+INFERRED
+AMBIGUOUS
+UNKNOWN
+```
+
+原则：
+
+- 有精确 IP + Port 等事实依据时才使用 `EXACT`
+- 推断关系必须保留 evidence
+- 多候选不能随机选择
+- 不允许为了让图完整而制造不存在的关系
+
+---
+
+## 6. Topology 的主要 Node
+
+第一阶段建议至少包含：
+
+```text
+DOMAIN
+EIP
+NAT_GATEWAY
+DNAT_RULE
+CLB
+CLB_LISTENER
+SERVER_GROUP
+HOST
+ENDPOINT
+NGINX_ROUTE
+UPSTREAM
+APPLICATION
+DEPLOYMENT
+REPOSITORY
+```
+
+未来可扩展：
+
+```text
+SYSTEM
+VPC
+ZONE
+CERTIFICATE
+DATABASE
+REDIS
+MQ
+K8S_SERVICE
+POD
+```
+
+其中 `SYSTEM` 很适合用于表达：
+
+```text
+System
+  → Applications
+  → Deployments
+  → Endpoints
+  → Hosts
+```
+
+---
+
+## 7. Path Explorer
+
+Path Explorer 基于生成后的 `topology.json` 做通用 Graph Traversal。
+
+第一阶段重点支持：
+
+```text
+Domain → Application
+Application → Domain
+Application → Host
+Host → Application
+Domain → Endpoint
+```
+
+查询结果应保留：
+
+- 完整 nodes
+- 完整 edges
+- evidence
+- path confidence
+- environment
+- unresolved 状态与原因
+
+不要只返回最终节点。
+
+---
+
+## 8. Risk Analyzer 规划
+
+Path Explorer 验证稳定后，再实现 Risk Analyzer。
+
+第一阶段优先规则：
+
+1. **Application 单点**
+   - PRODUCT Application 只有一个 distinct Host。
+
+2. **同主机伪 HA**
+   - Deployment 多于 1，但 distinct Host = 1。
+
+3. **同 AZ 风险**
+   - Host 多于 1，但全部在同一 Zone。
+
+4. **CLB Backend 单点**
+   - ServerGroup 最终只有一个有效 Host / Endpoint。
+
+5. **Nginx 单点**
+   - 一个对外链路只有单一入口 Nginx Host。
+
+6. **服务器共用**
+   - 单 Host 承载多个 PRODUCT Application。
+
+7. **Topology Gap**
+   - Domain 无法遍历到目标 Application，或中途链路缺失。
+
+8. **Stale / Unknown Data**
+   - 关键 evidence 过旧、采集失败或可信度不足。
+
+---
+
+## 9. 架构图规划
+
+不要直接从原始快照画图。
+
+建议流程：
+
+```text
+Raw Snapshots
+      ↓
+Resource Normalization
+      ↓
+Topology Builder
+      ↓
+topology.json
+      ↓
+Path Explorer / Risk Analyzer
+      ↓
+Mermaid / Graphviz / SVG
+```
+
+建议支持的视图：
+
+- 全局概览
+- 单系统部署架构
+- 单 Domain 完整链路
+- 单 Application 部署拓扑
+- 单 Host 应用分布
+- 风险节点高亮图
+
+---
+
+## 10. 开发、构建与运行
+
+### 10.1 正式运行
+
+正式交付物是 Docker 镜像。
+
+开发完成后的验证目标应优先是：
+
+```text
+docker build
+    ↓
+container start
+    ↓
+Web / collector / topology / query functions work inside container
+```
+
+本地直接执行 `npm`、Node 或 Python 命令主要用于开发和调试；不能用“宿主机可以运行”替代“容器内可以运行”的验收。
+
+### 10.2 Web 项目本地开发
+
+进入 Web 项目目录后，以 `package.json` 中 scripts 为准。
+
+常用开发流程：
+
+```bash
+npm install
+npm run build
+```
+
+当前构建工具在生产构建完成后会提示使用：
+
+```bash
+vinext start
+```
+
+如果 `package.json` 已提供 `start` script，优先：
+
+```bash
+npm run start
+```
+
+开发环境通常使用项目已有的 dev script，例如：
+
+```bash
+npm run dev
+```
+
+### 10.2 Python 采集脚本
+
+当前保留多个单项只读导出工具。
+
+例如 DevOps：
 
 ```bash
 python3 export_devops.py
 ```
 
-首次可先验证示例应用：
+单应用验证：
 
 ```bash
 python3 export_devops.py --app-id 1913
 ```
 
-也支持 `DEVOPS_COOKIE` 环境变量，或 `--cookie-file /path/to/cookie.txt` 读取本地单行 Cookie 文件。Cookie 失效时重新登录并复制。脚本不会读取浏览器配置或保存密码。
-
-## 输出
-
-默认在 `exports/时间戳/` 生成：
-
-- `applications.csv`：应用 ID、名称、类型、代码库类型、Git/代码库地址、分支、HTTP 名、端口、详情链接。
-- `environments.csv`：每个部署实例一行，包含应用、环境、服务器 IP、部署 ID、配置 ID、读取状态；无配置、无实例和缺少 IP 会分别标注，不会静默丢弃。
-- `errors.json`：失败的应用 ID、环境和原因。
-- `summary.json`：仅在所有请求成功且列表条数核对通过时生成，记录完成状态和数量。
-
-CSV 使用 UTF-8 BOM，可以用 Excel 打开。缺少 IP 的实例会标为“实例未返回IP”，请求成功不代表每个实例一定有 IP。返回原始 IP 字段，不从日志、域名或其他字段猜测服务器地址。重复 IP 的不同部署实例保留。
-
-## 环境和范围
-
-| 页面名称 | 接口环境代码 | 导出名称 |
-| --- | --- | --- |
-| 测试环境 | TEST | 测试 |
-| 仿真环境 | SIMULATION | 仿真 |
-| 线上环境 | PRODUCT | 生产 |
-
-页面实际使用“仿真”，是否就是公司的 UAT 请以内部定义为准，导出不强行改名。
-
-默认取消应用类型过滤，导出当前账号可读取的全部类型。页面默认只选 `war,war8,app,node,node_backend,h5,go`，如需和默认页面一致：
+Codeup 仓库去重与权限检查：
 
 ```bash
-python3 export_devops.py --app-types war,war8,app,node,node_backend,h5,go
+python3 check_codeup_access.py --input path/to/applications.csv
 ```
 
-可用 `--output 新目录`、`--page-size 100`、`--timeout 30`、`--delay 0.15` 调整输出和请求参数。禁止覆盖已有目录，以免混入旧结果。
+Codeup 代码组导出：
 
-## 接口依据与完整性
+```bash
+python3 export_codeup_groups.py
+```
 
-接口、分页和字段来自平台当前前端 JS（2026-09-02 检查）：
+应用详细运行日志导出：
 
-- `GET /theone-web/ops/app/list`：`page.pn` 从 1 开始，`page.size`，`sort.createTime=desc`，`search.appType_in` 为空表示不筛选类型；响应 `obj.content` 和 `obj.totalElements`。单应用使用 `search.id_eq`。
-- `GET /theone-web/ops/app/list/app?appId=...&envtype=...`：响应 `obj.deployList`，读取 `ip`、`deployId`、`configId`。
-- 代码库地址是 `defaultContrVersionUrlMaster`，兼容回退到 `defaultContrVersionUrl`。
+```bash
+python3 export_devops_details.py --app-name fosun-aggregation-openapi
+```
 
-脚本不会调用发布、扩缩容、删除或修改接口。请求顺序执行，网络/429/部分 5xx 自动重试两次；禁止跟随重定向，避免将 Cookie 带到登录跳转目的地。登录/权限失效立即停止；普通环境错误继续收集其他环境并以非零状态退出。应用列表失败时不生成不完整的应用清单；环境阶段失败保留已写入的清单和明细。分页总数改变或出现重复 ID 时停止，建议列表稳定后重新完整运行。
-
-尚未取得登录态：已确认未登录接口返回 302 登录跳转，未完成真实账号的端到端导出验证。请先对 1913 运行并核对详情页，再全量运行。导出范围受账号权限限制。
-
-## 本地验证
+### 10.3 Python 测试
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
+
+Topology / Web 相关测试请以当前 `package.json` 与 topology 模块实际提供的命令为准。
+
+---
+
+## 11. 数据安全
+
+本项目包含基础设施和内部部署数据，应避免将以下信息提交到公开仓库：
+
+- 内部域名
+- 内网 IP 清单
+- EIP / NAT / CLB 全量配置
+- Nginx 原始生产配置
+- Cookie
+- Access Token
+- SSH Key
+- 密码
+- 认证 Header
+- 未脱敏运行命令
+
+Cookie 与其他认证信息不得写入采集输出、日志或 Git。
+
+大型真实快照和生成的 `topology.json` 建议按项目实际情况加入 `.gitignore`，开发与测试优先使用最小 fixture。
+
+---
+
+## 12. AI 工具协作
+
+项目可能交替使用：
+
+- OpenAI Codex
+- TRAE
+- VS Code + GitHub Copilot
+
+统一规则放在：
+
+```text
+PROJECT_GUIDE.md
+```
+
+工具入口：
+
+```text
+AGENTS.md                         # Codex / Agent
+.github/copilot-instructions.md  # GitHub Copilot
+project_rules.md                 # TRAE Rules
+```
+
+稳定项目知识不要反复复制到每次 Prompt 中。
+
+日常任务 Prompt 应只描述：
+
+- 当前目标
+- 当前范围
+- 明确不做什么
+- 验收标准
+
+---
+
+## 13. 当前路线
+
+```text
+Collectors / Snapshots         ✅
+Resource Inventory             ✅
+Topology Builder               ✅
+Path Explorer                  ← 当前重点
+Risk Analyzer                  下一阶段
+Architecture Renderer          后续
+```
+
+目标是让 Env-Scope 从“资源采集工具”逐步演进为：
+
+> **Application Infrastructure Topology & Architecture Governance Platform**

@@ -793,3 +793,480 @@
 3. EIP 是 2026-06-26 静态 CSV 导出，绑定关系不代表实时状态。
 4. NAT、CLB 的空占位只说明当前 checked-in `lib` 文件不可用，不代表采集器不支持。
 5. Nginx 原始配置归档按资产 ID SHA-256 命名；采集过程中不保存终端 transcript、密码、Cookie。
+
+---
+
+# 10. Topology Graph Schema
+
+> 本节描述 Env-Scope 在原始快照和 `/resources` 宽表之上的统一拓扑模型。  
+> 原始快照仍然是事实来源；Topology 不取代原始 Schema，而是为路径查询、架构图和风险分析提供统一图模型。
+
+## 10.1 设计目标
+
+Topology 层主要解决：
+
+1. 将 DNS、EIP、NAT、CLB、ECS、JumpServer、Nginx、DevOps、Repository 串成统一链路。
+2. 支持 Domain → Application 等 Graph Traversal。
+3. 保留每条关系的 evidence 与 confidence。
+4. 不因缺失数据而伪造关系。
+5. 为 Risk Analyzer 和 Architecture Renderer 提供稳定输入。
+
+## 10.2 Graph 根对象
+
+建议结构：
+
+```ts
+interface TopologyGraph {
+  generatedAt: string;
+  nodes: TopologyNode[];
+  edges: TopologyEdge[];
+  stats: {
+    nodeCount: number;
+    edgeCount: number;
+    ambiguousEdges: number;
+    unresolvedNodes: number;
+  };
+}
+```
+
+## 10.3 Node 通用结构
+
+```ts
+interface TopologyNode {
+  id: string;
+  type: NodeType;
+  name?: string;
+  environment?: "TEST" | "SIMULATION" | "PRODUCT";
+  attributes?: Record<string, unknown>;
+  evidence?: Evidence[];
+  observedAt?: string;
+}
+```
+
+第一阶段 `NodeType`：
+
+```text
+DOMAIN
+EIP
+NAT_GATEWAY
+DNAT_RULE
+CLB
+CLB_LISTENER
+SERVER_GROUP
+HOST
+ENDPOINT
+NGINX_ROUTE
+UPSTREAM
+APPLICATION
+DEPLOYMENT
+REPOSITORY
+```
+
+后续可扩展：
+
+```text
+SYSTEM
+VPC
+ZONE
+CERTIFICATE
+DATABASE
+REDIS
+MQ
+K8S_SERVICE
+POD
+```
+
+## 10.4 Edge 通用结构
+
+```ts
+interface TopologyEdge {
+  id: string;
+  from: string;
+  to: string;
+  type: EdgeType;
+  environment?: "TEST" | "SIMULATION" | "PRODUCT";
+  evidence: Evidence[];
+  confidence: "EXACT" | "INFERRED" | "AMBIGUOUS" | "UNKNOWN";
+  observedAt?: string;
+  attributes?: Record<string, unknown>;
+}
+```
+
+建议的 `EdgeType` 包括：
+
+```text
+RESOLVES_TO
+CNAME_TO
+BOUND_TO
+HAS_DNAT_RULE
+FORWARDS_TO
+HAS_LISTENER
+ROUTES_TO
+HAS_SERVER_GROUP
+SERVED_BY
+USES_UPSTREAM
+HAS_DEPLOYMENT
+LISTENS_ON
+ON_HOST
+BUILT_FROM
+CONTAINS
+```
+
+## 10.5 Evidence
+
+所有推断或关联关系必须能够追溯来源。
+
+建议：
+
+```ts
+interface Evidence {
+  source:
+    | "devops"
+    | "codeup"
+    | "dns"
+    | "eip"
+    | "nat"
+    | "ecs"
+    | "clb"
+    | "jumpserver"
+    | "nginx"
+    | "derived";
+  sourceId?: string;
+  file?: string;
+  field?: string;
+  value?: string;
+  note?: string;
+}
+```
+
+原则：
+
+- `EXACT` 也应尽量保留 evidence。
+- `INFERRED` / `AMBIGUOUS` 必须有 evidence。
+- 不允许为了让图连通而创建无法解释来源的 edge。
+
+## 10.6 Confidence
+
+统一使用：
+
+| 值 | 含义 |
+|---|---|
+| `EXACT` | 原始数据直接给出，或多个来源通过稳定唯一键精确匹配 |
+| `INFERRED` | 由可信规则推断，但不是原始来源直接声明 |
+| `AMBIGUOUS` | 有多个合理候选，无法唯一确认 |
+| `UNKNOWN` | 关系或状态无法确认 |
+
+Path confidence 建议采用“最弱边决定整条路径”的规则。
+
+## 10.7 HOST
+
+`HOST` 是逻辑主机，不应机械拆成 ECS Host、JumpServer Host、DevOps Host 三套节点。
+
+应尽量把：
+
+- ECS instance
+- JumpServer Asset
+- DevOps Deployment IP
+
+归并成同一个逻辑 Host，并将各来源信息放入 attributes / evidence。
+
+建议属性：
+
+```ts
+{
+  ips: string[];
+  hostname?: string;
+  ecsInstanceId?: string;
+  jumpserverAssetId?: string;
+  region?: string;
+  zone?: string;
+  cpu?: number;
+  memoryGiB?: number;
+  os?: string;
+}
+```
+
+## 10.8 ENDPOINT
+
+Endpoint 是拓扑中最重要的关联实体之一。
+
+身份应尽量包含：
+
+```text
+IP + Port + Protocol
+```
+
+建议 ID：
+
+```text
+endpoint:<ip>:<port>:<protocol>
+```
+
+例如：
+
+```text
+endpoint:10.179.1.10:8080:tcp
+```
+
+Endpoint 用于连接：
+
+- DevOps Deployment
+- Nginx Backend
+- CLB Backend
+- NAT / DNAT target
+- Host
+
+只有 IP、没有 Port 的数据不能随意绑定到某一个 Application；当 Host 上存在多个候选应用端口时，应使用 `AMBIGUOUS` 或保持 unresolved。
+
+## 10.9 APPLICATION 与 DEPLOYMENT
+
+建议关系：
+
+```text
+APPLICATION
+  --HAS_DEPLOYMENT-->
+DEPLOYMENT
+  --LISTENS_ON-->
+ENDPOINT
+  --ON_HOST-->
+HOST
+```
+
+Deployment 至少应保留：
+
+- appId
+- env
+- deploy id
+- IP
+- port
+- branch
+- repository
+- publish state
+- observedAt
+
+## 10.10 DNS
+
+Topology 与 `/resources` 宽表的处理方式不同。
+
+宽表可以只让 A/AAAA IP 进入 IP 汇总；Topology 应保留 CNAME：
+
+```text
+DOMAIN
+  --CNAME_TO-->
+DOMAIN
+```
+
+A/AAAA：
+
+```text
+DOMAIN
+  --RESOLVES_TO-->
+IP / EIP / Endpoint-related node
+```
+
+外部 CNAME 或无法继续解析的目标可以保留：
+
+```text
+external = true
+unresolved = true
+```
+
+不应直接丢弃。
+
+## 10.11 NAT / DNAT
+
+NAT 关系必须保留端口与协议：
+
+```text
+External Endpoint
+  --FORWARDS_TO-->
+Internal Endpoint
+```
+
+例如：
+
+```text
+47.117.144.217:443/TCP
+  →
+10.179.6.15:443/TCP
+```
+
+不能退化成：
+
+```text
+47.117.144.217 → 10.179.6.15
+```
+
+否则同一 IP 的多个服务会被错误合并。
+
+## 10.12 CLB
+
+建议结构：
+
+```text
+CLB
+  --HAS_LISTENER-->
+CLB_LISTENER
+
+CLB_LISTENER
+  --ROUTES_TO-->
+SERVER_GROUP
+
+SERVER_GROUP
+  --FORWARDS_TO-->
+ENDPOINT
+```
+
+七层规则的 domain / path 应作为 Listener/Rule 的 attributes 或独立 Rule 节点保留。
+
+Risk Analyzer 后续可利用 ServerGroup 的实际 distinct Host / Endpoint 数量判断后端单点。
+
+## 10.13 Nginx
+
+根据 `nginxRoutes` 建模：
+
+```text
+DOMAIN
+  --SERVED_BY-->
+NGINX_ROUTE
+
+NGINX_ROUTE
+  --USES_UPSTREAM-->
+UPSTREAM
+
+UPSTREAM
+  --FORWARDS_TO-->
+ENDPOINT
+```
+
+Route 建议保留：
+
+- domains
+- listen
+- uri
+- directive
+- target
+- upstream
+- context
+- Nginx host / asset
+- configurationVersion
+
+## 10.14 Repository
+
+建议：
+
+```text
+APPLICATION
+  --BUILT_FROM-->
+REPOSITORY
+```
+
+如果 DevOps 与 Codeup 之间存在无法唯一确认的 repository match，应保留原始 match 结论，不应强制 EXACT。
+
+## 10.15 SYSTEM（规划）
+
+当前采集 Schema 没有稳定 System 主数据。
+
+后续建议增加：
+
+```text
+SYSTEM
+  --CONTAINS-->
+APPLICATION
+```
+
+System → Application 关系优先使用人工维护或明确主数据，命名规则、Codeup group 等只能作为辅助推断。
+
+建议属性：
+
+```text
+name
+businessDomain
+owner
+criticality
+```
+
+## 10.16 Path Explorer 输出建议
+
+```ts
+interface TopologyPath {
+  startNodeId: string;
+  endNodeId?: string;
+  nodes: TopologyNode[];
+  edges: TopologyEdge[];
+  confidence: "EXACT" | "INFERRED" | "AMBIGUOUS" | "UNKNOWN";
+  hops: number;
+  status: "RESOLVED" | "UNRESOLVED";
+  stoppedAt?: string;
+  reason?: string;
+  warnings: string[];
+}
+```
+
+第一阶段查询：
+
+```text
+Domain → Application
+Application → Domain
+Application → Host
+Host → Application
+Domain → Endpoint
+```
+
+要求：
+
+- 返回完整 path
+- 支持 environment filter
+- 防止 cycle
+- 支持 maxDepth
+- 保留 unresolved path
+- 多候选 lookup 不得随机选择
+- traversal 应基于 graph index，而不是每次扫描全部 edges
+
+## 10.17 Risk Analyzer 首批规则
+
+| 规则 | 基础判定 |
+|---|---|
+| Application 单点 | PRODUCT Application 的 distinct Host = 1 |
+| 同主机伪 HA | Deployment > 1 且 distinct Host = 1 |
+| 同 AZ 风险 | distinct Host > 1 且 distinct Zone = 1 |
+| CLB Backend 单点 | ServerGroup 的有效 distinct Host / Endpoint = 1 |
+| Nginx 单点 | 关键 Domain 链路只有一个入口 Nginx Host |
+| 服务器共用 | 单 Host 承载多个 PRODUCT Application |
+| Topology Gap | 预期链路无法遍历到 Application |
+| Stale / Unknown | 关键 evidence 过旧、采集失败或 confidence 不足 |
+
+## 10.18 数据质量与时间
+
+所有 Node / Edge 应尽量有：
+
+```text
+observedAt
+```
+
+分析时区分：
+
+```text
+NOT_FOUND
+UNKNOWN
+STALE
+```
+
+例如：
+
+- `nginxStatus = not_running` 可以支持“不存在运行中 Nginx”的判断。
+- `loginStatus = cannot_login` 只能说明无法确认，不应判断为“没有 Nginx”。
+- 静态 CSV / 历史导出不能被当成实时事实。
+
+## 10.19 Topology Builder 校验建议
+
+至少检查：
+
+- duplicate node id
+- duplicate edge id
+- edge 引用不存在的 node
+- endpoint identity / format 异常
+- deployment 缺少 endpoint
+- 理论可归属 Host 的 endpoint 未归属 Host
+- ambiguous edge 数量
+- unresolved node / path 数量
