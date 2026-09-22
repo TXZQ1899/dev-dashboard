@@ -1,0 +1,21 @@
+services:
+  envscope:
+    image: envscope:local
+    build:
+      context: .
+      additional_contexts:
+        collectors: ..
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-public.ecr.aws/docker/library/node:22-bookworm-slim}
+    container_name: envscope-local
+    init: true
+    environment:
+      ENVSCOPE_ALLOWED_HOSTS: ${ENVSCOPE_ALLOWED_HOSTS:-}
+    ports:
+      - "${ENVSCOPE_PORT:-3001}:3000"
+    restart: unless-stopped
+    volumes:
+      - envscope-data:/data
+volumes:
+  envscope-data:
+    name: envscope-data

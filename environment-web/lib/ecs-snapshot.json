@@ -1,0 +1,4060 @@
+{
+  "fetchedAt": "2026-09-07T03:37:14.341950+00:00",
+  "region": "cn-shanghai",
+  "projects": [
+    {
+      "id": "rg-acfmwvwagoicztq",
+      "name": "默认资源组",
+      "code": "default"
+    },
+    {
+      "id": "rg-aek2b5y262nx3qy",
+      "name": "基础架构",
+      "code": "Infra"
+    },
+    {
+      "id": "rg-aek2eecohzqbrdi",
+      "name": "测试环境",
+      "code": "UAT"
+    },
+    {
+      "id": "rg-aek2myyrhxhjjgi",
+      "name": "中商",
+      "code": "zhongshang"
+    },
+    {
+      "id": "rg-aekzz4sgl6jvk3q",
+      "name": "dolphin_Project",
+      "code": "dolphin"
+    },
+    {
+      "id": "rg-aek2ei6jbvd7hua",
+      "name": "三亚亚特兰蒂斯VPC",
+      "code": "stump"
+    },
+    {
+      "id": "rg-aekz3ilb5t7jwnq",
+      "name": "UAT环境",
+      "code": "TCPUAT"
+    },
+    {
+      "id": "rg-aek2avt6bga62ni",
+      "name": "卡萨酷客酒店资源组",
+      "code": "casacookcn"
+    },
+    {
+      "id": "rg-aek3ajzk6dvks6i",
+      "name": "爱必侬资源组",
+      "code": "Albion"
+    },
+    {
+      "id": "rg-aekzzlovnwhgwvi",
+      "name": "TCP_Project",
+      "code": "TCPplatefrom"
+    },
+    {
+      "id": "rg-aekzz3qdegzw2vy",
+      "name": "fotour_Project",
+      "code": "fotour"
+    },
+    {
+      "id": "rg-aekzpmwhzwgvoxi",
+      "name": "太仓复游城",
+      "code": "taicang"
+    },
+    {
+      "id": "rg-aekzlfmj34nhhci",
+      "name": "大数据",
+      "code": "bigdata"
+    },
+    {
+      "id": "rg-aekz2rixxu74u3q",
+      "name": "casaweb和爱必侬非hotel资源组",
+      "code": "casa-nofotel"
+    },
+    {
+      "id": "rg-aekzq43lzhfmfva",
+      "name": "等保",
+      "code": "app-security"
+    },
+    {
+      "id": "rg-aekzjjmjeh7wfsy",
+      "name": "商旅",
+      "code": "ftrip"
+    },
+    {
+      "id": "rg-aek2exr4md45say",
+      "name": "复游拍",
+      "code": "fphoto"
+    },
+    {
+      "id": "rg-aekzltdpogn6zga",
+      "name": "AIGO",
+      "code": "AIGO"
+    },
+    {
+      "id": "rg-aek675x5devt26y",
+      "name": "旅游管理",
+      "code": "fosunholiday"
+    }
+  ],
+  "instances": [
+    {
+      "id": "i-uf6htx2n3srj1akyreoz",
+      "name": "ai-staff",
+      "projectId": "",
+      "cpu": 4,
+      "memoryGiB": 16.0,
+      "os": "Alibaba Cloud Linux  4 LTS 64位",
+      "privateIps": [
+        "10.179.0.202"
+      ],
+      "publicIps": [
+        "8.153.146.109"
+      ],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-g",
+      "instanceType": "ecs.u1-c1m4.xlarge"
+    },
+    {
+      "id": "i-uf63j6ydw0nqbc25kv71",
+      "name": "gsprdapp03",
+      "projectId": "rg-aek675x5devt26y",
+      "cpu": 8,
+      "memoryGiB": 32.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.13"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.g6.2xlarge"
+    },
+    {
+      "id": "i-uf6a0yz3sc9o6of61yu0",
+      "name": "lvqcapp01",
+      "projectId": "rg-aek675x5devt26y",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.7"
+      ],
+      "publicIps": [],
+      "tags": {
+        "fosunholiday": "fosunholiday"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1ne.large"
+    },
+    {
+      "id": "i-uf68udlf7r5xrb4dnvn9",
+      "name": "fincontractapp03",
+      "projectId": "rg-aek675x5devt26y",
+      "cpu": 8,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.25"
+      ],
+      "publicIps": [],
+      "tags": {
+        "fosunholiday": "fosunholiday"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1ne.2xlarge"
+    },
+    {
+      "id": "i-uf68udlf7r5xrb4dnvn8",
+      "name": "fincontractapp02",
+      "projectId": "rg-aek675x5devt26y",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.27"
+      ],
+      "publicIps": [],
+      "tags": {
+        "fosunholiday": "fosunholiday"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1ne.xlarge"
+    },
+    {
+      "id": "i-uf68udlf7r5xrb4dnvn7",
+      "name": "fincontractapp01",
+      "projectId": "rg-aek675x5devt26y",
+      "cpu": 8,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.26"
+      ],
+      "publicIps": [],
+      "tags": {
+        "fosunholiday": "fosunholiday"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1ne.2xlarge"
+    },
+    {
+      "id": "i-uf69szkfpv37oo34hgab",
+      "name": "fincashprdapp01",
+      "projectId": "rg-aek675x5devt26y",
+      "cpu": 8,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.3"
+      ],
+      "publicIps": [],
+      "tags": {
+        "fosunholiday": "fosunholiday"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1ne.2xlarge"
+    },
+    {
+      "id": "i-uf67az47pnb9sthvzqzk",
+      "name": "alishenceapp01",
+      "projectId": "",
+      "cpu": 8,
+      "memoryGiB": 64.0,
+      "os": "Rocky Linux  8.10 64位",
+      "privateIps": [
+        "10.179.3.14"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-c",
+      "instanceType": "ecs.se1ne.2xlarge"
+    },
+    {
+      "id": "i-uf617oajn8u89ccrt3tp",
+      "name": "worker-k8s-for-cs-prodaigo01",
+      "projectId": "rg-aekzltdpogn6zga",
+      "cpu": 32,
+      "memoryGiB": 128.0,
+      "os": "Alibaba Cloud Linux  3.2104 LTS 64位 容器优化版",
+      "privateIps": [
+        "10.179.6.4",
+        "10.179.6.6"
+      ],
+      "publicIps": [],
+      "tags": {
+        "ack.aliyun.com": "c55dfdf9bcb064139bab8830a978302cf",
+        "ack.alibabacloud.com/nodepool-id": "np07ec5cd7135f4bff88296d7e3e3b8b37",
+        "acs:autoscaling:scalingGroupId": "asg-uf6f3rly54nycygoux8c"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.g5.8xlarge"
+    },
+    {
+      "id": "i-uf617oajn8u89ccrt3to",
+      "name": "worker-k8s-for-cs-prodaigo02",
+      "projectId": "rg-aekzltdpogn6zga",
+      "cpu": 32,
+      "memoryGiB": 128.0,
+      "os": "Alibaba Cloud Linux  3.2104 LTS 64位 容器优化版",
+      "privateIps": [
+        "10.179.6.5",
+        "10.179.6.7"
+      ],
+      "publicIps": [],
+      "tags": {
+        "ack.aliyun.com": "c55dfdf9bcb064139bab8830a978302cf",
+        "ack.alibabacloud.com/nodepool-id": "np07ec5cd7135f4bff88296d7e3e3b8b37",
+        "acs:autoscaling:scalingGroupId": "asg-uf6f3rly54nycygoux8c"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.g5.8xlarge"
+    },
+    {
+      "id": "i-uf65hs4ywr6iwmyw8y8e",
+      "name": "worker-k8s-for-cs-prodaigo02",
+      "projectId": "rg-aekzltdpogn6zga",
+      "cpu": 32,
+      "memoryGiB": 128.0,
+      "os": "Alibaba Cloud Linux  3.2104 LTS 64位 容器优化版",
+      "privateIps": [
+        "10.179.7.161",
+        "10.179.7.186",
+        "10.179.7.162"
+      ],
+      "publicIps": [],
+      "tags": {
+        "ack.aliyun.com": "c55dfdf9bcb064139bab8830a978302cf",
+        "ack.alibabacloud.com/nodepool-id": "np07ec5cd7135f4bff88296d7e3e3b8b37",
+        "acs:autoscaling:scalingGroupId": "asg-uf6f3rly54nycygoux8c"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-g",
+      "instanceType": "ecs.g5.8xlarge"
+    },
+    {
+      "id": "i-uf66cvhwnwej71qj87je",
+      "name": "cnshaPRDstarrocks-MPP-BigData-01",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 8,
+      "memoryGiB": 32.0,
+      "os": "Alibaba Cloud Linux  3.2104 LTS 64位",
+      "privateIps": [
+        "10.179.1.248"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-e",
+      "instanceType": "ecs.g9i.2xlarge"
+    },
+    {
+      "id": "i-uf61k4i2jqjsme24yhke",
+      "name": "cnshaprdfinebiai01",
+      "projectId": "rg-aekzltdpogn6zga",
+      "cpu": 16,
+      "memoryGiB": 32.0,
+      "os": "Alibaba Cloud Linux  3.2104 LTS 64位",
+      "privateIps": [
+        "10.179.3.13"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-c",
+      "instanceType": "ecs.sn1ne.4xlarge"
+    },
+    {
+      "id": "i-uf6hugp9zn69jzzkhkl3",
+      "name": "cnshaprdfinebiapp01",
+      "projectId": "",
+      "cpu": 16,
+      "memoryGiB": 64.0,
+      "os": "Alibaba Cloud Linux  3.2104 LTS 64位",
+      "privateIps": [
+        "10.179.3.12"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-c",
+      "instanceType": "ecs.sn2ne.4xlarge"
+    },
+    {
+      "id": "i-uf69dpjcgpcw8te4j3z5",
+      "name": "cnshaprdfinebiops01",
+      "projectId": "",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "Alibaba Cloud Linux  3.2104 LTS 64位",
+      "privateIps": [
+        "10.179.3.11"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-c",
+      "instanceType": "ecs.sn1ne.xlarge"
+    },
+    {
+      "id": "i-uf6hyrdxb6a1cmguurn7",
+      "name": "cnshaaigogpu01",
+      "projectId": "rg-aekzltdpogn6zga",
+      "cpu": 32,
+      "memoryGiB": 128.0,
+      "os": "Ubuntu  22.04 64位",
+      "privateIps": [
+        "10.179.7.153"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-g",
+      "instanceType": "ecs.gn6v-c8g1.8xlarge"
+    },
+    {
+      "id": "i-uf6ezqlfis4rhkfd2rrs",
+      "name": "worker-k8s-for-cs-aigo-uat01",
+      "projectId": "rg-aekzltdpogn6zga",
+      "cpu": 8,
+      "memoryGiB": 32.0,
+      "os": "Alibaba Cloud Linux  3.2104 LTS 64位",
+      "privateIps": [
+        "10.179.6.170",
+        "10.179.6.172"
+      ],
+      "publicIps": [],
+      "tags": {
+        "ack.aliyun.com": "c55dfdf9bcb064139bab8830a978302cf",
+        "ack.alibabacloud.com/nodepool-id": "np42d03f843152403d842644b90d011f38",
+        "acs:autoscaling:scalingGroupId": "asg-uf6hxj40p8gcex29m8xr"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.u1-c1m4.2xlarge"
+    },
+    {
+      "id": "i-uf6g66piibkukoe56288",
+      "name": "gsprdapp01",
+      "projectId": "rg-aek675x5devt26y",
+      "cpu": 8,
+      "memoryGiB": 32.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.14"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "fosunholiday": "fosunholiday"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.g5ne.2xlarge"
+    },
+    {
+      "id": "i-uf6g66piibkukoe56289",
+      "name": "gsprdapp02",
+      "projectId": "rg-aek675x5devt26y",
+      "cpu": 8,
+      "memoryGiB": 32.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.8"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "fosunholiday": "fosunholiday"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.g5ne.2xlarge"
+    },
+    {
+      "id": "i-uf69h05rsu42xiwjnsut",
+      "name": "FtripPRDAPP04-商旅",
+      "projectId": "",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.2"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1ne.xlarge"
+    },
+    {
+      "id": "i-uf6alrick24s0gmth139",
+      "name": "remotedesktop",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 8.0,
+      "os": "Windows Server  2016 数据中心版 64位中文版",
+      "privateIps": [
+        "10.179.2.179"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.e-c1m4.large"
+    },
+    {
+      "id": "i-uf682i1xvh5vbazh5znn",
+      "name": "faliprdphotojob01",
+      "projectId": "rg-aek2exr4md45say",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.5.154"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-d",
+      "instanceType": "ecs.sn1.medium"
+    },
+    {
+      "id": "i-uf682i1xvh5vbazh5znm",
+      "name": "faliprdphotojob00",
+      "projectId": "rg-aek2exr4md45say",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.5.153"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-d",
+      "instanceType": "ecs.sn1.medium"
+    },
+    {
+      "id": "i-uf6b2tis5iopl9dt9juq",
+      "name": "FAliPrdFtripAPP03-商旅",
+      "projectId": "rg-aekzjjmjeh7wfsy",
+      "cpu": 12,
+      "memoryGiB": 96.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.124"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.se1ne.3xlarge"
+    },
+    {
+      "id": "i-uf6b2tis5iopl9dt9jur",
+      "name": "FAliPrdFtripAPP04--商旅",
+      "projectId": "rg-aekzjjmjeh7wfsy",
+      "cpu": 12,
+      "memoryGiB": 96.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.1"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.se1ne.3xlarge"
+    },
+    {
+      "id": "i-uf6d7bpsyq1ocdnadjeh",
+      "name": "photo-temp2",
+      "projectId": "",
+      "cpu": 8,
+      "memoryGiB": 32.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.5.152"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-d",
+      "instanceType": "ecs.g5ne.2xlarge"
+    },
+    {
+      "id": "i-uf61akvjzme8zjegxtnn",
+      "name": "photo-temp1",
+      "projectId": "",
+      "cpu": 8,
+      "memoryGiB": 32.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.5.151"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-d",
+      "instanceType": "ecs.g5ne.2xlarge"
+    },
+    {
+      "id": "i-uf6e04skbislc3j4eyyg",
+      "name": "FAliPrdPlatformAPP02",
+      "projectId": "rg-aekzq43lzhfmfva",
+      "cpu": 12,
+      "memoryGiB": 96.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.5.150"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-d",
+      "instanceType": "ecs.se1ne.3xlarge"
+    },
+    {
+      "id": "i-uf6bg1napdx7284egk2u",
+      "name": "FAliPrdPlatformAPP01",
+      "projectId": "rg-aekzq43lzhfmfva",
+      "cpu": 12,
+      "memoryGiB": 96.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.5.149"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-d",
+      "instanceType": "ecs.se1ne.3xlarge"
+    },
+    {
+      "id": "i-uf6ck1v1mpj5incsdvka",
+      "name": "Fyh-Prod-业务-酒店-2",
+      "projectId": "rg-aekzq43lzhfmfva",
+      "cpu": 12,
+      "memoryGiB": 96.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.5.148"
+      ],
+      "publicIps": [],
+      "tags": {
+        "monitorcpu": "60",
+        "复游会": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-d",
+      "instanceType": "ecs.se1ne.3xlarge"
+    },
+    {
+      "id": "i-uf69dr2pn9xfte04jpge",
+      "name": "FAliPrdHotelAPP02",
+      "projectId": "rg-aekzq43lzhfmfva",
+      "cpu": 12,
+      "memoryGiB": 96.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.5.147"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-d",
+      "instanceType": "ecs.se1ne.3xlarge"
+    },
+    {
+      "id": "i-uf66bobf7fwznjb7q6z9",
+      "name": "Fyh-Prod-业务-酒店-1",
+      "projectId": "rg-aekzq43lzhfmfva",
+      "cpu": 12,
+      "memoryGiB": 96.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.5.146"
+      ],
+      "publicIps": [],
+      "tags": {
+        "monitorcpu": "60",
+        "复游会": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-d",
+      "instanceType": "ecs.se1ne.3xlarge"
+    },
+    {
+      "id": "i-uf6c01ff74bx21q5itxb",
+      "name": "FAliPrdHotelAPP01",
+      "projectId": "rg-aekzq43lzhfmfva",
+      "cpu": 12,
+      "memoryGiB": 96.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.5.145"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-d",
+      "instanceType": "ecs.se1ne.3xlarge"
+    },
+    {
+      "id": "i-uf6519ei8f5apcr6sioy",
+      "name": "FAliPRDbigdata-718tmp-03",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 8,
+      "memoryGiB": 64.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.3.10"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-c",
+      "instanceType": "ecs.e3.xlarge"
+    },
+    {
+      "id": "i-uf6fkfvb2gmh9cs41o4b",
+      "name": "FAliPRDbigdata-718tmp-01",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 4,
+      "memoryGiB": 32.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.5.49"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-e",
+      "instanceType": "ecs.r6.xlarge"
+    },
+    {
+      "id": "i-uf6fkfvb2gmh9cs41o4c",
+      "name": "FAliPRDbigdata-718tmp-02",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 4,
+      "memoryGiB": 32.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.5.48"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-e",
+      "instanceType": "ecs.r6.xlarge"
+    },
+    {
+      "id": "i-uf6avpg1mqso4gry4rm5",
+      "name": "FAliPrdFtripMiddle02-商旅",
+      "projectId": "rg-aekzjjmjeh7wfsy",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.9"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n4.xlarge"
+    },
+    {
+      "id": "i-uf64afjj835czma9semr",
+      "name": "FAliPrdFtripES01-商旅",
+      "projectId": "",
+      "cpu": 8,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.20"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1.xlarge"
+    },
+    {
+      "id": "i-uf64afjj835czma9sems",
+      "name": "FAliPrdFtripES02-商旅",
+      "projectId": "",
+      "cpu": 8,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.21"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1.xlarge"
+    },
+    {
+      "id": "i-uf6gkuw5vp2ieu60cao2",
+      "name": "FAliPrdFtripWeb01-商旅",
+      "projectId": "rg-aekzjjmjeh7wfsy",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.19"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1.large"
+    },
+    {
+      "id": "i-uf6gkuw5vp2ieu60cao3",
+      "name": "FAliPrdFtripWeb02-商旅",
+      "projectId": "rg-aekzjjmjeh7wfsy",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.18"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1.large"
+    },
+    {
+      "id": "i-uf64afjj835cywmvboih",
+      "name": "FAliPrdFtripAPP01-商旅",
+      "projectId": "rg-aekzjjmjeh7wfsy",
+      "cpu": 12,
+      "memoryGiB": 96.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.17"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.se1ne.3xlarge"
+    },
+    {
+      "id": "i-uf64afjj835cywmvboii",
+      "name": "FAliPrdFtripAPP02-商旅",
+      "projectId": "rg-aekzjjmjeh7wfsy",
+      "cpu": 12,
+      "memoryGiB": 96.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.16"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.se1ne.3xlarge"
+    },
+    {
+      "id": "i-uf6eocu3jv2omybwvxcf",
+      "name": "FAliPrdFtripMiddle-商旅",
+      "projectId": "rg-aekzjjmjeh7wfsy",
+      "cpu": 4,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.15"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn2.large"
+    },
+    {
+      "id": "i-uf6gbkdo403yl9pxp17r",
+      "name": "FAliUATApolloServer-商旅",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.2.31"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1.medium"
+    },
+    {
+      "id": "i-uf6bska22qk167y6goo2",
+      "name": "FAliPRDMICE02",
+      "projectId": "rg-aekzq43lzhfmfva",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.12"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n1.medium"
+    },
+    {
+      "id": "i-uf6bjfx198vzgwofjf9n",
+      "name": "FAliPRDMICE01",
+      "projectId": "rg-aekzq43lzhfmfva",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.11"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf68gja99cvzdd1bx8wb",
+      "name": "FAliUATPublic06-商旅",
+      "projectId": "rg-aekzjjmjeh7wfsy",
+      "cpu": 12,
+      "memoryGiB": 96.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.2.30"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "test"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.se1ne.3xlarge"
+    },
+    {
+      "id": "i-uf66ddu4v4yl45e7fh5j",
+      "name": "AliRRDmrbs01-旅文会议预定系统",
+      "projectId": "",
+      "cpu": 8,
+      "memoryGiB": 16.0,
+      "os": "Windows Server  2016 数据中心版 64位中文版",
+      "privateIps": [
+        "10.179.0.200"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-g",
+      "instanceType": "ecs.c6e.2xlarge"
+    },
+    {
+      "id": "i-uf67xsvhcwh7t4aigc6n",
+      "name": "FAliPrdTaiCang01--太仓",
+      "projectId": "rg-aekzpmwhzwgvoxi",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.30.232.100"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf65nq9s030znjqq7o5p",
+      "name": "FAliPRDbigdata",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 4,
+      "memoryGiB": 32.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.2.177"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.r6.xlarge"
+    },
+    {
+      "id": "i-uf64dcw86tvi3rultu82",
+      "name": "FAliPrdEcontract01",
+      "projectId": "rg-aekzq43lzhfmfva",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.5"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n1.medium"
+    },
+    {
+      "id": "i-uf64dcw86tvi3rultu83",
+      "name": "FAliPrdEcontract02",
+      "projectId": "rg-aekzq43lzhfmfva",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.6"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n1.medium"
+    },
+    {
+      "id": "i-uf6gvcl4zr95mg0va8my",
+      "name": "FAliSit01Pub07--商旅",
+      "projectId": "rg-aekzjjmjeh7wfsy",
+      "cpu": 12,
+      "memoryGiB": 96.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.2.24"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "test"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.se1ne.3xlarge"
+    },
+    {
+      "id": "i-uf629iyejaap0lyenvku",
+      "name": "FAliPRDELK03",
+      "projectId": "",
+      "cpu": 4,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.123"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn2.large"
+    },
+    {
+      "id": "i-uf631jrhmphhwjo9ebjo",
+      "name": "FAliPRDhotelcanal01-rocketmq",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.122"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.se1ne.large"
+    },
+    {
+      "id": "i-uf6a8cxjs5wl0x6dr2f1",
+      "name": "FAliPRDbigdatahadoop05",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 8,
+      "memoryGiB": 64.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.2.175"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.r6.2xlarge"
+    },
+    {
+      "id": "i-uf6a8cxjs5wl0x6dr2f2",
+      "name": "FAliPRDbigdatahadoop06",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 8,
+      "memoryGiB": 64.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.2.174"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.r6.2xlarge"
+    },
+    {
+      "id": "i-uf6a8cxjs5wl0x6dr2f0",
+      "name": "FAliPRDbigdatahadoop04",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 8,
+      "memoryGiB": 64.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.2.173"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.r6.2xlarge"
+    },
+    {
+      "id": "i-uf66r5u8vbc5bz6ntt4e",
+      "name": "FAliPRDFostayELK03-后台用",
+      "projectId": "",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.250"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c7.xlarge"
+    },
+    {
+      "id": "i-uf6ib0sh7w9fpdl805ic",
+      "name": "FAliBigDataAlgorithm01",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 4,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.248"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.g7.xlarge"
+    },
+    {
+      "id": "i-uf6ib0sh7w9fpdl805id",
+      "name": "FAliBigDataAlgorithm02",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 4,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.249"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.g7.xlarge"
+    },
+    {
+      "id": "i-uf60olktqsqa6usmewi8",
+      "name": "FAliPRDBigDataSuperset",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.243"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c7.xlarge"
+    },
+    {
+      "id": "i-uf6ddpzz3ipl7debszyy",
+      "name": "FAliPRDPublicSearch02",
+      "projectId": "",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.217"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c7.xlarge"
+    },
+    {
+      "id": "i-uf6ib0sh7w9dpqrtqw9k",
+      "name": "FAliPRDFostayELK02-后台用",
+      "projectId": "",
+      "cpu": 8,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.216"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.sn1ne.2xlarge"
+    },
+    {
+      "id": "i-uf6el9zfn76js6vwf47s",
+      "name": "FAliPRDELK02",
+      "projectId": "",
+      "cpu": 8,
+      "memoryGiB": 32.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.215"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.g5ne.2xlarge"
+    },
+    {
+      "id": "i-uf6085c1lnhe6zt4ra44",
+      "name": "FAliPRDPublicSearch01",
+      "projectId": "",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.241"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c7.xlarge"
+    },
+    {
+      "id": "i-uf66wtmh7t7d3ol7g59a",
+      "name": "FAliPrdFcrmAPP01",
+      "projectId": "rg-aekzq43lzhfmfva",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.108"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1ne.xlarge"
+    },
+    {
+      "id": "i-uf6d5yupyj1uanik301n",
+      "name": "FAliTestBigData-TCP推荐引擎",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.2.17"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "uat"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1ne.large"
+    },
+    {
+      "id": "i-uf6d5yupyj1uanik301m",
+      "name": "FAliUatBigData-TCP推荐引擎",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.2.16"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "uat"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1ne.large"
+    },
+    {
+      "id": "i-uf6fv492k5e2vo9swnp6",
+      "name": "FAliPrdBigDataKafka03",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.106"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1.large"
+    },
+    {
+      "id": "i-uf6fv492k5e2vo9swnp5",
+      "name": "FAliPrdBigDataKafka02",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.105"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1.large"
+    },
+    {
+      "id": "i-uf60urtgz76us50br2o1",
+      "name": "ELK-Server托迈酷客APP-监控日志",
+      "projectId": "",
+      "cpu": 8,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.8 64位",
+      "privateIps": [
+        "10.179.4.104"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1.xlarge"
+    },
+    {
+      "id": "i-uf6it0xtfmf5mtzdjxhp",
+      "name": "FAliPrdFDFS-肖英杰",
+      "projectId": "",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.4.93"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "操作": "待删除"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf6ifz2yhyhvqtbvq0k2",
+      "name": "FAliPaymentRabbit01",
+      "projectId": "",
+      "cpu": 8,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.91"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1.xlarge"
+    },
+    {
+      "id": "i-uf6is37wquznq5ccek8l",
+      "name": "FAliPrdApollo01",
+      "projectId": "",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.240"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c7.xlarge"
+    },
+    {
+      "id": "i-uf6b9kiw58cqwplytlvi",
+      "name": "FAliCrmMarktingNotify02",
+      "projectId": "rg-aekzq43lzhfmfva",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.238"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c7.large"
+    },
+    {
+      "id": "i-uf6a79po5i643l5rmf37",
+      "name": "FAliUATPublic05",
+      "projectId": "",
+      "cpu": 8,
+      "memoryGiB": 64.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.2.14"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "test"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.se1.2xlarge"
+    },
+    {
+      "id": "i-uf65o09o2l04kd3huj9h",
+      "name": "商旅-uat-apollo",
+      "projectId": "rg-aekzjjmjeh7wfsy",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.2.169"
+      ],
+      "publicIps": [],
+      "tags": {
+        "商旅": "test"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c7.large"
+    },
+    {
+      "id": "i-uf6hl1tio623d274rqee",
+      "name": "FAliFomallRabbitMQ01",
+      "projectId": "",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.81"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1.large"
+    },
+    {
+      "id": "i-uf6erjatd8fyfl77qapo",
+      "name": "aliPRDphoenixes01",
+      "projectId": "",
+      "cpu": 8,
+      "memoryGiB": 32.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.5.40"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-e",
+      "instanceType": "ecs.g5ne.2xlarge"
+    },
+    {
+      "id": "i-uf6fkmx49eozot96nz3l",
+      "name": "FAliPrdNacos01",
+      "projectId": "",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.227"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c7.xlarge"
+    },
+    {
+      "id": "i-uf6dxleu21rb2y4v28cl",
+      "name": "FAliPrdFomallMid01",
+      "projectId": "",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.226"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c7.xlarge"
+    },
+    {
+      "id": "i-uf6122p6g7pzl6icpzb9",
+      "name": "FAliSit01Pub04--商旅",
+      "projectId": "rg-aekzjjmjeh7wfsy",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.2.166"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c7.large"
+    },
+    {
+      "id": "i-uf61fg3aooslbsz0ct03",
+      "name": "FAliPRDSpark02",
+      "projectId": "rg-aekzq43lzhfmfva",
+      "cpu": 4,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.79"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.mn4.xlarge"
+    },
+    {
+      "id": "i-uf61fg3aooslbsz0ct02",
+      "name": "FAliPRDSpark01",
+      "projectId": "rg-aekzq43lzhfmfva",
+      "cpu": 4,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.80"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.mn4.xlarge"
+    },
+    {
+      "id": "i-uf6gjq79kqt04c3lhm9v",
+      "name": "FAliPRDAbtest02",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.75"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1ne.large"
+    },
+    {
+      "id": "i-uf6gjq79kqt04c3lhm9u",
+      "name": "FAliPRDAbtest01",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.76"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1ne.large"
+    },
+    {
+      "id": "i-uf6fx9bykklslrib52um",
+      "name": "FAliJDPRDkonggw02",
+      "projectId": "",
+      "cpu": 1,
+      "memoryGiB": 0.5,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.81.128.203"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.t5-lc2m1.nano"
+    },
+    {
+      "id": "i-uf636qodaanfth2vkg30",
+      "name": "FAliJDPRDkonggw01",
+      "projectId": "",
+      "cpu": 1,
+      "memoryGiB": 0.5,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.28.94.202"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.t5-lc2m1.nano"
+    },
+    {
+      "id": "i-uf6g9rukkdashdqmfwxw",
+      "name": "FAliVPCPRDkonggw02",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.220"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c7.large"
+    },
+    {
+      "id": "i-uf6116lgajb6e8qmv5md",
+      "name": "FAliVPCPRDkonggw01",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.4.73"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1.medium"
+    },
+    {
+      "id": "i-uf6fekceh6ukdkig7lcu",
+      "name": "FAliPRDCgbchinaSftp",
+      "projectId": "rg-aekzzlovnwhgwvi",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.179.4.72"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "acs:ecs:plugin/ACS-ECS-WorkbenchSshLoginDiagnostic": "true"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1ne.xlarge"
+    },
+    {
+      "id": "i-uf69yo022anrvojnl6hk",
+      "name": "aliprdgoldimagexx--旅文基础镜像",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.2.165"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c6e.large"
+    },
+    {
+      "id": "i-uf67tqtttmcycn0z9htk",
+      "name": "FAliPRDPrometheus",
+      "projectId": "rg-aekzzlovnwhgwvi",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.4.67"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1.large"
+    },
+    {
+      "id": "i-uf685m9yb0gay0r1ojwj",
+      "name": "uat_security-web",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.2.164"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c7nex.large"
+    },
+    {
+      "id": "i-uf66btrk4y6eu85d56m3",
+      "name": "FAliUatBigDataHadoop03",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 8,
+      "memoryGiB": 64.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.2.161"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.r7.2xlarge"
+    },
+    {
+      "id": "i-uf66btrk4y6eu85d56m2",
+      "name": "FAliUatBigDataHadoop01",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 8,
+      "memoryGiB": 64.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.2.159"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.r7.2xlarge"
+    },
+    {
+      "id": "i-uf66btrk4y6eu85d56m4",
+      "name": "FAliUatBigDataHadoop02",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 8,
+      "memoryGiB": 64.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.2.160"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.r7.2xlarge"
+    },
+    {
+      "id": "i-uf62g1g5ngtuca6qh8y6",
+      "name": "FAliTESTDevopsClient01",
+      "projectId": "",
+      "cpu": 8,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.2.156"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "uat"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c5.2xlarge"
+    },
+    {
+      "id": "i-uf673pxipwl79q2uht26",
+      "name": "FAliUATCat",
+      "projectId": "",
+      "cpu": 4,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.8 64位",
+      "privateIps": [
+        "10.179.2.155"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "test"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.hfg7.xlarge"
+    },
+    {
+      "id": "i-uf6byh3gg36kz5niaybg",
+      "name": "FAliPRDDevopsSaltStack",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.2.154"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.sn1ne.large"
+    },
+    {
+      "id": "i-uf64ztyhrptsim2povu0",
+      "name": "FAliPRDDevopsHttp",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 2.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.2.153"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.ic5.large"
+    },
+    {
+      "id": "i-uf6b0qzsjzz0dzdvhxtg",
+      "name": "FAliPRDDevopsServer",
+      "projectId": "",
+      "cpu": 4,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.8 64位",
+      "privateIps": [
+        "10.179.2.152"
+      ],
+      "publicIps": [],
+      "tags": {},
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.hfg7.xlarge"
+    },
+    {
+      "id": "i-uf60geuuslkzm6smvkiv",
+      "name": "Prdmebcorderkafka01",
+      "projectId": "rg-aekzzlovnwhgwvi",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.4.64"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1ne.large"
+    },
+    {
+      "id": "i-uf68hpnomoh6k7qzwde5",
+      "name": "Prdmebcordercanal01--kafka",
+      "projectId": "rg-aekzzlovnwhgwvi",
+      "cpu": 8,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.7 64位",
+      "privateIps": [
+        "10.179.4.63"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1.xlarge"
+    },
+    {
+      "id": "i-uf6f6me4492m09v8og1i",
+      "name": "Albionfotelprddb01-爱必侬新产线数据库",
+      "projectId": "rg-aek3ajzk6dvks6i",
+      "cpu": 8,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.8 64位",
+      "privateIps": [
+        "10.179.4.62"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1.xlarge"
+    },
+    {
+      "id": "i-uf66q1a0157ir5edj1p7",
+      "name": "Albionfotelprdapp01--爱必侬新产线应用服务器01",
+      "projectId": "rg-aek3ajzk6dvks6i",
+      "cpu": 8,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.8 64位",
+      "privateIps": [
+        "10.179.4.61"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "acs:ecs:plugin/ACS-ECS-WorkbenchSshLoginDiagnostic": "true"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1.xlarge"
+    },
+    {
+      "id": "i-uf6iiutfeo4spsfmg00p",
+      "name": "PrdMbpHotelOnlineProduct01",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.179.4.206"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c7.large"
+    },
+    {
+      "id": "i-uf67fhx70a21sohejard",
+      "name": "FAliPrdPlatformAPP04",
+      "projectId": "rg-aekzq43lzhfmfva",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.179.4.204"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c7.xlarge"
+    },
+    {
+      "id": "i-uf63j42n65xt96e16gq6",
+      "name": "FAliPrdPlatformAPP03",
+      "projectId": "rg-aekzq43lzhfmfva",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.179.4.203"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c7.xlarge"
+    },
+    {
+      "id": "i-uf62pf615c0j8odiufrk",
+      "name": "商旅-Uat-Public-1",
+      "projectId": "rg-aekzjjmjeh7wfsy",
+      "cpu": 1,
+      "memoryGiB": 2.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.2.11"
+      ],
+      "publicIps": [],
+      "tags": {
+        "商旅": "test"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n4.small"
+    },
+    {
+      "id": "i-uf6i7oryfhjqr6hzo9ne",
+      "name": "FAliPrdDPopen03",
+      "projectId": "",
+      "cpu": 8,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.179.4.196"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "dolphin": "",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c7.2xlarge"
+    },
+    {
+      "id": "i-uf615a442knf35vpa2cj",
+      "name": "FAliProdCLSAlbion01",
+      "projectId": "rg-aekzjjmjeh7wfsy",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.4.194"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.hfc7.large"
+    },
+    {
+      "id": "i-uf6096b7xiuych7ngtix",
+      "name": "FAliUATmiddle01",
+      "projectId": "rg-aekzjjmjeh7wfsy",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.8 64位",
+      "privateIps": [
+        "10.179.2.10"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "uat"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n1.large"
+    },
+    {
+      "id": "i-uf655ynrzq62y5n7m7s9",
+      "name": "FAliUATelk01",
+      "projectId": "rg-aekz3ilb5t7jwnq",
+      "cpu": 2,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.2.9"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "uat"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn2.medium"
+    },
+    {
+      "id": "i-uf655ynrzq62jym6m8de",
+      "name": "FAliPrdDPswitches06",
+      "projectId": "rg-aekzz4sgl6jvk3q",
+      "cpu": 8,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.179.4.193"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "dolphin": ""
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.hfc7.2xlarge"
+    },
+    {
+      "id": "i-uf6fv1zpnwsh3mpbeddy",
+      "name": "FAliPrdDPswitches05",
+      "projectId": "",
+      "cpu": 8,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.179.4.192"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "dolphin": ""
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.hfc7.2xlarge"
+    },
+    {
+      "id": "i-uf69arhry3qepw2yszmv",
+      "name": "FAliprdjumpserver01",
+      "projectId": "rg-aek2b5y262nx3qy",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.9 64位",
+      "privateIps": [
+        "10.179.2.146"
+      ],
+      "publicIps": [],
+      "tags": {
+        "monitorcpu": "60",
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c6e.xlarge"
+    },
+    {
+      "id": "i-uf6dofbycydyd7u5e1db",
+      "name": "aliprdDIDAredis501",
+      "projectId": "rg-aekzz4sgl6jvk3q",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.8 64位",
+      "privateIps": [
+        "10.179.4.190"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c6e.large"
+    },
+    {
+      "id": "i-uf6hm15518u4wb9piqsj",
+      "name": "AliPub02Sit02",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.2.144"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c7.large"
+    },
+    {
+      "id": "i-uf6egbr8o5u57n7817ho",
+      "name": "FAliPrdB2B2C02",
+      "projectId": "",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.2 64位",
+      "privateIps": [
+        "10.29.28.168"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf663gfxn7jrk0j5qvtr",
+      "name": "b2b2cfront02",
+      "projectId": "rg-acfmwvwagoicztq",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.2 64位",
+      "privateIps": [
+        "10.80.224.102"
+      ],
+      "publicIps": [
+        "106.14.160.5"
+      ],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n4.xlarge"
+    },
+    {
+      "id": "i-uf6c9wnjmghs8275u9fi",
+      "name": "AliPrdImbizadmin02",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.4.189"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.hfc7.large"
+    },
+    {
+      "id": "i-uf65no12pjwdc0yoo7o3",
+      "name": "AliPrdImbizadmin01",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.4.188"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.hfc7.large"
+    },
+    {
+      "id": "i-uf6fl5yq445e3dqautg0",
+      "name": "AliPrdImbiz02",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.4.187"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.hfc7.large"
+    },
+    {
+      "id": "i-uf6h5wjsrwdmab9u5z2e",
+      "name": "AliPrdImbiz01",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.4.186"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.hfc7.large"
+    },
+    {
+      "id": "i-uf65jba7lvgwumo2ir5t",
+      "name": "AliPub02Sit01",
+      "projectId": "rg-aek2eecohzqbrdi",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.2.143"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "test"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c7.large"
+    },
+    {
+      "id": "i-uf6ick8j8tmrasxs3zrs",
+      "name": "FAliSitPub03-商旅",
+      "projectId": "rg-aekzjjmjeh7wfsy",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.8 64位",
+      "privateIps": [
+        "10.179.2.141"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "test"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c6e.large"
+    },
+    {
+      "id": "i-uf66r2tuy6zezo21trv7",
+      "name": "alifntprdposeidon02",
+      "projectId": "rg-acfmwvwagoicztq",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.4.185"
+      ],
+      "publicIps": [],
+      "tags": {
+        "monitorcpu": "60",
+        "复游会": "prod",
+        "复游会-前端": "poseidon"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c6a.large"
+    },
+    {
+      "id": "i-uf61ii8wkx9ty17vk91q",
+      "name": "alifntprdposeidon01",
+      "projectId": "rg-acfmwvwagoicztq",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.4.184"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c5.large"
+    },
+    {
+      "id": "i-uf6h00aii0n3s3el29r6",
+      "name": "aliprddpswitches04",
+      "projectId": "rg-aekzz4sgl6jvk3q",
+      "cpu": 8,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.179.4.179"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "dolphin": ""
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c6e.2xlarge"
+    },
+    {
+      "id": "i-uf60jb8mqajik42d45h7",
+      "name": "alifostayes04",
+      "projectId": "",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.81.128.157"
+      ],
+      "publicIps": [
+        "106.15.63.32"
+      ],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf697slq0xkz65zm22eu",
+      "name": "aliprdDPredis501",
+      "projectId": "rg-aekzz4sgl6jvk3q",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.8 64位",
+      "privateIps": [
+        "10.179.4.178"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c6e.large"
+    },
+    {
+      "id": "i-uf685opgs9ozd3pgsld9",
+      "name": "aliprddpswitches03",
+      "projectId": "rg-aekzz4sgl6jvk3q",
+      "cpu": 8,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.179.4.162"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "dolphin": ""
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c6.2xlarge"
+    },
+    {
+      "id": "i-uf655utcxcqe4yip1ipk",
+      "name": "FAliPRDPlatformtask01",
+      "projectId": "rg-aekzq43lzhfmfva",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.4.161"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c6.xlarge"
+    },
+    {
+      "id": "i-uf6edvty8pje5ti9ygq9",
+      "name": "FAliPRDPlateformAPP03",
+      "projectId": "",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.4.155"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c6.xlarge"
+    },
+    {
+      "id": "i-uf6h6831vqsxhe4tvaf5",
+      "name": "AliTestFoski02",
+      "projectId": "",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.30.84.148"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "test"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf6cyoti841qsmpkht21",
+      "name": "FAliSitPub02",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.1.236"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "test"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-e",
+      "instanceType": "ecs.c6.large"
+    },
+    {
+      "id": "i-uf6gi6u0x41923pnren4",
+      "name": "FAliPrdfosunnginx_Photo",
+      "projectId": "rg-aek675x5devt26y",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.179.4.165"
+      ],
+      "publicIps": [],
+      "tags": {
+        "fosunholiday": "fosunholiday"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.sn1ne.xlarge"
+    },
+    {
+      "id": "i-uf6jd8la49roljagdh66",
+      "name": "FAliPrdSVN",
+      "projectId": "",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.1.235"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-e",
+      "instanceType": "ecs.s6-c1m1.small"
+    },
+    {
+      "id": "i-uf60jgbtfwy75tg03kge",
+      "name": "FAliPrdFomallES01",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.4.164"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.sn1.medium"
+    },
+    {
+      "id": "i-uf69xd2ud8rhsd9sjl7d",
+      "name": "FAliPrdBigDataddrobot01",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 1,
+      "memoryGiB": 2.0,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.179.4.163"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.n4.small"
+    },
+    {
+      "id": "i-uf6gqb620skpart61qq8",
+      "name": "FAliPrdBigDataJob01",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 8,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.4.47"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1.xlarge"
+    },
+    {
+      "id": "i-uf6b0rw4fi7a2vttv1vd",
+      "name": "FAliPrdFostayELK01-后台用",
+      "projectId": "",
+      "cpu": 8,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.4.156"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.sn1ne.2xlarge"
+    },
+    {
+      "id": "i-uf6ik5vcm8jtj9fj4mse",
+      "name": "FAliPrdFotelbuild01",
+      "projectId": "",
+      "cpu": 1,
+      "memoryGiB": 0.5,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.179.1.233"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-e",
+      "instanceType": "ecs.t5-lc2m1.nano"
+    },
+    {
+      "id": "i-uf65paliafslrfma2wwv",
+      "name": "FAliPrdBigDataShortLink01",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.179.4.154"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.sn1ne.large"
+    },
+    {
+      "id": "i-uf63zayuoqxzpow6nk47",
+      "name": "Fyh-Prod-运维-infra-01",
+      "projectId": "",
+      "cpu": 1,
+      "memoryGiB": 2.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.4.153"
+      ],
+      "publicIps": [],
+      "tags": {
+        "复游会": "prod",
+        "复游会-运维": "devops"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.s6-c1m2.small"
+    },
+    {
+      "id": "i-uf6fd1qug0hxgnoy0rkl",
+      "name": "FAliPrdFostayES02",
+      "projectId": "",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.30.239.82"
+      ],
+      "publicIps": [
+        "106.14.94.3"
+      ],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf68erenqshqj193gasc",
+      "name": "FAliPrdFoliNg01",
+      "projectId": "rg-aekzq43lzhfmfva",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.4.42"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n1.medium"
+    },
+    {
+      "id": "i-uf6hesbnbne22wtzhec3",
+      "name": "aliprdbigdataazkaban01",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 8,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.4.41"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1.xlarge"
+    },
+    {
+      "id": "i-uf609k5j3dum3hcdk2yj",
+      "name": "aliprdfsopcanal01-tcp",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.179.4.148"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.sn2ne.large"
+    },
+    {
+      "id": "i-uf6aamie2idb3da5oy13",
+      "name": "FAliPrdDPopen02",
+      "projectId": "rg-aekzz4sgl6jvk3q",
+      "cpu": 8,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.179.4.139"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "dolphin": "",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.ic5.2xlarge"
+    },
+    {
+      "id": "i-uf6b5tdc69ihlhy6c2r6",
+      "name": "FAliPrdDPadmintask01",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.179.4.137"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.sn1ne.large"
+    },
+    {
+      "id": "i-uf650r0dljy5w2r52piq",
+      "name": "FAliPrdDPRabbitMQ01",
+      "projectId": "",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.179.4.130"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.c5.xlarge"
+    },
+    {
+      "id": "i-uf6b9up93dfcifmi7cuy",
+      "name": "FAliPrdITop",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 0.5,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.0.36"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.t6-c4m1.large"
+    },
+    {
+      "id": "i-uf6832vpxpb3vu7e5fay",
+      "name": "FAliPrdBigDataKafka01",
+      "projectId": "rg-aekzlfmj34nhhci",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.4.252"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.sn1ne.xlarge"
+    },
+    {
+      "id": "i-uf6eyk1if5gahpgr59a7",
+      "name": "FAliPrdMsgCanal01-tcp",
+      "projectId": "rg-aek2myyrhxhjjgi",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.4.251"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.hfc5.xlarge"
+    },
+    {
+      "id": "i-uf69cx17f2yxd0f1tw5z",
+      "name": "FAliPrdMsgES01",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.5.34"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-e",
+      "instanceType": "ecs.c5.large"
+    },
+    {
+      "id": "i-uf66vqwz8bt1p0sqtuqz",
+      "name": "FAliPrdNgx01",
+      "projectId": "",
+      "cpu": 1,
+      "memoryGiB": 0.5,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.179.5.33"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-e",
+      "instanceType": "ecs.t5-lc2m1.nano"
+    },
+    {
+      "id": "i-uf6e694cocz8x0k8810v",
+      "name": "FAliPRDELK01",
+      "projectId": "",
+      "cpu": 8,
+      "memoryGiB": 32.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.4.247"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.sn2ne.2xlarge"
+    },
+    {
+      "id": "i-uf62yqg7jdyxfjqbwd6c",
+      "name": "FAliprdzk01",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.179.4.245"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.sn1ne.large"
+    },
+    {
+      "id": "i-uf6gddt5dm84ou8n95zh",
+      "name": "FAliZSPrdDFS01",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.179.4.244"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.sn1ne.large"
+    },
+    {
+      "id": "i-uf6du66x6w07yz1uyg1r",
+      "name": "FAliPubFileSystem",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 2.0,
+      "os": "Windows Server  2016 数据中心版 64位中文版",
+      "privateIps": [
+        "10.179.1.229"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-e",
+      "instanceType": "ecs.t6-c1m1.large"
+    },
+    {
+      "id": "i-uf66zhxrqy9wk5mtru3x",
+      "name": "FAliSitFastFDFS",
+      "projectId": "",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "Ubuntu  16.04 64位",
+      "privateIps": [
+        "10.179.1.228"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "test"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-e",
+      "instanceType": "ecs.s6-c1m1.small"
+    },
+    {
+      "id": "i-uf61yrbvx80icndw2isw",
+      "name": "Fyh-Prod-前端-node",
+      "projectId": "",
+      "cpu": 1,
+      "memoryGiB": 2.0,
+      "os": "Ubuntu  16.04 64位",
+      "privateIps": [
+        "10.179.2.139"
+      ],
+      "publicIps": [],
+      "tags": {
+        "复游会": "test",
+        "复游会-前端": "nodejs",
+        "acs:ecs:plugin/ACS-ECS-WorkbenchSshLoginDiagnostic": "true"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.t5-lc1m2.small"
+    },
+    {
+      "id": "i-uf69ipfjhle3ew5fgz1k",
+      "name": "FAliSitELK01",
+      "projectId": "",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.1.227"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "test"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-e",
+      "instanceType": "ecs.c5.xlarge"
+    },
+    {
+      "id": "i-uf6cc7pels0fmom5jk1y",
+      "name": "FAliSitJenkins01",
+      "projectId": "",
+      "cpu": 8,
+      "memoryGiB": 16.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.1.226"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-e",
+      "instanceType": "ecs.c6.2xlarge"
+    },
+    {
+      "id": "i-uf63nt8luawjxryqvlgq",
+      "name": "FAliSitPub01",
+      "projectId": "rg-aek2eecohzqbrdi",
+      "cpu": 12,
+      "memoryGiB": 48.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.179.1.224"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "test",
+        "acs:ecs:plugin/ACS-ECS-WorkbenchSshLoginDiagnostic": "true"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-e",
+      "instanceType": "ecs.hfg5.3xlarge"
+    },
+    {
+      "id": "i-uf6dfzpgl8j1k9he3edk",
+      "name": "FAliPrdFoski02",
+      "projectId": "rg-acfmwvwagoicztq",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.2 64位",
+      "privateIps": [
+        "10.30.232.97"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf65o3er42o44n66ttsc",
+      "name": "FAliPrdPayment02",
+      "projectId": "rg-aekzzlovnwhgwvi",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.30.232.96"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf6237a4x522ccfnlm7c",
+      "name": "FAliPrdFhotoJob",
+      "projectId": "rg-aek2exr4md45say",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.80.224.115"
+      ],
+      "publicIps": [
+        "139.196.198.222"
+      ],
+      "tags": {
+        "warn": "long",
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf6hi84r65a2gysnifu1",
+      "name": "FAliPrdFsopMid",
+      "projectId": "",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.30.84.152"
+      ],
+      "publicIps": [
+        "47.102.151.250"
+      ],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf6hbxq1arw2zfq7d9ki",
+      "name": "FAliPrdFsopFront01",
+      "projectId": "",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.25.36.38"
+      ],
+      "publicIps": [
+        "139.224.128.106"
+      ],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.n1.large"
+    },
+    {
+      "id": "i-uf67y9qoykzxxkwm0eps",
+      "name": "FAliPRDFSOP",
+      "projectId": "",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.30.89.83"
+      ],
+      "publicIps": [
+        "47.103.3.19"
+      ],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf6d1tuijx3yuhe5tzoc",
+      "name": "FAliPrdFoski-经典nacos",
+      "projectId": "rg-aekzzlovnwhgwvi",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.81.129.12"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf6djn7eml2s04dxp2cr",
+      "name": "FAliTestFoski",
+      "projectId": "rg-acfmwvwagoicztq",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.29.28.167"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "test"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf624yc7rx8m0hhfqvdh",
+      "name": "FAliPrdB21",
+      "projectId": "rg-acfmwvwagoicztq",
+      "cpu": 1,
+      "memoryGiB": 0.5,
+      "os": "CentOS  7.0 64位",
+      "privateIps": [
+        "10.25.125.110"
+      ],
+      "publicIps": [
+        "139.196.86.62"
+      ],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.t5-lc2m1.nano"
+    },
+    {
+      "id": "i-uf649rs5eqo75hrcgdow",
+      "name": "FAliPrdFolidayPayment01",
+      "projectId": "rg-aekzzlovnwhgwvi",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.30.232.104"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf62q56mzxz7qiw5f5bw",
+      "name": "FAliPrdFolidayBooking02",
+      "projectId": "rg-acfmwvwagoicztq",
+      "cpu": 1,
+      "memoryGiB": 2.0,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.31.205.147"
+      ],
+      "publicIps": [
+        "139.196.139.187"
+      ],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.n4.small"
+    },
+    {
+      "id": "i-uf65k6t28krtm13nqtg0",
+      "name": "FAliPrdFolidayBooking01",
+      "projectId": "rg-acfmwvwagoicztq",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.30.232.101"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf62y4x28slnrk9tdydg",
+      "name": "FAliProdFolidayDistSale02",
+      "projectId": "",
+      "cpu": 1,
+      "memoryGiB": 2.0,
+      "os": "Ubuntu  16.04 64位",
+      "privateIps": [
+        "10.29.27.129"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.n1.small"
+    },
+    {
+      "id": "i-uf62lzcxbfkjv3hnzexf",
+      "name": "FAliPrdAliApp04-有个20年的进程",
+      "projectId": "rg-aekzzlovnwhgwvi",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.81.128.198"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf69lmwvr1f2vhkhj990",
+      "name": "FAliTestFotourTims",
+      "projectId": "rg-acfmwvwagoicztq",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.6 64位",
+      "privateIps": [
+        "10.29.28.166"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "test"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf69fctagto56d28lp6b",
+      "name": "FAliPrdCoupon01",
+      "projectId": "rg-aekzzlovnwhgwvi",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.2 64位",
+      "privateIps": [
+        "10.30.232.99"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf6ico2f9t6bs64u1fyu",
+      "name": "FCoupon01-不能关闭-config",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.2 64位",
+      "privateIps": [
+        "10.25.20.204"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "test"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.n1.medium"
+    },
+    {
+      "id": "i-uf657deexsat4vo8q0dy",
+      "name": "FAliPrdFolidayJDNginx01",
+      "projectId": "rg-acfmwvwagoicztq",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "Ubuntu  16.04 64位",
+      "privateIps": [
+        "10.30.88.87"
+      ],
+      "publicIps": [
+        "47.102.85.147"
+      ],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1ne.xlarge"
+    },
+    {
+      "id": "i-uf6ifm754y5o83lny74m",
+      "name": "FAliTestSCRM02",
+      "projectId": "",
+      "cpu": 1,
+      "memoryGiB": 2.0,
+      "os": "CentOS  7.2 64位",
+      "privateIps": [
+        "10.29.25.2"
+      ],
+      "publicIps": [
+        "106.14.38.18"
+      ],
+      "tags": {
+        "env": "test",
+        "app1": "mall"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.n4.small"
+    },
+    {
+      "id": "i-uf63powrbozmoayv1ec5",
+      "name": "FAliPrdB2B2C01",
+      "projectId": "",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.2 64位",
+      "privateIps": [
+        "10.30.85.241"
+      ],
+      "publicIps": [
+        "106.15.55.13"
+      ],
+      "tags": {
+        "app1": "后端",
+        "env": "prod",
+        "acs:ecs:plugin/ACS-ECS-WorkbenchSshLoginDiagnostic": "true"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.sn1ne.xlarge"
+    },
+    {
+      "id": "i-uf63wee169jhrosy48ip",
+      "name": "FAliTestPub01",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.2 64位",
+      "privateIps": [
+        "10.81.102.60"
+      ],
+      "publicIps": [
+        "101.132.27.104"
+      ],
+      "tags": {
+        "env": "test",
+        "app": "photo"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.n1.medium"
+    },
+    {
+      "id": "i-uf6gbw3x7wx8o0yuyvsp",
+      "name": "FAliTestSCRM01",
+      "projectId": "",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.30.232.102"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "test"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf63dtcii2ez4sbg0xfd",
+      "name": "FAliPrdFhotoJob02",
+      "projectId": "rg-aek2exr4md45say",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.30.85.223"
+      ],
+      "publicIps": [
+        "106.15.54.149"
+      ],
+      "tags": {
+        "warn": "long",
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf6dhulytd0ttjld5a6k",
+      "name": "FAliPrdFhotoJob01",
+      "projectId": "rg-aek2exr4md45say",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.2 64位",
+      "privateIps": [
+        "10.25.42.242"
+      ],
+      "publicIps": [
+        "139.196.237.207"
+      ],
+      "tags": {
+        "warn": "long",
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf62dcog2gppom9gcopb",
+      "name": "FAliPrdTims02",
+      "projectId": "",
+      "cpu": 1,
+      "memoryGiB": 0.5,
+      "os": "Ubuntu  16.04 64位",
+      "privateIps": [
+        "10.27.145.47"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.t5-lc2m1.nano"
+    },
+    {
+      "id": "i-uf60l85kxuwt8ds7q91t",
+      "name": "FAliPrdB2B2C02",
+      "projectId": "",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.2 64位",
+      "privateIps": [
+        "10.81.101.212"
+      ],
+      "publicIps": [
+        "47.100.81.213"
+      ],
+      "tags": {
+        "app1": "前端",
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.n1.large"
+    },
+    {
+      "id": "i-uf64ame764n8tbnoj4ll",
+      "name": "FAliTestB2B2C01--测试环境",
+      "projectId": "",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.2 64位",
+      "privateIps": [
+        "10.81.100.191"
+      ],
+      "publicIps": [
+        "106.15.139.40"
+      ],
+      "tags": {
+        "env": "test"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.n1.medium"
+    },
+    {
+      "id": "i-uf6g06p5b128dfbrg5xc",
+      "name": "FAliPrdTims01",
+      "projectId": "",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.2 64位",
+      "privateIps": [
+        "10.30.84.48"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf6a0lysmwcu6l386ypv",
+      "name": "FAliPrdFup",
+      "projectId": "",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.2 64位",
+      "privateIps": [
+        "10.30.232.103"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf6bb7x0sjnx8qb12alg",
+      "name": "FAliPrdFomallEquity",
+      "projectId": "rg-aekzzlovnwhgwvi",
+      "cpu": 1,
+      "memoryGiB": 1.0,
+      "os": "CentOS  7.4 64位",
+      "privateIps": [
+        "10.30.233.24"
+      ],
+      "publicIps": [
+        "47.100.137.59"
+      ],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-a",
+      "instanceType": "ecs.n1.tiny"
+    },
+    {
+      "id": "i-uf6dfhkfl2pfsfrsnby2",
+      "name": "FAliFolidayDistSale01",
+      "projectId": "",
+      "cpu": 1,
+      "memoryGiB": 0.5,
+      "os": "Ubuntu  16.04 64位",
+      "privateIps": [
+        "10.29.24.56"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod",
+        "FAliFolidayDistSale01": ""
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.t5-lc2m1.nano"
+    },
+    {
+      "id": "i-uf61naczachr15d4qqnf",
+      "name": "FAliPrdScrmNginx",
+      "projectId": "rg-aekzzlovnwhgwvi",
+      "cpu": 4,
+      "memoryGiB": 8.0,
+      "os": "CentOS  7.2 64位",
+      "privateIps": [
+        "10.81.129.145"
+      ],
+      "publicIps": [
+        "47.100.77.133"
+      ],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.n4.xlarge"
+    },
+    {
+      "id": "i-uf69j1etvi0xqdhbh7ox",
+      "name": "FAliScrmProduct02",
+      "projectId": "rg-aekzzlovnwhgwvi",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.2 64位",
+      "privateIps": [
+        "10.27.142.242"
+      ],
+      "publicIps": [],
+      "tags": {
+        "app1": "老积分商城",
+        "env": "prod",
+        "monitorcpu": "60"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.c5.large"
+    },
+    {
+      "id": "i-uf69pf0xgaiyopcf7q48",
+      "name": "Foliday-DevEnv-01",
+      "projectId": "",
+      "cpu": 1,
+      "memoryGiB": 0.5,
+      "os": "CentOS  7.0 64位",
+      "privateIps": [
+        "10.179.2.180"
+      ],
+      "publicIps": [],
+      "tags": {
+        "env": "prod"
+      },
+      "status": "Stopped",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-b",
+      "instanceType": "ecs.t5-lc2m1.nano"
+    },
+    {
+      "id": "i-uf60yj8gr0eur9j3foi5",
+      "name": "FAliPrdFotourH5",
+      "projectId": "rg-aek2exr4md45say",
+      "cpu": 2,
+      "memoryGiB": 4.0,
+      "os": "CentOS  7.3 64位",
+      "privateIps": [
+        "10.27.163.181"
+      ],
+      "publicIps": [
+        "106.14.76.19"
+      ],
+      "tags": {
+        "env": "prod",
+        "monitorcpu": "60",
+        "app": "photo"
+      },
+      "status": "Running",
+      "region": "cn-shanghai",
+      "zone": "cn-shanghai-f",
+      "instanceType": "ecs.c5.large"
+    }
+  ]
+}
