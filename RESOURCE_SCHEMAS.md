@@ -443,7 +443,7 @@
 
 ## 7. CLB / SLB
 
-> 当前 `lib/clb-snapshot.json` 是空占位；以下样本来自 `slb-export-cn-shanghai/20260914-145141/slb-all.json` 经 `normalize_clb()` 规范化后的结果。
+> 当前 `lib/clb-snapshot.json` 是空占位；以下样本来自一次 CLB 控制台导出经 `normalize_clb()` 规范化后的结果。
 
 ### 根对象
 
@@ -589,6 +589,7 @@
 | `processStatus` | `string` | 是 | complete / partial / failed / not_collected |
 | `processes` | `Process[]` | 是 | 非系统进程 |
 | `excludedSystemProcesses` | `number?` | 条件 | 排除的系统进程行数 |
+| `appPorts` | `AppPort[]` | 是 | 应用监听端口，按 (应用名, 端口) 归并；未采集或无应用端口为空数组 |
 | `nginxStatus` | `string` | 是 | complete / partial / failed / not_running 等 |
 | `nginxRoutes` | `Route[]` | 是 | 静态解析出的 Nginx 路由 |
 | `configurationCount` | `number?` | 条件 | 原始配置文件数 |
@@ -608,6 +609,16 @@
 | `startedAt` | `string` | 是 | UTC ISO-8601 启动时间 |
 | `elapsedSeconds` | `number` | 是 | 采集时已运行秒数 |
 | `command` | `string` | 是 | 完整命令；敏感参数已脱敏 |
+
+### `AppPort`
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---:|---|
+| `app` | `string` | 是 | 应用名；Java 取 `-Dappid` / `-Dspring.application.name` / jar 名，其他取 `kind` |
+| `kind` | `string` | 是 | 采集器识别的进程类型（Nginx / Java / Redis ...） |
+| `port` | `number` | 是 | 监听端口 |
+| `addresses` | `string[]` | 是 | 绑定地址（去括号；`*` 表示全部接口） |
+| `pids` | `number[]` | 是 | 占用该端口的进程 PID |
 
 ### `Route`
 
@@ -671,6 +682,10 @@
       "elapsedSeconds": 172800,
       "command": "nginx: master process /usr/sbin/nginx -c /etc/nginx/nginx.conf"
     }],
+    "appPorts": [
+      { "app": "Nginx", "kind": "Nginx", "port": 80, "addresses": ["0.0.0.0"], "pids": [1234] },
+      { "app": "fosun_cashier", "kind": "Java", "port": 7084, "addresses": ["::"], "pids": [384] }
+    ],
     "nginxStatus": "complete",
     "nginxRoutes": [{
       "domains": ["api.example.internal"],

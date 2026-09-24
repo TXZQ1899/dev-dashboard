@@ -1,6 +1,7 @@
 export type Process = { pid: number; ppid: number; user: string; name: string; kind: string; startedAt: string; elapsedSeconds: number; command: string };
 export type Route = { domains: string[]; listen: string[]; uri: string; directive: string; target: string; upstream: string; instance?: string; backends: {host: string; port: string | null; resolution: string}[] };
-export type Inspection = { sudoStatus?: string; configurationCount?: number; configurationVersion?: string; checkedAt: string; loginStatus: string; reason: string; account?: string; processStatus: string; processes: Process[]; nginxStatus: string; nginxRoutes: Route[]; warnings: string[]; attempts?: {account: string; reason: string}[] };
+export type AppPort = { app: string; kind: string; port: number; addresses: string[]; pids: number[] };
+export type Inspection = { sudoStatus?: string; configurationCount?: number; configurationVersion?: string; checkedAt: string; loginStatus: string; reason: string; account?: string; processStatus: string; processes: Process[]; appPorts?: AppPort[]; nginxStatus: string; nginxRoutes: Route[]; warnings: string[]; attempts?: {account: string; reason: string}[] };
 export type Asset = { id: string; ip: string; hostname: string; inspection?: Inspection };
 export const processTypes = ['全部进程','Tomcat','Java Jar','其他 Java','Nginx','Kafka','Node','Redis','MySQL','PostgreSQL','Python','其他进程'] as const;
 export type ProcessType = typeof processTypes[number];

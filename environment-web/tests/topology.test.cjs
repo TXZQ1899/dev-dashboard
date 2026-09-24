@@ -111,3 +111,62 @@ test('validator catches broken graph integrity and ambiguous count drift', async
   for (const code of ['DUPLICATE_NODE_ID', 'DUPLICATE_EDGE_ID', 'MISSING_EDGE_NODE', 'INVALID_ENDPOINT_FORMAT', 'DEPLOYMENT_WITHOUT_ENDPOINT', 'EDGE_WITHOUT_EVIDENCE', 'AMBIGUOUS_EDGE_COUNT_MISMATCH']) assert.ok(codes.has(code), code);
   assert.equal(validation.valid, false);
 });
+
+test('appPorts enrich existing endpoints and create tcp endpoints with ON_HOST', async () => {
+  const { buildTopology } = await import('../lib/topology/topology-builder.ts');
+  const input = snapshotInput();
+  input.ecs = { fetchedAt: '2026-09-07T00:00:00Z', instances: [{ id: 'i-1', name: 'h', privateIps: ['10.58.9.217'], publicIps: [], status: 'Running', region: 'cn', zone: 'a', tags: {} }] };
+  input.jumpserver = {
+    collectedAt: '2026-09-08T00:00:00Z',
+    assets: [{
+      id: 'j-1', hostname: 'app-host', ip: '10.58.9.217',
+      inspection: { checkedAt: '2026-09-08T00:00:00Z', appPorts: [
+        { app: 'fosun_cashier', kind: 'Java', port: 7084, addresses: ['::'], pids: [384] },
+        { app: 'Nginx', kind: 'Nginx', port: 8080, addresses: ['0.0.0.0'], pids: [10] },
+      ] },
+    }],
+  };
+  // DevOps deployment on the same ip:port -> endpoint:10.58.9.217:7084:unknown exists to enrich.
+  input.devops = { collectedAt: '2026-09-07T00:00:00Z', apps: [{ id: 'cashier', name: 'fosun-cashier', http: '/x', port: '7084', repository: 'https://example.com/g/c.git', envs: { TEST: [{ ip: '10.58.9.217', deploy: 'd1', status: '成功', port: '7084' }] } }] };
+  const topology = buildTopology(input, '2026-09-20T00:00:00.000Z');
+
+  // Enrichment: the devops :unknown endpoint carries the runtime app identity + jumpserver evidence.
+  const enriched = topology.nodes.find(n => n.id === 'endpoint:10.58.9.217:7084:unknown');
+  assert.ok(enriched, 'devops endpoint exists at ip:port');
+  assert.equal(enriched.attributes.runtimeApp, 'fosun_cashier');
+  assert.equal(enriched.attributes.runtimeKind, 'Java');
+  assert.deepEqual(enriched.attributes.runtimePids, [384]);
+  assert.ok(enriched.attributes.discoveredBy.includes('jumpserver'));
+  assert.ok(enriched.evidence.some(e => e.source === 'jumpserver' && e.detail.includes('fosun_cashier')));
+
+  // Creation: no prior endpoint at :8080 -> a concrete :tcp endpoint is created.
+  const tcp = topology.nodes.find(n => n.id === 'endpoint:10.58.9.217:8080:tcp');
+  assert.ok(tcp, 'new tcp endpoint created when no existing endpoint at ip:port');
+  assert.equal(tcp.attributes.runtimeApp, 'Nginx');
+  assert.equal(tcp.identity.protocol, 'tcp');
+  const onHost = topology.edges.find(e => e.type === 'ON_HOST' && e.from === tcp.id && e.to === 'host:10.58.9.217');
+  assert.ok(onHost, 'ON_HOST edge created for the new tcp endpoint');
+  assert.equal(onHost.confidence, 'EXACT');
+  assert.ok(onHost.evidence.some(e => e.source === 'jumpserver'));
+
+  // The enriched endpoint keeps its existing ON_HOST edge (no duplicate).
+  const onHostEnriched = topology.edges.filter(e => e.type === 'ON_HOST' && e.from === enriched.id && e.to === 'host:10.58.9.217');
+  assert.equal(onHostEnriched.length, 1);
+});
+
+test('appPorts skips assets without a valid IP and leaves foreign ip:port untouched', async () => {
+  const { buildTopology } = await import('../lib/topology/topology-builder.ts');
+  const input = snapshotInput();
+  input.ecs = { fetchedAt: '2026-09-07T00:00:00Z', instances: [{ id: 'i-1', name: 'h', privateIps: ['10.58.9.217'], publicIps: [], status: 'Running', region: 'cn', zone: 'a', tags: {} }] };
+  input.devops = { collectedAt: '2026-09-07T00:00:00Z', apps: [] };
+  input.jumpserver = {
+    collectedAt: '2026-09-08T00:00:00Z',
+    assets: [
+      { id: 'j-bad', hostname: 'noip', ip: 'hostname-only', inspection: { checkedAt: '2026-09-08T00:00:00Z', appPorts: [{ app: 'X', kind: 'Java', port: 1, addresses: ['*'], pids: [1] }] } },
+      { id: 'j-1', hostname: 'app-host', ip: '10.58.9.217', inspection: { checkedAt: '2026-09-08T00:00:00Z', appPorts: [{ app: 'fosun_cashier', kind: 'Java', port: 7084, addresses: ['::'], pids: [384] }] } },
+    ],
+  };
+  const topology = buildTopology(input, '2026-09-20T00:00:00.000Z');
+  assert.ok(!topology.nodes.some(n => n.id === 'endpoint:hostname-only:1:tcp'));
+  assert.ok(topology.nodes.some(n => n.id === 'endpoint:10.58.9.217:7084:tcp'));
+});

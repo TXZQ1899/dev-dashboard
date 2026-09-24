@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 import { AlertTriangle, Network, Route, Search } from 'lucide-react';
 
 type Kind = 'domain' | 'application' | 'host';
-type Mode = 'chain' | 'paths';
+type Mode = 'chain' | 'paths' | 'request';
 type NodeRef = { id: string; type: string; label?: string; status?: string };
 type Evidence = { source: string; reference?: string; detail?: string; observedAt?: string };
 type EdgeRef = {
@@ -114,6 +114,43 @@ type DomainChain = {
 };
 type ChainPayload = { topology: { id: string; generatedAt: string }; result: DomainChain };
 
+// ---- Request-aware end-to-end trace (staged projection, mirrors request/index.ts) ----
+type RequestStep = {
+  resolver: string;
+  inputNodeIds: string[];
+  outputNodeIds: string[];
+  rule: string;
+  confidence: string;
+  evidence: Evidence[];
+  warnings: string[];
+};
+type RequestNode = NodeRef & {
+  identity?: Record<string, unknown>;
+  attributes?: Record<string, unknown>;
+};
+type RequestPath = {
+  steps: RequestStep[];
+  nodes: RequestNode[];
+  terminalNodeId: string | null;
+  confidence: string;
+  status: 'RESOLVED' | 'PARTIAL' | 'AMBIGUOUS' | 'UNRESOLVED';
+  stoppedAt?: string;
+  reason?: string;
+  warnings: string[];
+};
+type RequestPayload = {
+  topology: { id: string; generatedAt: string };
+  result: {
+    query: {
+      scheme: string; host: string; port: number; path: string;
+      raw?: string; domainOnly?: boolean; method?: string; environment?: string;
+    };
+    paths: RequestPath[];
+    status: RequestPath['status'];
+    warnings: string[];
+  };
+};
+
 const KINDS: [Kind, string][] = [
   ['domain', '域名 Domain'],
   ['application', '应用 Application'],
@@ -149,8 +186,22 @@ function confidenceLabel(value: string) {
 
 const QUERY_MODES: [Mode, string][] = [
   ['chain', '域名落点链路（推荐域名）'],
+  ['request', '请求链路（URL 端到端）'],
   ['paths', '通用路径遍历'],
 ];
+const REQUEST_STATUS_LABELS: Record<string, string> = {
+  RESOLVED: '已解析',
+  PARTIAL: '部分解析',
+  AMBIGUOUS: '存在多条解释',
+  UNRESOLVED: '未解析',
+};
+const REQUEST_STOP_REASONS: Record<string, string> = {
+  'no-resolver-entry': '没有 Resolver 可以继续',
+  'no-candidate': '没有候选目标',
+  'cycle-guard': '环路保护',
+  'max-depth': '达到最大深度',
+  'max-paths': '达到最大路径数',
+};
 const CHAIN_KIND_LABELS: Record<string, string> = {
   proxy: '代理转发',
   external: '外部主机名目标',
@@ -185,6 +236,7 @@ export default function TopologyPathPage() {
   const [maxDepth, setMaxDepth] = useState('8');
   const [data, setData] = useState<Payload | null>(null);
   const [chainData, setChainData] = useState<ChainPayload | null>(null);
+  const [requestData, setRequestData] = useState<RequestPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -192,14 +244,25 @@ export default function TopologyPathPage() {
     setMode(next);
     setData(null);
     setChainData(null);
+    setRequestData(null);
     setError('');
     if (next === 'chain') setKind('domain');
+    // request 模式默认 PRODUCT 环境，避免遍历所有环境导致路径爆炸（maxPaths 提前触发）
+    if (next === 'request' && (!environment || environment === 'GLOBAL')) {
+      setEnvironment('PRODUCT');
+    }
   }
 
   async function search(event: { preventDefault: () => void }) {
     event.preventDefault();
     if (!query.trim()) {
-      setError(mode === 'chain' ? '请输入要查询的域名' : '请输入要查询的域名、应用名或 IP');
+      setError(
+        mode === 'chain'
+          ? '请输入要查询的域名'
+          : mode === 'request'
+            ? '请输入要查询的 URL 或域名'
+            : '请输入要查询的域名、应用名或 IP',
+      );
       return;
     }
     setLoading(true);
@@ -212,7 +275,21 @@ export default function TopologyPathPage() {
         const body = (await response.json()) as ChainPayload & { error?: string };
         if (!response.ok) throw new Error(body.error || '查询失败');
         setData(null);
+        setRequestData(null);
         setChainData(body);
+        return;
+      }
+      if (mode === 'request') {
+        const params = new URLSearchParams({ q: query.trim() });
+        // request 模式必须指定环境，否则遍历所有环境导致路径爆炸；默认 PRODUCT
+        const effectiveEnv = environment && environment !== 'GLOBAL' ? environment : 'PRODUCT';
+        params.set('env', effectiveEnv);
+        const response = await fetch('/api/topology/request-path?' + params.toString(), { cache: 'no-store' });
+        const body = (await response.json()) as RequestPayload & { error?: string };
+        if (!response.ok) throw new Error(body.error || '查询失败');
+        setData(null);
+        setChainData(null);
+        setRequestData(body);
         return;
       }
       const params = new URLSearchParams({ kind, q: query.trim(), maxDepth });
@@ -222,10 +299,12 @@ export default function TopologyPathPage() {
       const body = (await response.json()) as Payload & { error?: string };
       if (!response.ok) throw new Error(body.error || '查询失败');
       setChainData(null);
+      setRequestData(null);
       setData(body);
     } catch (e) {
       setData(null);
       setChainData(null);
+      setRequestData(null);
       setError(e instanceof Error ? e.message : '查询失败');
     } finally {
       setLoading(false);
@@ -234,6 +313,7 @@ export default function TopologyPathPage() {
 
   const result = data?.result;
   const chain = chainData?.result;
+  const request = requestData?.result;
 
   return (
     <Shell active="topology">
@@ -266,7 +346,7 @@ export default function TopologyPathPage() {
             <select
               aria-label="查询起点类型"
               value={kind}
-              disabled={mode === 'chain'}
+              disabled={mode !== 'paths'}
               onChange={(e) => setKind(e.target.value as Kind)}
             >
               {KINDS.map(([value, label]) => (
@@ -277,8 +357,8 @@ export default function TopologyPathPage() {
             </select>
             <Input
               type="search"
-              aria-label={mode === 'chain' ? '域名' : '域名、应用名或 IP'}
-              placeholder={mode === 'chain' ? 'apis.folidaymall.com' : PLACEHOLDERS[kind]}
+              aria-label={mode === 'chain' ? '域名' : mode === 'request' ? 'URL 或域名' : '域名、应用名或 IP'}
+              placeholder={mode === 'chain' ? 'apis.folidaymall.com' : mode === 'request' ? 'https://api.example.com/order/123' : PLACEHOLDERS[kind]}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
@@ -301,7 +381,7 @@ export default function TopologyPathPage() {
               value={environment}
               onChange={(e) => setEnvironment(e.target.value)}
             >
-              {ENVIRONMENTS.map((value) => (
+              {ENVIRONMENTS.filter((value) => mode !== 'request' || value !== '').map((value) => (
                 <option key={value || 'all'} value={value}>
                   {value ? `环境：${value}` : '环境：全部'}
                 </option>
@@ -322,13 +402,15 @@ export default function TopologyPathPage() {
             )}
             <Button type="submit" disabled={loading}>
               <Search />
-              {loading ? '查询中…' : mode === 'chain' ? '查询链路' : '查询路径'}
+              {loading ? '查询中…' : mode === 'chain' ? '查询链路' : mode === 'request' ? '解析请求' : '查询路径'}
             </Button>
           </form>
           <p className="settings-hint">
             {mode === 'chain'
               ? '域名落点链路按 5 层展开：DNS → EIP（NAT/ECS/CLB）→ Nginx → Upstream 后端 IP+端口 → DevOps 应用；后端严格按 IP+端口匹配，同机其他端口只作为排查提示，不构成匹配。'
-              : '未指定目标类型时按默认方向查询：域名 → 应用、应用 → 主机、主机 → 应用。GLOBAL 连边在任何环境过滤下都会保留，环境过滤只排除 TEST / PRODUCT / SIMULATION 专属连边。'}
+              : mode === 'request'
+                ? '请求链路按完整 URL 端到端解析，按 5 层落点展示：DNS 解析 → 入口绑定 (NAT) → CLB 端口转发 → Nginx 转发规则 → 后端落点 (IP+端口) 与应用。必须选择环境（默认 PRODUCT），否则跨环境遍历会命中路径上限；仅输入域名时无法匹配 location 路由。'
+                : '未指定目标类型时按默认方向查询：域名 → 应用、应用 → 主机、主机 → 应用。GLOBAL 连边在任何环境过滤下都会保留，环境过滤只排除 TEST / PRODUCT / SIMULATION 专属连边。'}
           </p>
           {error && (
             <p role="alert" className="settings-error">
@@ -336,6 +418,10 @@ export default function TopologyPathPage() {
             </p>
           )}
         </section>
+
+        {request && requestData && (
+          <RequestView request={request} topology={requestData.topology} />
+        )}
 
         {chain && chainData && (
           <ChainView chain={chain} topology={chainData.topology} />
@@ -450,6 +536,230 @@ export default function TopologyPathPage() {
         )}
       </main>
     </Shell>
+  );
+}
+
+function RequestView({ request, topology }: { request: RequestPayload['result']; topology: RequestPayload['topology'] }) {
+  const q = request.query;
+  const input = q.raw || `${q.scheme}://${q.host}:${q.port}${q.path}`;
+
+  // Collect all nodes from all paths for cross-path lookup.
+  const nodeMap = new Map<string, RequestNode>();
+  for (const path of request.paths) {
+    for (const node of path.nodes) {
+      if (!nodeMap.has(node.id)) nodeMap.set(node.id, node);
+    }
+  }
+
+  // Primary path: most steps (furthest progress), then highest confidence.
+  const primary = [...request.paths].sort((a, b) => {
+    if (b.steps.length !== a.steps.length) return b.steps.length - a.steps.length;
+    const rank: Record<string, number> = { EXACT: 3, INFERRED: 2, AMBIGUOUS: 1, UNKNOWN: 0 };
+    return (rank[b.confidence] ?? 0) - (rank[a.confidence] ?? 0);
+  })[0];
+
+  const statusLabel = REQUEST_STATUS_LABELS[request.status] ?? request.status;
+  const stopNode = primary && !primary.terminalNodeId && primary.stoppedAt ? nodeMap.get(primary.stoppedAt) : null;
+
+  // Helper accessors
+  const nodeById = (id: string) => nodeMap.get(id);
+  const out0 = (step: RequestStep | undefined) => step ? nodeById(step.outputNodeIds[0]) : undefined;
+  const in0 = (step: RequestStep | undefined) => step ? nodeById(step.inputNodeIds[0]) : undefined;
+  const str = (v: unknown, fallback = '?') => {
+    if (typeof v === 'string') return v;
+    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+    return fallback;
+  };
+  const ipOf = (node: RequestNode | undefined) => str(node?.identity?.ip);
+  const portOf = (node: RequestNode | undefined) => {
+    const port = node?.identity?.port;
+    if (!port || port === 'unknown') return '';
+    return `:${str(port)}`;
+  };
+  const hostLabel = (node: RequestNode | undefined) =>
+    (node?.attributes?.jumpserver as { hostname?: string } | undefined)?.hostname ?? ipOf(node);
+
+  const steps = primary?.steps ?? [];
+  const find = (predicate: (s: RequestStep) => boolean) => steps.find(predicate);
+
+  // Layer steps
+  const dnsEntry = find(s => s.resolver === 'DNSResolver' && s.rule === 'dns:entry');
+  const dnsRecord = find(s => s.resolver === 'DNSResolver' && s.rule === 'dns:records');
+  const natExt = find(s => s.resolver === 'NatResolver' && s.rule === 'nat:external-endpoint');
+  const natDnat = find(s => s.resolver === 'NatResolver' && s.rule === 'nat:dnat');
+  const clbSteps = steps.filter(s => s.resolver === 'ClbResolver');
+  const nginxSteps = steps.filter(s => s.resolver === 'NginxResolver');
+  const nginxHostStep = nginxSteps.find(s => s.rule === 'nginx:host');
+  const nginxRouteSteps = nginxSteps.filter(s => s.rule.startsWith('nginx:route'));
+  const nginxUpstreamStep = nginxSteps.find(s => s.rule === 'nginx:upstream');
+  const nginxBackendStep = nginxSteps.find(s => s.rule === 'nginx:backend' || s.rule === 'nginx:backend-derived');
+  const deploySteps = steps.filter(s => s.resolver === 'DeploymentResolver');
+  const repoStep = steps.find(s => s.resolver === 'RepositoryResolver');
+
+  // Key warnings (primary path only, skip noise + already-shown)
+  const skipPatterns = ['evidence truncated', 'Step evidence truncated', 'No rule on listener', 'falling back to the default', 'No nginx route on host', 'falling back to port-agnostic', 'equally match host', 'Resolver(s)'];
+  const keyWarnings = (primary?.warnings ?? []).filter((w, i, arr) => arr.indexOf(w) === i && !skipPatterns.some(p => w.includes(p)));
+
+  return (
+    <>
+      <section className="panel" aria-live="polite">
+        <div className="panel-title">
+          <div>
+            <h2>
+              <Route size={17} /> 请求链路{' '}
+              {request.paths.length > 1 && <span className="count-pill">{request.paths.length} 条路径，已取最远</span>}
+            </h2>
+            <p>
+              <code>{input}</code>
+              {q.environment ? ` · 环境 ${q.environment}` : ' · 全部环境'}
+            </p>
+          </div>
+          <span className="subtle-tag">{statusLabel}</span>
+        </div>
+        <p className="settings-hint">
+          Topology 版本：{topology.id} · 生成时间：
+          {new Date(topology.generatedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}
+        </p>
+        {stopNode && (
+          <p className="settings-hint">
+            停止于 {hostLabel(stopNode) || stopNode.id}
+            {primary?.reason ? `（${REQUEST_STOP_REASONS[primary.reason] ?? primary.reason}）` : ''}
+          </p>
+        )}
+      </section>
+
+      {/* ① DNS 解析 */}
+      {(dnsEntry || dnsRecord) && (
+        <section className="panel">
+          <h2>① DNS 解析</h2>
+          <p className="text-sm">
+            {dnsEntry ? str(out0(dnsEntry)?.identity?.name, q.host) : q.host}
+            {dnsRecord && out0(dnsRecord) && (
+              <> → <code>{ipOf(out0(dnsRecord))}</code> [{out0(dnsRecord)!.type}] ({confidenceLabel(dnsRecord.confidence)})</>
+            )}
+          </p>
+        </section>
+      )}
+
+      {/* ② 入口绑定 (NAT) */}
+      {(natExt || natDnat) && (
+        <section className="panel">
+          <h2>② 入口绑定 (NAT)</h2>
+          <div className="text-sm space-y-1">
+            {natExt && (
+              <p>EIP <code>{ipOf(in0(natExt))}</code> → <code>{ipOf(out0(natExt))}{portOf(out0(natExt))}</code></p>
+            )}
+            {natDnat && (
+              <p>DNAT <code>{ipOf(in0(natDnat))}{portOf(in0(natDnat))}</code> → <code>{ipOf(out0(natDnat))}{portOf(out0(natDnat))}</code></p>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* ③ CLB 端口转发 */}
+      {clbSteps.length > 0 && (
+        <section className="panel">
+          <h2>③ CLB 端口转发</h2>
+          <div className="text-sm space-y-1">
+            {(() => {
+              const clbStep = clbSteps.find(s => s.rule === 'clb:endpoint-ip');
+              const listenerStep = clbSteps.find(s => s.rule === 'clb:listener');
+              const groupStep = clbSteps.find(s => s.rule === 'clb:default-group' || s.rule === 'clb:rule');
+              const backendStep = clbSteps.find(s => s.rule === 'clb:backend');
+              return (
+                <>
+                  {clbStep && out0(clbStep) && <p>CLB {out0(clbStep)!.label ?? out0(clbStep)!.id}</p>}
+                  {listenerStep && out0(listenerStep) && (
+                    <p>listener {str(out0(listenerStep)!.identity?.protocol)}:{str(out0(listenerStep)!.identity?.port)}</p>
+                  )}
+                  {groupStep && out0(groupStep) && (
+                    <p>→ {str(out0(groupStep)!.identity?.serverGroupId, out0(groupStep)!.label ?? '?')}{groupStep.rule === 'clb:default-group' ? ' (默认服务器组)' : ''}</p>
+                  )}
+                  {backendStep && out0(backendStep) && (
+                    <p>→ <code>{ipOf(out0(backendStep))}{portOf(out0(backendStep))}</code></p>
+                  )}
+                  {groupStep?.warnings.find(w => w.includes('No rule on listener') || w.includes('falling back')) && (
+                    <p className="text-yellow-600">⚠ {groupStep.warnings.find(w => w.includes('No rule on listener') || w.includes('falling back'))}</p>
+                  )}
+                </>
+              );
+            })()}
+          </div>
+        </section>
+      )}
+
+      {/* ④ Nginx 转发规则 */}
+      {(nginxHostStep || nginxRouteSteps.length > 0) && (
+        <section className="panel">
+          <h2>④ Nginx 转发规则</h2>
+          <div className="text-sm space-y-1">
+            {nginxHostStep && out0(nginxHostStep) && (
+              <p>主机 {hostLabel(out0(nginxHostStep))} ({confidenceLabel(nginxHostStep.confidence)})</p>
+            )}
+            {nginxRouteSteps.length > 0 && nginxRouteSteps[0].outputNodeIds.map(routeId => {
+              const route = nodeById(routeId);
+              if (!route) return null;
+              const domains = (route.identity?.domains as string[]) ?? [];
+              const uri = (route.identity?.uri as string) ?? '/';
+              const target = (route.identity?.target as string) ?? '';
+              return (
+                <p key={routeId}>
+                  server_name {domains.join(', ') || '(默认)'} · location {uri}{' '}
+                  {target ? <>→ <code>{target}</code></> : '(无 proxy_pass)'}
+                </p>
+              );
+            })}
+            {nginxRouteSteps.length > 0 && nginxRouteSteps[0].outputNodeIds.length > 1 && (
+              <p className="text-yellow-600">
+                ({nginxRouteSteps[0].outputNodeIds.length} 条 route 匹配，{confidenceLabel(nginxRouteSteps[0].confidence)})
+              </p>
+            )}
+            {nginxUpstreamStep && out0(nginxUpstreamStep) && (
+              <p>upstream {str(out0(nginxUpstreamStep)!.identity?.name)}</p>
+            )}
+            {nginxRouteSteps.flatMap(s => s.warnings).find(w => w.includes('port-agnostic') || w.includes('falling back to port')) && (
+              <p className="text-yellow-600">
+                ⚠ {nginxRouteSteps.flatMap(s => s.warnings).find(w => w.includes('port-agnostic') || w.includes('falling back to port'))}
+              </p>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* ⑤ 后端落点 */}
+      {(nginxBackendStep || deploySteps.length > 0) && (
+        <section className="panel">
+          <h2>⑤ 后端落点</h2>
+          <div className="text-sm space-y-1">
+            {nginxBackendStep && out0(nginxBackendStep) && (
+              <p>→ <code>{ipOf(out0(nginxBackendStep))}{portOf(out0(nginxBackendStep))}</code></p>
+            )}
+            {deploySteps.flatMap(s => s.outputNodeIds).map(id => {
+              const node = nodeById(id);
+              if (node?.type !== 'APPLICATION') return null;
+              return <p key={id}>→ 应用 {node.label} ({str(node.identity?.devopsAppId)})</p>;
+            })}
+            {repoStep && out0(repoStep) && (
+              <p>→ 仓库 {out0(repoStep)!.label ?? str(out0(repoStep)!.identity?.url)}</p>
+            )}
+          </div>
+        </section>
+      )}
+
+      {keyWarnings.length > 0 && (
+        <section className="panel">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <AlertTriangle size={16} />
+            提示
+          </div>
+          <ul className="mt-2 list-disc pl-5 text-sm">
+            {keyWarnings.map((warning) => (
+              <li key={warning}>{warning}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </>
   );
 }
 

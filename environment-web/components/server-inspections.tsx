@@ -59,6 +59,8 @@ function ServerDetails({asset}: {asset: Asset}) {
     </div>
     {!!inspection.warnings?.length&&<p className="text-amber-700">{inspection.warnings.join('；')}</p>}
     {!!inspection.attempts?.length&&<p>连接尝试：{inspection.attempts.map(a=>`${a.account}：${a.reason}`).join('；')}</p>}
+    {!!inspection.appPorts?.length&&<details><summary className="cursor-pointer font-medium">应用监听端口（{inspection.appPorts.length}）</summary>
+      <ul className="text-sm space-y-0.5">{inspection.appPorts.map((p,i)=><li key={i} title={`绑定地址：${p.addresses.join(', ')||'—'}；PID：${p.pids.join(', ')}`}>{p.app}{p.app!==p.kind?`（${p.kind}）`:''}：<code>{p.port}</code></li>)}</ul></details>}
     <details><summary className="cursor-pointer font-medium">Nginx 域名 / URI / Upstream（{inspection.nginxRoutes.length} 条）</summary>
       <div className="overflow-auto max-h-96"><table className="w-full text-sm text-left"><thead><tr>{['实例 / 监听','域名','URI','转发目标','后端 IP / 端口'].map(h=><th className="p-2" key={h}>{h}</th>)}</tr></thead><tbody>
       {inspection.nginxRoutes.map((r,i)=><tr key={i} className="border-t"><td className="p-2">{r.instance}<br/>{r.listen.join(', ')}</td><td className="p-2">{r.domains.join(', ')||'未配置域名'}</td><td className="p-2">{r.uri}</td><td className="p-2 break-all">{r.directive}<br/>{r.target||'无代理目标'}</td><td className="p-2">{r.backends.map((b,j)=><div key={j}>{b.host} / {b.port||'—'}{b.resolution==='hostname'?'（域名，未解析 IP）':b.resolution==='dynamic'?'（动态变量）':b.resolution==='unix'?'（Unix socket）':''}</div>)}</td></tr>)}

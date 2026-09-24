@@ -9,8 +9,11 @@ import {
   ChevronLeft,
   ShieldAlert,
   CircleAlert,
+  CircleHelp,
   Server,
+  TriangleAlert,
   X,
+  Download,
 } from 'lucide-react';
 import { Shell } from '../page';
 import { Button } from '@/components/ui/button';
@@ -43,8 +46,82 @@ import {
   overYearUndeployed,
   repositoryCategory,
   type Env,
+  type App,
 } from '@/lib/inventory';
+import { appHasProcessOnIp, appProcessStatusSummary } from '@/lib/process-comparison';
 type Filter = 'all' | 'single' | 'unknown';
+
+// 环境列文案，页面展示与 CSV 导出共用同一口径。
+function envCellText(a: App, e: Env): string {
+  const s = info(a, e);
+  if (environmentPresent(a, e) === false) return '未配置';
+  if (s.unknown && !s.ips.length) return '待核实';
+  return `${s.ips.length} 台`;
+}
+
+function csvCell(value: string): string {
+  if (value.includes(',') || value.includes('"') || value.includes('\n')) {
+    return '"' + value.replace(/"/g, '""') + '"';
+  }
+  return value;
+}
+
+// 按当前查询/筛选结果导出应用列表，包含页面表格字段、仓库原始地址及应用名旁的告警标识。
+function exportApplicationsCsv(rows: App[], pushEnv: Env | '') {
+  const header = [
+    '应用ID',
+    '应用名称',
+    '仓库类型',
+    '仓库地址',
+    '生产单点',
+    '服务器共用（生产环境）',
+    '进程未发现',
+    '服务器未收录',
+    '待核实环境',
+    ...envs.map((e) => labels[e]),
+    `${pushEnv ? labels[pushEnv] : '全部环境'}最近成功 Push In`,
+    'HTTP 名',
+    '端口号',
+  ];
+  const lines = [header.map(csvCell).join(',')];
+  for (const a of rows) {
+    const processStatus = appProcessStatusSummary(a);
+    const unknownEnvs = envs
+      .filter((e) => info(a, e).unknown)
+      .map((e) => labels[e])
+      .join('、');
+    lines.push(
+      [
+        a.id,
+        a.name,
+        repositoryCategory(a.repository),
+        a.repository || '未提供',
+        info(a, 'PRODUCT').single ? '是' : '否',
+        sharedProductionAppIds.has(a.id) ? '是' : '否',
+        processStatus.hasUnmatched ? '是' : '否',
+        processStatus.hasNotCollected ? '是' : '否',
+        unknownEnvs,
+        ...envs.map((e) => envCellText(a, e)),
+        latestSuccessfulPushIn(a, pushEnv || undefined) || '无成功记录',
+        a.http || '未提供',
+        a.port || '未提供',
+      ]
+        .map(csvCell)
+        .join(','),
+    );
+  }
+  const bom = '\uFEFF';
+  const blob = new Blob([bom + lines.join('\r\n')], {
+    type: 'text/csv;charset=utf-8;',
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'applications.csv';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function repositorySearchValue(value: string) {
   return value
     .replace(/^https?:\/\/gitlab\.dev\.thomascook\.com\.cn/i, 'gitlab.dev.thomascook.com.cn')
@@ -301,9 +378,21 @@ function AppList() {
                     ? ' · 环境数据待核实'
                     : ''}
               </span>
-              <Button variant="ghost" size="sm" onClick={reset}>
-                重置筛选
-              </Button>
+              <div className="result-actions">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => exportApplicationsCsv(filtered, publishEnv)}
+                  disabled={!filtered.length}
+                  aria-label="按当前查询和筛选条件导出应用列表 CSV"
+                >
+                  <Download size={14} />
+                  导出 CSV（{filtered.length}）
+                </Button>
+                <Button variant="ghost" size="sm" onClick={reset}>
+                  重置筛选
+                </Button>
+              </div>
             </div>
             <Table className="app-table">
               <TableHeader>
@@ -322,7 +411,9 @@ function AppList() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {visible.map((a) => (
+                {visible.map((a) => {
+                  const processStatus = appProcessStatusSummary(a);
+                  return (
                   <Fragment key={a.id}>
                     <TableRow
                       id={`app-${a.id}`}
@@ -352,6 +443,32 @@ function AppList() {
                               </TooltipTrigger>
                               <TooltipContent>
                                 服务器共用（生产环境）
+                              </TooltipContent>
+                            </Tooltip>
+                          )}
+                          {processStatus.hasUnmatched && (
+                            <Tooltip>
+                              <TooltipTrigger
+                                className="shared-alert"
+                                aria-label="存在环境未在 JumpServer 进程中发现此应用"
+                              >
+                                <TriangleAlert size={16} />
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                存在环境的服务器已收录但未在 JumpServer 进程中发现此应用
+                              </TooltipContent>
+                            </Tooltip>
+                          )}
+                          {processStatus.hasNotCollected && (
+                            <Tooltip>
+                              <TooltipTrigger
+                                className="shared-alert"
+                                aria-label="存在环境的服务器 IP 未被 JumpServer 收录"
+                              >
+                                <CircleHelp size={16} />
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                存在环境的服务器 IP 未被 JumpServer 收录
                               </TooltipContent>
                             </Tooltip>
                           )}
@@ -390,11 +507,7 @@ function AppList() {
                               ) : (
                                 <ChevronRight />
                               )}
-                              {environmentPresent(a,e) === false
-                                ? '未配置'
-                                : s.unknown && !s.ips.length
-                                ? '待核实'
-                                : `${s.ips.length} 台`}
+                              {envCellText(a, e)}
                               {s.unknown && s.ips.length > 0 && (
                                 <CircleAlert size={12} />
                               )}
@@ -453,6 +566,19 @@ function AppList() {
                                       <TableRow key={`${r.deploy}-${i}`}>
                                         <TableCell>
                                           <code>{r.ip || '未返回 IP'}</code>
+                                          {r.ip && !appHasProcessOnIp(a.name, r.ip) && (
+                                            <Tooltip>
+                                              <TooltipTrigger
+                                                className="process-miss-icon"
+                                                aria-label={`未在 JumpServer 进程中发现 ${a.name}`}
+                                              >
+                                                <TriangleAlert size={14} className="text-red-600" />
+                                              </TooltipTrigger>
+                                              <TooltipContent>
+                                                未在 JumpServer 进程中发现 {a.name}
+                                              </TooltipContent>
+                                            </Tooltip>
+                                          )}
                                         </TableCell>
                                         <TableCell>
                                           {r.port || a.port || '未提供'}
@@ -502,7 +628,8 @@ function AppList() {
                         );
                       })}
                   </Fragment>
-                ))}
+                  );
+                })}
                 {!visible.length && (
                   <TableRow>
                     <TableCell colSpan={8}>

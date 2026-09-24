@@ -177,6 +177,11 @@ export class GraphCollector {
     return this.nodes.has(id);
   }
 
+  /** All nodes built so far, for mid-build inspection (e.g. appPorts enrichment). */
+  getNodes(): TopologyNode[] {
+    return [...this.nodes.values()];
+  }
+
   graph(generatedAt: string): TopologyGraph {
     const nodes = [...this.nodes.values()].sort((a, b) => a.id.localeCompare(b.id));
     const edges = [...this.edges.values()].sort((a, b) => a.id.localeCompare(b.id));

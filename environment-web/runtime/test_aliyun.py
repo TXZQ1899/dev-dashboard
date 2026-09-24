@@ -21,4 +21,33 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(row['listeners'][1]['backendPort'],8080)
         self.assertEqual(row['groups'][0]['servers'][0]['ip'],'10.0.0.1')
 
+    def _instance(self, backend_ports, server_port=None):
+        listeners=[{'protocol':'HTTP','attributes':{'ListenerPort':80,'BackendServerPort':backend_ports[0]}}]
+        if len(backend_ports) > 1:
+            listeners.append({'protocol':'HTTPS','attributes':{'ListenerPort':443,'BackendServerPort':backend_ports[1]}})
+        server={'ServerId':'ecs','ResolvedServerIp':'10.0.0.1','Weight':100}
+        if server_port is not None: server['Port']=server_port
+        return {'attributes':{'LoadBalancerId':'lb','LoadBalancerName':'name','Address':'1.2.3.4','AddressType':'intranet','LoadBalancerStatus':'active',
+                              'BackendServers':{'BackendServer':[server]}},
+                'listeners':listeners,'serverGroups':[]}
+
+    def test_default_group_port_filled_from_unanimous_listener_backend_port(self):
+        data={'complete':True,'collectedAt':'today','region':'cn-shanghai','serverCertificates':{},
+              'instances':[self._instance([80,80])]}
+        groups=normalize_clb(data)['instances'][0]['groups']
+        self.assertEqual(groups[0]['id'],'default')
+        self.assertEqual(groups[0]['servers'][0]['port'],80)
+
+    def test_default_group_port_left_none_when_listeners_disagree(self):
+        data={'complete':True,'collectedAt':'today','region':'cn-shanghai','serverCertificates':{},
+              'instances':[self._instance([80,8443])]}
+        server=normalize_clb(data)['instances'][0]['groups'][0]['servers'][0]
+        self.assertIsNone(server['port'])
+
+    def test_explicit_default_server_port_is_preserved(self):
+        data={'complete':True,'collectedAt':'today','region':'cn-shanghai','serverCertificates':{},
+              'instances':[self._instance([80,80],server_port=8080)]}
+        server=normalize_clb(data)['instances'][0]['groups'][0]['servers'][0]
+        self.assertEqual(server['port'],8080)
+
 if __name__=='__main__':unittest.main()

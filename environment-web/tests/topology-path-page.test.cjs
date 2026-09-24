@@ -53,8 +53,8 @@ test('path explorer page queries the runtime API with kind, query and filters', 
   for (const label of ['查询模式', '查询起点类型', '目标节点类型', '环境过滤', '最大深度']) {
     assert.match(source, new RegExp(`aria-label="${label}"`), `缺少 ${label} 控件`);
   }
-  // The query input label switches with the mode.
-  assert.match(source, /aria-label=\{mode === 'chain' \? '域名' : '域名、应用名或 IP'\}/);
+  // The query input label switches with the mode (chain / request / paths).
+  assert.match(source, /aria-label=\{mode === 'chain' \? '域名' : mode === 'request' \? 'URL 或域名' : '域名、应用名或 IP'\}/);
 });
 
 test('path explorer page defaults each kind to the documented target direction', () => {

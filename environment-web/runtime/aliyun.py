@@ -12,13 +12,6 @@ def normalize_clb(data):
     instances = []
     for item in data['instances']:
         a = item['attributes']
-        groups = []
-        for kind, attrs in [('default', a)] + [(g['kind'], g['attributes']) for g in item['serverGroups']]:
-            groups.append({'id': attrs.get('VServerGroupId') or attrs.get('MasterSlaveServerGroupId') or 'default',
-                'name': attrs.get('VServerGroupName') or attrs.get('MasterSlaveServerGroupName') or '默认服务器组', 'kind': kind,
-                'servers': [{'id': s.get('ServerId',''), 'ip': s.get('ServerIp') or s.get('ResolvedServerIp',''),
-                    'port': s.get('Port'), 'weight': s.get('Weight'), 'type': s.get('Type','')}
-                    for s in array(attrs,'BackendServers','BackendServer') + array(attrs,'MasterSlaveBackendServers','MasterSlaveBackendServer')]})
         listeners = []
         for listener in item['listeners']:
             v = listener['attributes']
@@ -34,6 +27,27 @@ def normalize_clb(data):
                 'healthCheck':v.get('HealthCheck',''),'certificates':certs,
                 'rules':[{'id':r['RuleId'],'domain':r.get('Domain',''),'path':r.get('Url',''),'groupId':r['VServerGroupId']}
                          for r in array(listener.get('rules',{}),'Rules','Rule')]})
+        # DescribeLoadBalancerAttribute's default BackendServers omit Port: for
+        # the default server group the backend port is configured per listener
+        # (BackendServerPort). When every listener routed to the default group
+        # uses one identical port, it is the unambiguous default-group port.
+        default_ports = {l['backendPort'] for l in listeners
+                         if l['groupId'] == 'default' and l['backendPort'] is not None}
+        default_port = next(iter(default_ports)) if len(default_ports) == 1 else None
+        groups = []
+        for kind, attrs in [('default', a)] + [(g['kind'], g['attributes']) for g in item['serverGroups']]:
+            is_default = not (attrs.get('VServerGroupId') or attrs.get('MasterSlaveServerGroupId'))
+            group_id = attrs.get('VServerGroupId') or attrs.get('MasterSlaveServerGroupId') or 'default'
+            servers = []
+            for s in array(attrs,'BackendServers','BackendServer') + array(attrs,'MasterSlaveBackendServers','MasterSlaveBackendServer'):
+                port = s.get('Port')
+                if port is None and is_default:
+                    port = default_port
+                servers.append({'id': s.get('ServerId',''), 'ip': s.get('ServerIp') or s.get('ResolvedServerIp',''),
+                    'port': port, 'weight': s.get('Weight'), 'type': s.get('Type','')})
+            groups.append({'id': group_id,
+                'name': attrs.get('VServerGroupName') or attrs.get('MasterSlaveServerGroupName') or '默认服务器组', 'kind': kind,
+                'servers': servers})
         ids = {g['id'] for g in groups}
         if any(l['groupId'] not in ids or any(r['groupId'] not in ids for r in l['rules']) for l in listeners):
             raise ValueError('Unresolved CLB server group')

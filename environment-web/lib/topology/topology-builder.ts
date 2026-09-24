@@ -1,10 +1,12 @@
 import { GraphCollector, asArray, asRecord, normalizeIp } from './common.ts';
 import type { SnapshotInput } from './common.ts';
 import { buildApplicationEdges } from './edge-builders/applications.ts';
+import { buildAppPortEdges } from './edge-builders/app-ports.ts';
 import { buildCloudEdges } from './edge-builders/cloud.ts';
 import { buildDnsEdges } from './edge-builders/dns.ts';
 import { buildNginxEdges } from './edge-builders/nginx.ts';
 import { buildApplicationNodes } from './node-builders/applications.ts';
+import { buildAppPortNodes } from './node-builders/app-ports.ts';
 import { buildCloudNodes } from './node-builders/cloud.ts';
 import { buildDnsNodes } from './node-builders/dns.ts';
 import { buildHostNodes } from './node-builders/hosts.ts';
@@ -34,8 +36,12 @@ export function buildTopology(input: SnapshotInput, generatedAt = new Date().toI
   }
   const dns = buildDnsNodes(graph, input, hosts, knownIps);
   const nginx = buildNginxNodes(graph, input);
+  // appPorts runs after applications + nginx so it can enrich existing
+  // ip:port endpoints with the runtime app identity before edges are built.
+  const appPorts = buildAppPortNodes(graph, input);
 
   buildApplicationEdges(graph, applications, hosts);
+  buildAppPortEdges(graph, appPorts, hosts);
   buildDnsEdges(graph, dns, cloud, hosts);
   buildCloudEdges(graph, cloud, hosts);
   buildNginxEdges(graph, nginx, hosts);

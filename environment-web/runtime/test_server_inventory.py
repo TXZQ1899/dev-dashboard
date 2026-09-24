@@ -342,4 +342,77 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
         row=inv.inspect_asset({'id':'a'},[],'cookie','password')
         self.assertEqual(row['loginStatus'],'cannot_login');self.assertTrue(row['reason'])
 
+    def test_parse_listening_ports_skips_header_and_unowned(self):
+        body=('Netid State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n'
+              'tcp LISTEN 0 128 0.0.0.0:80 0.0.0.0:* users:((\"nginx\",pid=1234,fd=6))\n'
+              'tcp LISTEN 0 50 [::]:7084 [::]:* users:((\"java\",pid=384,fd=42))\n'
+              'tcp LISTEN 0 128 127.0.0.1:6379 0.0.0.0:* users:((\"redis-server\",pid=7,fd=4))\n'
+              'tcp LISTEN 0 128 0.0.0.0:443 0.0.0.0:* -\n')   # unowned socket, no pid
+        listeners=inv.parse_listening_ports(body)
+        ports={(l['pid'],l['port'],l['address']) for l in listeners}
+        self.assertEqual(ports,{(1234,80,'0.0.0.0'),(384,7084,'::'),(7,6379,'127.0.0.1')})
+        self.assertEqual(len(listeners),3)   # header + unowned dropped
+
+    def test_app_name_resolves_java_appid_and_jar(self):
+        self.assertEqual(inv.app_name({'kind':'Java','command':'/opt/java -Dappid=fosun-cashier --server.port=7084'}),'fosun-cashier')
+        self.assertEqual(inv.app_name({'kind':'Java','command':'java -Dspring.application.name=order-svc -jar app.jar'}),'order-svc')
+        self.assertEqual(inv.app_name({'kind':'Java','command':'java -jar /opt/apps/cashier.jar'}),'cashier.jar')
+        self.assertEqual(inv.app_name({'kind':'Java','command':'java -version'}),'Java')
+        self.assertEqual(inv.app_name({'kind':'Nginx','command':'nginx: master process /usr/sbin/nginx'}),'Nginx')
+        self.assertEqual(inv.app_name({'kind':'未分类','name':'myd','command':'./myd'}),'myd')
+
+    def test_build_app_ports_groups_and_drops_unknown_pids(self):
+        processes=[{'pid':1234,'kind':'Nginx','command':'nginx: master process /usr/sbin/nginx'},
+                   {'pid':384,'kind':'Java','command':'java -Dappid=fosun_cashier --server.port=7084'}]
+        listeners=[{'pid':1234,'port':80,'address':'0.0.0.0'},
+                   {'pid':1234,'port':8080,'address':'0.0.0.0'},
+                   {'pid':384,'port':7084,'address':'::'},
+                   {'pid':9999,'port':22,'address':'0.0.0.0'}]   # not in ps, dropped
+        ports=inv.build_app_ports(processes,listeners)
+        self.assertEqual([a['app'] for a in ports],['Nginx','Nginx','fosun_cashier'])
+        self.assertEqual([a['port'] for a in ports],[80,8080,7084])
+        cashier=next(a for a in ports if a['app']=='fosun_cashier')
+        self.assertEqual(cashier['kind'],'Java');self.assertEqual(cashier['pids'],[384]);self.assertEqual(cashier['addresses'],['::'])
+
+    def test_inspect_asset_collects_app_listening_ports(self):
+        class Terminal:
+            def __init__(self,*a):pass
+            def login(self):pass
+            def elevate(self):return 'passwordless',''
+            def run(self, command, timeout=60):
+                if command==inv.PS:
+                    return 0,('10 1 root 60 Tue Sep 1 10:00:00 2026 nginx nginx: master process /usr/sbin/nginx\n'
+                              '384 1 app 60 Tue Sep 1 10:00:00 2026 java /opt/java -Dappid=fosun_cashier --server.port=7084')
+                if command==inv.PORTS_COMMAND:
+                    return 0,('tcp LISTEN 0 128 0.0.0.0:80 0.0.0.0:* users:((\"nginx\",pid=10,fd=6))\n'
+                              'tcp LISTEN 0 128 0.0.0.0:8080 0.0.0.0:* users:((\"nginx\",pid=10,fd=7))\n'
+                              'tcp LISTEN 0 50 [::]:7084 [::]:* users:((\"java\",pid=384,fd=42))')
+                return 0,''
+            def close(self):pass
+        with patch.object(inv.uuid,'uuid4') as uid:
+            uid.return_value.hex='abc'
+            row=inv.inspect_asset({'id':'a'},[{'protocol':'ssh','username':'folidev'}],'cookie','password',Terminal)
+        self.assertEqual(row['appPorts'][0],{'app':'Nginx','kind':'Nginx','port':80,'addresses':['0.0.0.0'],'pids':[10]})
+        self.assertEqual(row['appPorts'][1],{'app':'Nginx','kind':'Nginx','port':8080,'addresses':['0.0.0.0'],'pids':[10]})
+        cashier=row['appPorts'][2]
+        self.assertEqual(cashier['app'],'fosun_cashier');self.assertEqual(cashier['port'],7084);self.assertEqual(cashier['addresses'],['::'])
+
+    def test_inspect_asset_warns_when_not_elevated(self):
+        class Terminal:
+            def __init__(self,*a):pass
+            def login(self):pass
+            def elevate(self):return 'denied','sudo 无权限'
+            def run(self, command, timeout=60):
+                if command==inv.PS:
+                    return 0,'10 1 root 60 Tue Sep 1 10:00:00 2026 nginx nginx: master process /usr/sbin/nginx'
+                if command==inv.PORTS_COMMAND:
+                    return 0,'tcp LISTEN 0 128 0.0.0.0:80 0.0.0.0:* users:((\"nginx\",pid=10,fd=6))'
+                return 0,''
+            def close(self):pass
+        with patch.object(inv.uuid,'uuid4') as uid:
+            uid.return_value.hex='abc'
+            row=inv.inspect_asset({'id':'a'},[{'protocol':'ssh','username':'folidev'}],'cookie','password',Terminal)
+        self.assertEqual(row['appPorts'][0]['app'],'Nginx')
+        self.assertTrue(any('应用监听端口' in w for w in row['warnings']))
+
 if __name__=='__main__':unittest.main()

@@ -6,5 +6,6 @@ set -e
 cd "$(dirname "$0")"
 
 export ENVSCOPE_ALLOWED_HOSTS='*'
+docker rm -f envscope-local 2>/dev/null || true
 docker compose up -d
 docker compose ps

@@ -19,15 +19,17 @@ DATA = Path(os.environ.get('ENVSCOPE_DATA', '/data'))
 APP = Path(os.environ.get('ENVSCOPE_APP', '/app'))
 ALLOWED_HOSTS = tuple(h for h in os.environ.get('ENVSCOPE_ALLOWED_HOSTS', '').replace(' ', '').split(',') if h)
 FILES = ('snapshot.json', 'repositories.json', 'jumpserver-snapshot.json', 'ecs-snapshot.json')
-OPTIONAL_FILES = ('clb-snapshot.json', 'nat-snapshot.json')
+OPTIONAL_FILES = ('clb-snapshot.json', 'nat-snapshot.json', 'server-specs.json')
 EMPTY_CLB = {'collectedAt': None, 'instances': [], 'available': False}
 EMPTY_NAT = {'collectedAt': None, 'gateways': [], 'available': False, 'region': 'cn-shanghai'}
-OPTIONAL_DEFAULTS = {'clb-snapshot.json': EMPTY_CLB, 'nat-snapshot.json': EMPTY_NAT}
+EMPTY_SPECS = {'collectedAt': None, 'specs': [], 'available': False}
+OPTIONAL_DEFAULTS = {'clb-snapshot.json': EMPTY_CLB, 'nat-snapshot.json': EMPTY_NAT, 'server-specs.json': EMPTY_SPECS}
 TOPOLOGY_DYNAMIC_FILES = FILES + OPTIONAL_FILES
 TOPOLOGY_STATIC_FILES = ('dns-snapshot.json', 'eip-snapshot.json')
 PATH_KINDS = ('domain', 'application', 'host')
 PATH_NODE_TYPES = ('DOMAIN','EIP','NAT_GATEWAY','DNAT_RULE','CLB','CLB_LISTENER','SERVER_GROUP','HOST','ENDPOINT','NGINX_ROUTE','UPSTREAM','APPLICATION','DEPLOYMENT','REPOSITORY')
 PATH_ENVIRONMENTS = ('PRODUCT','TEST','SIMULATION','GLOBAL','UNKNOWN')
+REQUEST_ENVIRONMENTS = ('PRODUCT','TEST','SIMULATION')
 TZ = ZoneInfo('Asia/Shanghai')
 
 
@@ -250,6 +252,30 @@ class Service:
             raise ValueError('域名链路查询失败：'+detail)
         try: result=json.loads(proc.stdout)
         except json.JSONDecodeError: raise ValueError('域名链路查询结果无法解析')
+        return {'topology':{'id':status['id'],'generatedAt':status['generatedAt']},'result':result}
+
+    def request_path_query(self,params):
+        """Request-aware end-to-end chain: URL -> DNS -> NAT/CLB -> nginx -> application -> repository."""
+        status=self.topology_status()
+        if not status: raise ValueError('尚未生成 Topology；请先在 Settings 页面基于当前数据版本生成')
+        query=(params.get('q') or [''])[0].strip()
+        if not query or len(query)>2048: raise ValueError('q 必须是 1-2048 个字符的 URL 或域名')
+        environment=(params.get('env') or [''])[0].strip().upper()
+        if environment and environment not in REQUEST_ENVIRONMENTS: raise ValueError('env 必须是 PRODUCT、TEST 或 SIMULATION')
+        max_depth=bounded_int(params,'maxDepth',16,1,24)
+        max_paths=bounded_int(params,'maxPaths',50,1,200)
+        command=['node',str(APP/'scripts'/'topology-path.mjs'),'request',query,'--json','--file',str(self.topology_file(status['id'])),
+                 '--max-depth',str(max_depth),'--max-paths',str(max_paths)]
+        if environment: command+=['--env',environment]
+        try:
+            proc=subprocess.run(command,cwd=APP,capture_output=True,text=True,timeout=60)
+        except subprocess.TimeoutExpired:
+            raise ValueError('请求链路查询超时')
+        if proc.returncode:
+            detail=(proc.stderr or proc.stdout).strip()[-400:] or '未知错误'
+            raise ValueError('请求链路查询失败：'+detail)
+        try: result=json.loads(proc.stdout)
+        except json.JSONDecodeError: raise ValueError('请求链路查询结果无法解析')
         return {'topology':{'id':status['id'],'generatedAt':status['generatedAt']},'result':result}
 
     def status(self):
@@ -563,6 +589,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith('/api/topology/path?'):
             params=parse_qs(urlsplit(self.path).query)
             try: return self.json(200,self.server.service.path_query(params))
+            except ValueError as exc: return self.json(400,{'error':str(exc)})
+        if self.path == '/api/topology/request-path' or self.path.startswith('/api/topology/request-path?'):
+            params=parse_qs(urlsplit(self.path).query)
+            try: return self.json(200,self.server.service.request_path_query(params))
             except ValueError as exc: return self.json(400,{'error':str(exc)})
         if self.path.startswith('/api/settings/'):return self.json(404,{'error':'接口不存在'})
         self.proxy()

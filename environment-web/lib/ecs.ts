@@ -22,6 +22,20 @@ export const instances: Instance[] = snapshot.instances.map((row) => ({
   tags: row.tags as Record<string, string>,
 }));
 export const fetchedAt = snapshot.fetchedAt;
+
+// 部署清单中的公网 IP（EIP）需要展示其对应 ECS 的内网 IP。
+// 一个公网 IP 只绑定一台实例，优先取该实例的第一个内网 IP。
+const publicToPrivate = new Map<string, string>();
+for (const instance of instances) {
+  const privateIp = instance.privateIps[0];
+  if (!privateIp) continue;
+  for (const publicIp of instance.publicIps) {
+    if (!publicToPrivate.has(publicIp)) publicToPrivate.set(publicIp, privateIp);
+  }
+}
+export function privateIpForPublic(ip: string): string | undefined {
+  return publicToPrivate.get(ip);
+}
 export const projects = [...snapshot.projects];
 for (const row of instances)
   if (!projects.some((p) => p.id === row.projectId))

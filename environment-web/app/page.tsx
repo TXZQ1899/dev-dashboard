@@ -35,6 +35,7 @@ import { repositorySnapshot } from '@/lib/repositories';
 import { jumpserver } from '@/lib/jumpserver';
 import { SettingsLink } from '@/components/settings-link';
 import { fetchedAt as ecsDate } from '@/lib/ecs';
+import { fetchedAt as specsDate } from '@/lib/server-specs';
 import { clb } from '@/lib/clb';
 export function Shell({
   children,
@@ -103,6 +104,13 @@ export function Shell({
             <Server size={18} />
             JumpServer 纳管服务器
           </a>
+          <a
+            className={active === 'datacenter' ? 'active' : ''}
+            href="/datacenter"
+          >
+            <Server size={18} />
+            本地机房资源
+          </a>
         </nav>
         <div className="side-note">
           <Database size={18} />
@@ -114,12 +122,14 @@ export function Shell({
               ? ecsDate.replace('T', ' ').slice(0,16)
               : (active === 'jumpserver'
                   ? jumpserver.collectedAt
-                  : active === 'repos'
-                    ? repositorySnapshot.accessDate
-                    : inventoryDate
-                )
-                  .replace('T', ' ')
-                  .slice(0, 16)}
+                  : active === 'datacenter'
+                    ? (specsDate ?? '未采集')
+                    : active === 'repos'
+                      ? repositorySnapshot.accessDate
+                      : inventoryDate
+                  )
+                    .replace('T', ' ')
+                    .slice(0, 16)}
           </span>
           <small>
             {active === 'topology' ? '按当前 Topology 版本实时遍历' : '基于导出清单的静态数据'}
@@ -143,26 +153,30 @@ export function Shell({
                 ? 'Settings · 数据同步'
                 : active === 'jumpserver'
                   ? 'JumpServer 纳管服务器'
-                  : active === 'ecs-summary'
-                    ? '阿里云资源汇总'
-                    : active === 'ecs-list'
-                      ? '阿里云资源列表'
-                      : active === 'repos'
-                        ? '代码库全景'
-                        : active === 'apps'
-                          ? '应用列表'
-                          : '环境总览'}
+                  : active === 'datacenter'
+                    ? '本地机房资源'
+                    : active === 'ecs-summary'
+                      ? '阿里云资源汇总'
+                      : active === 'ecs-list'
+                        ? '阿里云资源列表'
+                        : active === 'repos'
+                          ? '代码库全景'
+                          : active === 'apps'
+                            ? '应用列表'
+                            : '环境总览'}
           </span>
           <span className="snapshot">
             <i />
             快照模式 <b>·</b>{' '}
             {active === 'topology' ? '实时查询' : active === 'clb' ? (clb.collectedAt?.slice(0,10) ?? '未采集') : active === 'jumpserver'
               ? jumpserver.collectedAt.slice(0, 10)
-              : active.startsWith('ecs-')
-                ? ecsDate.slice(0,10)
-                : active === 'repos'
-                  ? repositorySnapshot.accessDate.slice(0, 10)
-                  : inventoryDate.slice(0, 10)}
+              : active === 'datacenter'
+                ? (specsDate?.slice(0, 10) ?? '未采集')
+                : active.startsWith('ecs-')
+                  ? ecsDate.slice(0,10)
+                  : active === 'repos'
+                    ? repositorySnapshot.accessDate.slice(0, 10)
+                    : inventoryDate.slice(0, 10)}
           </span>
         </header>
         {children}

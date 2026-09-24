@@ -31,6 +31,155 @@ SYSTEM = set('systemd init kthreadd kworker ksoftirqd migration rcu_sched rcu_pr
 PROCESS_RE = re.compile(r'^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\d+)\s+(\w+\s+\w+\s+\d+\s+\d+:\d+:\d+\s+\d+)\s+(\S+)\s+(.*)$')
 PS = "LC_ALL=C TZ=UTC ps -eww -o pid=,ppid=,user:32=,etimes=,lstart=,comm=,args="
 
+# Specs (CPU / memory / OS) are only collected for the 10.58 on-premises segment.
+SPECS_COMMAND = (
+    "cpu=$(nproc 2>/dev/null || echo 0); "
+    "mem=$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0); "
+    "os=$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d= -f2- | tr -d '\"' || true); "
+    "test -z \"$os\" && os=$(uname -sr 2>/dev/null || echo unknown); "
+    "printf 'SPECS\\t%s\\t%s\\t%s\\n' \"$cpu\" \"$mem\" \"$os\""
+)
+SPECS_RE = re.compile(r'SPECS\t(\d+)\t(\d+)\t(.+)')
+
+
+def is_10_58(ip):
+    """True when any IP in the asset's ip field belongs to the 10.58.0.0/16 segment."""
+    if not ip:
+        return False
+    for part in re.split(r'[\s,]+', str(ip)):
+        part = part.strip()
+        if part.startswith('10.58.'):
+            return True
+    return False
+
+
+def collect_specs(terminal):
+    """Read CPU count, total memory (MB) and OS pretty name through the active terminal."""
+    try:
+        rc, body = terminal.run(SPECS_COMMAND, timeout=15)
+        if rc != 0:
+            return None
+        match = SPECS_RE.search(body)
+        if not match:
+            return None
+        cpu = int(match.group(1))
+        memory_kb = int(match.group(2))
+        os_name = match.group(3).strip()
+        return {'cpu': cpu, 'memoryMB': memory_kb // 1024, 'os': os_name}
+    except Exception:
+        return None
+
+
+# Listening TCP sockets with owning PIDs. `| cat` forces ss to treat stdout
+# as a pipe (non-TTY) so it never wraps columns to the PTY width; sockets
+# without an owning PID (kernel/unowned) are skipped during parsing.
+PORTS_COMMAND = "ss -ltnp 2>/dev/null | cat"
+
+
+def parse_listening_ports(body):
+    """Parse `ss -ltnp` output into a list of {pid, port, address}.
+
+    Only sockets whose Process column carries `pid=N` are kept, so the header
+    and unowned kernel sockets are dropped. The local address is the 5th
+    whitespace-delimited token; the port is the part after the last colon and
+    IPv6 brackets are stripped from the bind address.
+    """
+    listeners = []
+    for line in body.splitlines():
+        if 'pid=' not in line:
+            continue
+        tokens = line.split()
+        if len(tokens) < 5:
+            continue
+        local = tokens[4]
+        port_text = local.rsplit(':', 1)[-1]
+        if not port_text.isdigit():
+            continue
+        address = local.rsplit(':', 1)[0]
+        if address.startswith('[') and address.endswith(']'):
+            address = address[1:-1]
+        for pid in re.findall(r'pid=(\d+)', line):
+            listeners.append({'pid': int(pid), 'port': int(port_text), 'address': address})
+    return listeners
+
+
+def collect_listening_ports(terminal):
+    """Read listening TCP sockets with owning PIDs. Returns [] when ss is absent."""
+    try:
+        rc, body = terminal.run(PORTS_COMMAND, timeout=20)
+    except Exception:
+        return []
+    if rc != 0:
+        return []
+    return parse_listening_ports(body)
+
+
+def jar_name(command):
+    """Return the .jar basename when the command runs `java -jar <path>`."""
+    tokens = re.findall(r'"(?:\\.|[^"\\])*"|\'[^\']*\'|[^\s]+', command)
+    tokens = [re.sub(r'^([\'"])(.*)\1$', r'\2', t) for t in tokens]
+    try:
+        i = tokens.index('-jar')
+    except ValueError:
+        return None
+    if i + 1 < len(tokens):
+        return tokens[i + 1].split('/')[-1]
+    return None
+
+
+def app_name(process):
+    """Best-effort application name for a process.
+
+    Java apps resolve to -Dappid / -Dspring.application.name / the .jar name;
+    recognized service kinds (Nginx, Redis, ...) use the kind; others fall
+    back to the process comm so a custom daemon still has a label.
+    """
+    kind = process.get('kind', '')
+    command = process.get('command', '')
+    if kind == 'Java':
+        m = re.search(r'(?:-D|--)appid=([A-Za-z0-9_.-]+)', command)
+        if m:
+            return m.group(1)
+        m = re.search(r'-Dspring\.application\.name=([A-Za-z0-9_.-]+)', command)
+        if m:
+            return m.group(1)
+        jar = jar_name(command)
+        if jar:
+            return jar
+        return 'Java'
+    if kind in ('Tomcat', 'Kafka', 'Nginx', 'Redis', 'MySQL', 'PostgreSQL', 'Node.js', 'Python'):
+        return kind
+    return process.get('name') or '未分类'
+
+
+def build_app_ports(processes, listeners):
+    """Group listening sockets by application name and port.
+
+    Each entry is one (app, port) pair with the bind addresses and PIDs that
+    own it. Sockets whose PID is not in the collected process list (system
+    daemons already excluded from ps) are dropped — only ports attributed to a
+    recognized application are reported.
+    """
+    by_pid = {p['pid']: p for p in processes}
+    grouped = {}
+    for listener in listeners:
+        proc = by_pid.get(listener['pid'])
+        if not proc:
+            continue
+        name = app_name(proc)
+        key = (name, listener['port'])
+        entry = grouped.get(key)
+        if entry is None:
+            entry = {'kind': proc.get('kind', '未分类'), 'addresses': set(), 'pids': set()}
+            grouped[key] = entry
+        entry['addresses'].add(listener['address'])
+        entry['pids'].add(listener['pid'])
+    result = [{'app': app, 'kind': entry['kind'], 'port': port,
+               'addresses': sorted(entry['addresses']), 'pids': sorted(entry['pids'])}
+              for (app, port), entry in grouped.items()]
+    result.sort(key=lambda r: (r['app'], r['port']))
+    return result
+
 
 def clean(text):
     return re.sub(r'[^\n\r\t\x20-\uFFFF]', '', re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', text)).replace('\r', '')
@@ -461,7 +610,7 @@ def read_nginx_without_t(terminal, prefix, main_conf, collected, all_files, all_
 
 
 def inspect_asset(asset, accounts, cookie, password, terminal_factory=Terminal):
-    result={'checkedAt':datetime.now(timezone.utc).isoformat(), 'loginStatus':'cannot_login', 'reason':'没有授权 SSH 账号', 'processStatus':'not_collected','processes':[], 'nginxStatus':'not_collected', 'nginxRoutes':[], 'nginxConfigurations':[], 'warnings':[], 'attempts':[]}
+    result={'checkedAt':datetime.now(timezone.utc).isoformat(), 'loginStatus':'cannot_login', 'reason':'没有授权 SSH 账号', 'processStatus':'not_collected','processes':[], 'appPorts':[], 'nginxStatus':'not_collected', 'nginxRoutes':[], 'nginxConfigurations':[], 'warnings':[], 'attempts':[]}
     ssh=[a for a in accounts if a.get('protocol')=='ssh']
     ssh.sort(key=lambda a:a.get('username')!='folidev')
     for account in ssh:
@@ -488,6 +637,14 @@ def inspect_asset(asset, accounts, cookie, password, terminal_factory=Terminal):
             result.update(processes=rows,excludedSystemProcesses=excluded,processStatus='complete' if rc==0 and not malformed and elevated else 'partial' if rc==0 else 'failed')
             if not elevated: result['warnings'].append('sudo 不可用，仅采集当前账号可见进程，完整性未确认')
             if malformed: result['warnings'].append(f'{malformed} 行进程无法解析')
+            if rows:
+                listeners = collect_listening_ports(terminal)
+                result['appPorts'] = build_app_ports(rows, listeners)
+                if not elevated and listeners:
+                    result['warnings'].append('sudo 不可用，应用监听端口仅含当前账号可见的进程，完整性未确认')
+            if is_10_58(asset.get('ip','')):
+                specs = collect_specs(terminal)
+                if specs: result['specs'] = specs
             commands=nginx_commands(rows)
             if not commands:
                 result['nginxStatus']='not_running' if result['processStatus']!='failed' and not any(p['kind']=='Nginx' for p in rows) else 'unknown'
@@ -532,7 +689,7 @@ def collect_servers(assets, get, cookie, password, progress=None):
                 accounts=rows
             return inspect_asset(asset,accounts,cookie,password)
         except Exception as exc:
-            return {'checkedAt':datetime.now(timezone.utc).isoformat(),'loginStatus':'cannot_login','reason':'读取授权账号失败：'+type(exc).__name__,'processStatus':'not_collected','processes':[],'nginxStatus':'not_collected','nginxRoutes':[],'warnings':[]}
+            return {'checkedAt':datetime.now(timezone.utc).isoformat(),'loginStatus':'cannot_login','reason':'读取授权账号失败：'+type(exc).__name__,'processStatus':'not_collected','processes':[],'appPorts':[],'nginxStatus':'not_collected','nginxRoutes':[],'warnings':[]}
     results={}
     with ThreadPoolExecutor(max_workers=6, thread_name_prefix=inner_prefix()) as pool:
         futures={pool.submit(run,a):a for a in assets}

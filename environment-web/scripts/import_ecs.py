@@ -1,9 +1,9 @@
 """Import only display fields from the local ECS and ResourceGroup snapshots."""
+import argparse
 import json
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parents[1]
-SOURCE = BASE.parent / 'ecs-export-cn-shanghai'
 
 
 def addresses(*values):
@@ -34,8 +34,11 @@ def normalize(instance):
 
 
 def main():
-    source = json.loads((SOURCE / 'ecs-list-all.json').read_text())
-    resource = json.loads((SOURCE / 'ResourceGroup.json').read_text())['data']
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('source', type=Path, help='Directory containing ecs-list-all.json and ResourceGroup.json')
+    args = parser.parse_args()
+    source = json.loads((args.source / 'ecs-list-all.json').read_text())
+    resource = json.loads((args.source / 'ResourceGroup.json').read_text())['data']
     groups = resource['ResourceGroups']['ResourceGroup']
     assert len(groups) == resource['TotalCount'], 'ResourceGroup pagination is incomplete'
     rows = [normalize(i) for i in source['Instances']['Instance']]

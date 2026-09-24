@@ -88,7 +88,7 @@ docker compose down
 - `/aliyun/instances`：默认按项目 → env 分组，可添加任意标签层级、移除标签层级、全部展开或收起。支持搜索、项目、状态、公网 IP 和多个标签的交集筛选；页面跳转保留筛选。
 - 明细包含实例名 / ID、CPU、内存、操作系统、内网 IP、公网 IP、状态和全部标签。公网地址合并普通公网 IP 与 EIP，去重后展示，缺失显示“无”。
 
-更新数据：先更新项目外 `ecs-export-cn-shanghai/ecs-list-all.json` 与 `ResourceGroup.json`，再执行 `python3 scripts/import_ecs.py` 和 `docker compose up -d --build`。只导入显示字段，不导入 Cookie 或账号字段。
+更新数据：将阿里云 ECS 控制台导出的 `ecs-list-all.json` 与 `ResourceGroup.json` 放入任意目录，执行 `python3 scripts/import_ecs.py /path/to/export-dir` 后再 `docker compose up -d --build`。只导入显示字段，不导入 Cookie 或账号字段。
 
 当前为上海区域 2026-09-07 快照：204 台、992 vCPU、3865.5 GiB；19 个项目目录。88 台 ResourceGroupId 为空，列为“未指定项目”，与默认资源组的 10 台分别统计。缺失标签为“未设置”，空字符串标签为“空值”；不根据实例名推断项目或环境。资源数量按实例 ID 计数，容量为实例配置合计，不是使用率。汇总保留无匹配实例的项目并显示 0。
 

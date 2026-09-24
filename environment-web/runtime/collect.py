@@ -16,8 +16,8 @@ from urllib.request import Request, build_opener
 
 import daily_collection as daily
 from export_devops import NoRedirect, ExportError, AuthenticationError, CollectionError
-from service import write
-from server_inventory import collect_servers
+from service import write, read
+from server_inventory import collect_servers, is_10_58
 from aliyun import collect_clb, collect_ecs, normalize_clb, ecs_snapshot
 from export_nat import collect as collect_nat, normalize_nat
 
@@ -135,24 +135,42 @@ def jumpserver(cookie, folder, password="", fetcher=None):
         if done % 25 == 0 or done == total:
             print(f'JumpServer 检查：{done}/{total} 台', flush=True)
     inspections = collect_servers(all_assets, get, cookie, password, report_progress)
+    specs_list = []
     for asset in result['assets']:
         inspection = inspections[asset['id']]
         configs = inspection.pop('nginxConfigurations', [])
+        specs = inspection.pop('specs', None)
+        if is_10_58(asset.get('ip', '')):
+            specs_list.append({
+                'ip': asset.get('ip', ''),
+                'hostname': asset.get('hostname', ''),
+                'assetId': asset['id'],
+                'loginStatus': inspection.get('loginStatus', 'cannot_login'),
+                'specsCollected': bool(specs),
+                'cpu': specs['cpu'] if specs else 0,
+                'memoryMB': specs['memoryMB'] if specs else 0,
+                'os': specs['os'] if specs else (asset.get('os') or '未采集'),
+            })
         inspection['configurationCount'] = len(configs)
         inspection['configurationVersion'] = folder.name
         if configs:
             filename = hashlib.sha256(asset['id'].encode()).hexdigest()+'.json'
             write(folder/'nginx-configs'/filename, {'assetId':asset['id'], 'files':configs, 'collectedAt':inspection['checkedAt']})
         asset['inspection'] = inspection
+    daily.save_json(folder / 'server-specs.json',
+                    {'collectedAt': daily.now(), 'available': True, 'specs': specs_list})
+    collected_count = sum(1 for s in specs_list if s.get('specsCollected'))
+    print(f"JumpServer 规格采集：10.58 网段 {len(specs_list)} 台，其中已采集规格 {collected_count} 台", flush=True)
     summary = {
         'can_login': sum(1 for i in inspections.values() if i.get('loginStatus') == 'can_login'),
         'cannot_login': sum(1 for i in inspections.values() if i.get('loginStatus') != 'can_login'),
         'processes': sum(len(i.get('processes') or []) for i in inspections.values()),
+        'app_ports': sum(len(i.get('appPorts') or []) for i in inspections.values()),
         'nginx': sum(1 for i in inspections.values() if i.get('nginxStatus') == 'complete'),
         'configs': sum(i.get('configurationCount', 0) for i in inspections.values()),
     }
     print(f"JumpServer 登录：可登录 {summary['can_login']} 台，不能登录 {summary['cannot_login']} 台", flush=True)
-    print(f"JumpServer 进程：{summary['processes']} 条；Nginx 读取完整 {summary['nginx']} 台，原始配置 {summary['configs']} 份", flush=True)
+    print(f"JumpServer 进程：{summary['processes']} 条；应用监听端口 {summary['app_ports']} 条；Nginx 读取完整 {summary['nginx']} 台，原始配置 {summary['configs']} 份", flush=True)
     print(f"JumpServer 采集完成：{len(result['assets'])} 台资产，{len(result['groups'])} 个分组", flush=True)
     daily.save_json(folder / 'jumpserver-snapshot.json', result)
     return result
@@ -171,6 +189,7 @@ def jumpserver_asset(cookie, folder, password, asset_id, fetcher=None):
                                   lambda done, total: write(folder/'server-progress.json', {'phase':phase, 'completed':done, 'total':total}))
     inspection = inspections[asset_id]
     configs = inspection.pop('nginxConfigurations', [])
+    specs = inspection.pop('specs', None)
     inspection['configurationCount'] = len(configs)
     inspection['configurationVersion'] = folder.name
     filename = hashlib.sha256(asset_id.encode()).hexdigest()+'.json'
@@ -180,6 +199,23 @@ def jumpserver_asset(cookie, folder, password, asset_id, fetcher=None):
         # Stale raw configs from the copied version must not survive a failed re-inspection.
         (folder/'nginx-configs'/filename).unlink(missing_ok=True)
     asset['inspection'] = inspection
+    # Update the specs snapshot for this single asset.
+    specs_snapshot = read(folder / 'server-specs.json', {'collectedAt': daily.now(), 'available': True, 'specs': []})
+    specs_rows = [s for s in specs_snapshot.get('specs', []) if s.get('assetId') != asset_id]
+    if is_10_58(asset.get('ip', '')):
+        specs_rows.append({
+            'ip': asset.get('ip', ''),
+            'hostname': asset.get('hostname', ''),
+            'assetId': asset_id,
+            'loginStatus': inspection.get('loginStatus', 'cannot_login'),
+            'specsCollected': bool(specs),
+            'cpu': specs['cpu'] if specs else 0,
+            'memoryMB': specs['memoryMB'] if specs else 0,
+            'os': specs['os'] if specs else (asset.get('os') or '未采集'),
+        })
+    specs_snapshot['specs'] = specs_rows
+    specs_snapshot['available'] = True
+    daily.save_json(folder / 'server-specs.json', specs_snapshot)
     daily.save_json(folder / 'jumpserver-snapshot.json', snapshot)
     print(f"JumpServer 单独采集完成：{asset.get('ip','')} 进程 {len(inspection.get('processes') or [])} 条，Nginx 状态 {inspection.get('nginxStatus')}", flush=True)
     return snapshot

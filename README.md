@@ -185,7 +185,6 @@ env-scope/
 ├── AGENTS.md
 ├── .github/
 │   └── copilot-instructions.md
-├── project_rules.md
 ├── environment-web/
 │   ├── lib/
 │   │   ├── topology/
@@ -544,7 +543,6 @@ PROJECT_GUIDE.md
 ```text
 AGENTS.md                         # Codex / Agent
 .github/copilot-instructions.md  # GitHub Copilot
-project_rules.md                 # TRAE Rules
 ```
 
 稳定项目知识不要反复复制到每次 Prompt 中。
