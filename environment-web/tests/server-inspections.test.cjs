@@ -21,6 +21,8 @@ function render(assets,options={}) {
   if(id==='@/lib/jumpserver')return {jumpserver:{assets,collectedAt:'2026-09-17T12:00:00Z'}};
   if(id==='@/lib/server-processes')return lib;
   if(id==='@/components/ui/input')return {Input:()=>null};
+  if(id==='@/components/ui/button')return {Button:(props)=>React.createElement('button',props)};
+  if(id==='lucide-react')return {Download:()=>null};
   throw new Error(id);
  });
  return renderToStaticMarkup(React.createElement(ui.ServerInspections));
@@ -30,7 +32,7 @@ const inspection={checkedAt:'2026-09-17T12:00:00Z',loginStatus:'can_login',reaso
 const asset={id:'a',ip:'10.0.0.2',hostname:'server',inspection};
 test('old snapshots remain unchecked and never become failed logins',()=>{
  const html=render([{id:'a',ip:'10.0.0.1',hostname:'legacy'}]);
- assert.match(html,/未检查（1 台）/);assert.match(html,/不能登录（0 台）/);assert.match(html,/没有服务器采集结果/);
+ assert.match(html,/未检查（1 台）/);assert.match(html,/不可登录（0 台）/);assert.match(html,/没有服务器采集结果/);
 });
 test('command search locates the process and its IP across all types',()=>{
  const html=render([asset],{query:'app-api.jar'});
@@ -41,6 +43,7 @@ test('command search locates the process and its IP across all types',()=>{
 test('failed tab preserves reasons and excludes running processes',()=>{
  const html=render([asset,{...asset,id:'b',ip:'10.0.0.3',inspection:{...inspection,loginStatus:'cannot_login',reason:'连接超时',processes:[]}}],{login:'cannot_login'});
  assert.match(html,/连接超时/);assert.match(html,/10.0.0.3/);assert.ok(!html.includes('app-api.jar'));
+ assert.match(html,/不可登录/);assert.match(html,/导出 CSV（1 台）/);
 });
 test('server details retain nginx route and raw file access',()=>{
  const html=render([{...asset,inspection:{...inspection,configurationCount:2}}],{selected:'a'});

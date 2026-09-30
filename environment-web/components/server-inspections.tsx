@@ -1,12 +1,41 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
+import { Download } from 'lucide-react';
 import { jumpserver } from '@/lib/jumpserver';
 import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
 
 import { processTypes, durations, processRows, filterProcesses, formatDuration, paginate, type Asset, type Inspection, type ProcessType, type Duration } from '@/lib/server-processes';
 type ConfigFile = { path: string; instance: string; content: string; base64: string; bytes: number };
 const statuses: Record<string,string> = {complete:'采集完整',partial:'采集不完整',failed:'采集失败',not_collected:'未采集',not_running:'未发现运行中的 Nginx',unknown:'无法确认',sudo_password_error:'sudo 密码错误，Nginx 未采集',sudo_unavailable:'sudo 不可用，Nginx 未采集'};
 function date(value: string) { return new Date(value).toLocaleString('zh-CN', {timeZone:'Asia/Shanghai',hour12:false}); }
+function csvCell(value: string): string {
+  return /[",\n]/.test(value) ? '"' + value.replace(/"/g, '""') + '"' : value;
+}
+// 导出“不可登录/未检查”服务器列表，列与页面展示完全一致。
+function exportServersCsv(assets: Asset[], login: string) {
+  const statusText = login === 'unchecked' ? '未检查' : '不可登录';
+  const header = ['IP','主机名','登录状态','原因','检查时间','账号尝试'];
+  const lines = [header.map(csvCell).join(',')];
+  for (const a of assets) {
+    lines.push([
+      a.ip || '',
+      a.hostname || '',
+      statusText,
+      a.inspection?.reason || '当前版本未采集',
+      a.inspection ? date(a.inspection.checkedAt) : '—',
+      a.inspection?.attempts?.map(t => `${t.account}：${t.reason}`).join('；') || '—',
+    ].map(csvCell).join(','));
+  }
+  const bom = '\uFEFF';
+  const blob = new Blob([bom + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = login === 'unchecked' ? 'unchecked-servers.csv' : 'unreachable-servers.csv';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 function NginxConfigs({asset, inspection}: {asset: Asset; inspection: Inspection}) {
   const [files,setFiles]=useState<ConfigFile[]|null>(null);
   const [busy,setBusy]=useState(false);
@@ -89,7 +118,8 @@ export function ServerInspections() {
   const counts=Object.fromEntries(processTypes.map(t=>[t,t==='全部进程'?searched.length:searched.filter(r=>r.type===t).length]));
   const loginCount=(status: string)=>assets.filter(a=>(a.inspection?.loginStatus||'unchecked')===status).length;
   const serverMatches=(a: Asset)=>`${a.ip} ${a.hostname} ${a.inspection?.reason||''} ${a.inspection?.warnings?.join(' ')||''}`.toLowerCase().includes(query.trim().toLowerCase());
-  const serverPage=paginate(assets.filter(a=>(a.inspection?.loginStatus||'unchecked')===login&&serverMatches(a)),page,size);
+  const serverRows=assets.filter(a=>(a.inspection?.loginStatus||'unchecked')===login&&serverMatches(a));
+  const serverPage=paginate(serverRows,page,size);
   const current=login==='can_login'?processPage:serverPage;
   const selectedAsset=assets.find(a=>a.id===selected);
   const incomplete=assets.filter(a=>a.inspection?.loginStatus==='can_login'&&a.inspection.processStatus!=='complete');
@@ -98,7 +128,7 @@ export function ServerInspections() {
   return <section className="panel p-6 space-y-5">
     <h2 className="text-lg font-semibold">服务器与进程</h2>
     <div role="tablist" aria-label="服务器登录状态" className="flex flex-wrap gap-2">
-      {[['can_login','可登录'],['cannot_login','不能登录'],...(loginCount('unchecked')?[['unchecked','未检查']]:[])].map(([key,label])=><button key={key} id={`login-tab-${key}`} role="tab" aria-selected={login===key} aria-controls="server-inventory-panel" className={tabClass(login===key)} onClick={()=>{setLogin(key);setQuery('');reset();}}>{label}（{loginCount(key)} 台）</button>)}
+      {[['can_login','可登录'],['cannot_login','不可登录'],...(loginCount('unchecked')?[['unchecked','未检查']]:[])].map(([key,label])=><button key={key} id={`login-tab-${key}`} role="tab" aria-selected={login===key} aria-controls="server-inventory-panel" className={tabClass(login===key)} onClick={()=>{setLogin(key);setQuery('');reset();}}>{label}（{loginCount(key)} 台）</button>)}
     </div>
     <div id="server-inventory-panel" role="tabpanel" aria-labelledby={`login-tab-${login}`} className="space-y-4">
       <Input className="max-w-2xl" type="search" aria-label={login==='can_login'?'搜索进程详细命令、IP、进程名或 PID':'搜索服务器 IP、主机名或失败原因'} placeholder={login==='can_login'?'搜索详细命令，例如 app-api.jar；也支持 IP、进程名、PID':'搜索 IP、主机名或失败原因'} value={query} onChange={e=>{setQuery(e.target.value);if(login==='can_login')setType('全部进程');reset();}}/>
@@ -117,7 +147,14 @@ export function ServerInspections() {
           </tbody></table>
           {!filtered.length&&<p className="py-8 text-center text-muted-foreground">没有符合条件的进程。可切换“全部进程”或清空筛选。</p>}
         </div>
-      </>:<div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr>{['IP','主机名','登录状态','原因','检查时间','账号尝试'].map(h=><th className="p-3" key={h}>{h}</th>)}</tr></thead><tbody>{serverPage.rows.map(a=><tr className="border-t align-top" key={a.id}><td className="p-3"><code>{a.ip}</code></td><td className="p-3">{a.hostname}</td><td className="p-3">{login==='unchecked'?'未检查':'不能登录'}</td><td className="p-3">{a.inspection?.reason||'当前版本未采集'}</td><td className="p-3 whitespace-nowrap">{a.inspection?date(a.inspection.checkedAt):'—'}</td><td className="p-3">{a.inspection?.attempts?.map(t=>`${t.account}：${t.reason}`).join('；')||'—'}</td></tr>)}</tbody></table>{!serverPage.total&&<p className="py-8 text-center">没有符合条件的服务器。</p>}</div>}
+      </>:<div className="space-y-3">
+        <div className="flex justify-end">
+          <Button variant="default" size="sm" className="export-button" disabled={!serverRows.length} onClick={()=>exportServersCsv(serverRows,login)} aria-label="导出当前服务器列表 CSV（与展示列一致）">
+            <Download size={16}/>导出 CSV（{serverRows.length} 台）
+          </Button>
+        </div>
+        <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr>{['IP','主机名','登录状态','原因','检查时间','账号尝试'].map(h=><th className="p-3" key={h}>{h}</th>)}</tr></thead><tbody>{serverPage.rows.map(a=><tr className="border-t align-top" key={a.id}><td className="p-3"><code>{a.ip}</code></td><td className="p-3">{a.hostname}</td><td className="p-3">{login==='unchecked'?'未检查':'不可登录'}</td><td className="p-3">{a.inspection?.reason||'当前版本未采集'}</td><td className="p-3 whitespace-nowrap">{a.inspection?date(a.inspection.checkedAt):'—'}</td><td className="p-3">{a.inspection?.attempts?.map(t=>`${t.account}：${t.reason}`).join('；')||'—'}</td></tr>)}</tbody></table>{!serverPage.total&&<p className="py-8 text-center">没有符合条件的服务器。</p>}</div>
+      </div>}
       <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
         <label>每页 <select aria-label="每页条数" className="border rounded p-2" value={size} onChange={e=>{setSize(Number(e.target.value));setPage(1);}}>{[25,50,100].map(n=><option key={n} value={n}>{n}</option>)}</select> 条 · 共 {current.total} 条</label>
         <div className="flex items-center gap-3"><button className="border rounded px-3 py-2 disabled:opacity-40" disabled={current.page===1} onClick={()=>setPage(current.page-1)}>上一页</button><span aria-live="polite">第 {current.page} / {current.pages} 页</span><button className="border rounded px-3 py-2 disabled:opacity-40" disabled={current.page===current.pages} onClick={()=>setPage(current.page+1)}>下一页</button></div>

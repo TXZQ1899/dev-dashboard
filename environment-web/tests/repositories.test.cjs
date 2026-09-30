@@ -113,3 +113,50 @@ test('internal GitLab URLs use HTTP across snapshot and export without changing 
   assert.ok(repos.every(r=>r.url.startsWith('http://')));
   assert.ok(repositoryCsv(repos,'','').includes(http));
 });
+
+test('repositoryNameFromUrl extracts the final path segment from all Git address forms', () => {
+  const f = mod.exports.repositoryNameFromUrl;
+  assert.equal(f('https://codeup.aliyun.com/61a9/tc_minip/tc-taicang.git'), 'tc-taicang');
+  assert.equal(f('https://codeup.aliyun.com/group/repo'), 'repo');
+  assert.equal(f('git@gitlab.dev.thomascook.com.cn:team/bank-center.git'), 'bank-center');
+  assert.equal(f('ssh://git@codeup.aliyun.com/x/y.git'), 'y');
+  assert.equal(f('http://cat/cat'), 'cat');
+  assert.equal(f('cat/cat'), 'cat');
+  assert.equal(f('HTTPS://Codeup.Aliyun.com/G/TC-Taicang.GIT'), 'tc-taicang');
+  assert.equal(f(''), '');
+  assert.equal(f(null), '');
+  assert.equal(f(undefined), '');
+});
+
+test('app repository index follows confirmed full-URL linkage without duplicates', () => {
+  const index = mod.exports.appRepositoryIndex;
+  assert.ok(index instanceof Map);
+  let refs = 0;
+  for (const r of repositorySnapshot.repos) refs += r.apps.length;
+  let linked = 0;
+  for (const list of index.values()) {
+    linked += list.length;
+    assert.equal(new Set(list.map((r) => r.id)).size, list.length);
+  }
+  assert.equal(linked, refs);
+});
+
+test('app repository name search covers environment-level repository overrides', () => {
+  const m = mod.exports.appRepositoryNameMatches;
+  // App 1865 (cat) only links to tims-uaa via its TEST override; its default
+  // address http://cat/cat is an invalid reference.
+  assert.equal(m('1865', [], 'tims-uaa'), true);
+  assert.equal(m('1865', [], 'TIMS-UAA'), true);
+  assert.equal(m('1865', [], 'foliday/tims'), true);
+  // tc-taicang is codeup_only (no DevOps app): same-name guessing is not allowed.
+  assert.equal(m('1865', [], 'tc-taicang'), false);
+  // Fallback URLs keep search working for apps absent from the linkage index.
+  assert.equal(m('unknown-app', ['https://codeup.aliyun.com/g/tc-taicang.git'], 'tc-taicang'), true);
+  assert.equal(m('unknown-app', ['git@host.example:g/tc-taicang.git'], 'taicang'), true);
+  assert.equal(m('unknown-app', ['https://codeup.aliyun.com/g/other.git'], 'tc-taicang'), false);
+  assert.equal(m('unknown-app', ['', null, undefined], 'anything'), false);
+  // Blank query disables the filter.
+  assert.equal(m('1865', [], ''), true);
+  assert.equal(m('1865', [], '   '), true);
+});
+

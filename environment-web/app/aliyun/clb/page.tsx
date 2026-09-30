@@ -168,7 +168,7 @@ function NatView({ rows, query, expanded, onQuery, onExpand, onCollapse, toggle 
     <Toolbar label="搜索 NAT 映射" placeholder="搜索网关、EIP、后端 IP、端口、协议、实例或域名" query={query} onQuery={onQuery} onExpand={onExpand} onCollapse={onCollapse} />
     {nat.available && !rows.length && <p>没有匹配的 NAT 网关或 DNAT 映射</p>}
     {rows.map(gateway => <details key={gateway.id} className="panel clb-instance" open={!!expanded[gateway.id]} onToggle={event => toggle(gateway.id, event.currentTarget.open)}>
-      <summary><strong>{gateway.name || gateway.id}</strong><span>{gateway.id} · {gateway.status} · {gateway.entries.length} 条 DNAT</span></summary>
+      <summary><strong>{gateway.name || gateway.id}</strong>{gateway.entries[0] && <code title="首条 DNAT 规则的后端 IP">{gateway.entries[0].internalIp}</code>}<span>{gateway.id} · {gateway.status} · {gateway.entries.length} 条 DNAT</span></summary>
       <p className="clb-note">VPC：{gateway.vpcId} · <a href={`https://vpc.console.aliyun.com/nat/cn-shanghai/nats/${encodeURIComponent(gateway.id)}/dnats`} target="_blank" rel="noopener noreferrer">打开阿里云 DNAT 控制台</a></p>
       {!gateway.entries.length && <p className="clb-note">该网关没有 DNAT 条目。</p>}
       {gateway.entries.map(entry => <section key={entry.id} className="nat-entry"><DnatMapping entry={entry} />

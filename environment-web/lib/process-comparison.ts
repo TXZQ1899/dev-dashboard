@@ -1,6 +1,9 @@
 import { jumpserver } from '@/lib/jumpserver';
 import type { Process, Asset } from '@/lib/server-processes';
-import type { App } from '@/lib/inventory';
+import type { App, Env } from '@/lib/inventory';
+import { specs as serverSpecs, type ServerSpec } from '@/lib/server-specs';
+import { instances } from '@/lib/ecs';
+import { nominalMemoryGiB } from '@/lib/local-servers';
 
 export type AppComparison = {
   app: App & { ports: string[] };
@@ -158,6 +161,53 @@ export function ipInJumpServer(ip: string): boolean {
   return (jumpserver.assets as Asset[]).some((a) => a.ip === ip);
 }
 
+// server-specs 按 IP 索引（一条记录可能以空白/逗号分隔包含多个 IP）。
+const specByIp = new Map<string, ServerSpec>();
+for (const s of serverSpecs) {
+  for (const ip of s.ip.split(/[\s,]+/)) {
+    const trimmed = ip.trim();
+    if (trimmed) specByIp.set(trimmed, s);
+  }
+}
+
+// ECS 实例按 IP 索引（内网 + 公网）。
+const ecsByIp = new Map<string, (typeof instances)[number]>();
+for (const inst of instances) {
+  for (const ip of [...inst.privateIps, ...inst.publicIps]) ecsByIp.set(ip, inst);
+}
+
+export type IpServerState = 'not_collected' | 'can_login' | 'cannot_login';
+
+// 按 IP 判定 JumpServer 收录与登录状态：
+// - not_collected：JumpServer 资产中不存在该 IP；
+// - can_login：server-specs 登录状态为 can_login（旧格式缺 loginStatus 时回退 cpu>0 推断），
+//   或 JumpServer 巡检可登录；
+// - cannot_login：已收录但两处数据均无成功登录证据。
+export function ipServerState(ip: string): IpServerState {
+  if (!ipInJumpServer(ip)) return 'not_collected';
+  const spec = specByIp.get(ip);
+  if (spec) {
+    if (spec.loginStatus === 'can_login') return 'can_login';
+    if (spec.loginStatus === 'cannot_login') return 'cannot_login';
+    if (spec.loginStatus === undefined && spec.cpu > 0) return 'can_login';
+  }
+  const loginStatus = findAssetByIp(ip)?.inspection?.loginStatus;
+  if (loginStatus === 'can_login') return 'can_login';
+  return 'cannot_login';
+}
+
+// 服务器规格文本，如 "2C 4G"：本地服务器取 server-specs（内存取标称容量），
+// 云服务器取 ECS 实例规格；无规格数据返回空串。
+export function ipSpecSummary(ip: string): string {
+  const spec = specByIp.get(ip);
+  const collected = !!(spec && (spec.specsCollected ?? spec.cpu > 0));
+  if (spec && collected && spec.cpu > 0)
+    return `${spec.cpu}C ${nominalMemoryGiB(spec.memoryMB)}G`;
+  const inst = ecsByIp.get(ip);
+  if (inst && inst.cpu > 0) return `${inst.cpu}C ${inst.memoryGiB}G`;
+  return '';
+}
+
 // 汇总应用在所有环境的部署 IP 与 JumpServer 进程的对比结果。
 // - hasUnmatched: 任意环境存在「IP 已被 JumpServer 收录但未匹配到该应用进程」
 // - hasNotCollected: 任意环境存在「IP 未被 JumpServer 收录」
@@ -179,4 +229,40 @@ export function appProcessStatusSummary(app: App): {
     }
   }
   return { hasUnmatched, hasNotCollected };
+}
+
+// 按应用单个环境的部署 IP 汇总收录/登录/进程匹配情况，供导出按
+// 「应用 × 环境」一行区分「未收录」「未登录」与真实的「进程未发现」
+// （仅可登录服务器才能核实进程）。
+export type ServerVerdicts = {
+  notCollected: boolean;
+  cannotLogin: boolean;
+  canLogin: boolean;
+  matched: boolean;
+  unmatched: boolean;
+};
+
+export function envServerVerdicts(app: App, env: Env): ServerVerdicts {
+  let notCollected = false;
+  let cannotLogin = false;
+  let canLogin = false;
+  let matched = false;
+  let unmatched = false;
+  const seen = new Set<string>();
+  for (const row of app.envs[env] || []) {
+    const ip = row.ip?.trim();
+    if (!ip || seen.has(ip)) continue;
+    seen.add(ip);
+    const state = ipServerState(ip);
+    if (state === 'not_collected') {
+      notCollected = true;
+    } else if (state === 'cannot_login') {
+      cannotLogin = true;
+    } else {
+      canLogin = true;
+      if (appHasProcessOnIp(app.name, ip)) matched = true;
+      else unmatched = true;
+    }
+  }
+  return { notCollected, cannotLogin, canLogin, matched, unmatched };
 }

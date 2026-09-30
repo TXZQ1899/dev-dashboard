@@ -15,6 +15,7 @@ export type Deployment = {
   port?: string;
   branch?: string;
   branchSource?: string;
+  repository?: string;
   lastPublishedAt?: string;
   publishStatus?: string;
   publishTimeSource?: string;

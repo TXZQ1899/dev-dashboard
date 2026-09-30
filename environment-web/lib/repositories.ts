@@ -3,6 +3,7 @@ export type Repository = {
   id: string;
   name: string;
   url: string;
+  path?: string;
   groupId: string;
   access: string;
   reason: string;
@@ -104,6 +105,66 @@ export const summary = {
     (r) => r.difference === 'devops_only',
   ).length,
 };
+// 解析 Git 地址，返回小写的完整路径（group/sub/name）与仓库名（最后一段，去掉 .git）。
+// 兼容 HTTPS、SSH（git@host:path）、ssh:// 以及无协议地址；无法解析时返回空串。
+function splitGitAddress(raw: string | null | undefined): { path: string; name: string } {
+  const empty = { path: '', name: '' };
+  if (!raw || typeof raw !== 'string') return empty;
+  const value = raw.trim();
+  if (!value) return empty;
+  let pathname = value;
+  const scp = value.match(/^[^/@:]+@([^:[\]]+):(.+)$/);
+  if (scp) {
+    pathname = scp[2];
+  } else {
+    try {
+      pathname = new URL(value).pathname;
+    } catch {
+      const slash = value.indexOf('/');
+      pathname = slash >= 0 ? value.slice(slash + 1) : '';
+    }
+  }
+  const path = pathname.replace(/\.git\/?$/i, '').replace(/^\/+/, '').toLowerCase();
+  const segments = path.split('/').filter(Boolean);
+  return { path, name: segments[segments.length - 1] || '' };
+}
+export function repositoryNameFromUrl(raw: string | null | undefined): string {
+  return splitGitAddress(raw).name;
+}
+// 应用 ID -> 该应用在 DevOps 清单中引用过的代码库。采集端按主机名 + 完整路径精确比对，
+// 同时包含应用默认地址与各环境的覆盖地址（如 TEST 单独指向其他仓库）；
+// possibleCodeupMatches 仅为改名提示，不属于已确认关联，不进入此索引。
+export const appRepositoryIndex: Map<string, Repository[]> = (() => {
+  const index = new Map<string, Repository[]>();
+  for (const repo of repositorySnapshot.repos) {
+    for (const ref of repo.apps) {
+      const list = index.get(ref.id);
+      if (list) list.push(repo);
+      else index.set(ref.id, [repo]);
+    }
+  }
+  return index;
+})();
+// 按 Git 仓库名/路径筛选应用：优先使用代码库清单中按完整地址确认的关联，
+// 对未在清单中建立关联的应用再回退到其自身提供的仓库地址（含各环境行）。
+// 关键字大小写不敏感；为空时不过滤。不按同名猜测未确认的关联。
+export function appRepositoryNameMatches(
+  appId: string,
+  repositoryUrls: (string | null | undefined)[],
+  query: string,
+): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  const haystack: string[] = [];
+  for (const repo of appRepositoryIndex.get(appId) || []) {
+    haystack.push(repo.name, repo.path || '');
+  }
+  for (const raw of repositoryUrls) {
+    const parts = splitGitAddress(raw);
+    haystack.push(parts.name, parts.path);
+  }
+  return haystack.some((value) => !!value && value.includes(needle));
+}
 export function filterGroups(query: string, filter: string, order: string, period = '', pipeline = '') {
   const q = query.trim().toLowerCase();
   return groups

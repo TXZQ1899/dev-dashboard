@@ -876,6 +876,39 @@ h2 {
   margin-left: 4px;
   cursor: help;
 }
+.server-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  vertical-align: middle;
+  margin-left: 6px;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: help;
+}
+.server-state.not-collected {
+  color: #c0392b;
+}
+.server-state.can-login {
+  color: #3d8f5f;
+}
+.server-state.cannot-login {
+  color: #9aa3ad;
+}
+.export-button {
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  height: 36px !important;
+  padding: 0 16px !important;
+  gap: 7px !important;
+  background: #eaf4ef !important;
+  color: #236c54 !important;
+  border: 1px solid rgba(35, 108, 84, 0.22) !important;
+}
+.export-button:hover:not(:disabled) {
+  background: #dfeedd !important;
+  color: #236c54 !important;
+}
 .server-count {
   font-size: 11px !important;
   padding: 5px 8px !important;

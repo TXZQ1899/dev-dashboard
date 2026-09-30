@@ -4,6 +4,7 @@ import { flushSync } from 'react-dom';
 import { useSearchParams } from 'next/navigation';
 import {
   Search,
+  GitBranch,
   ChevronDown,
   ChevronRight,
   ChevronLeft,
@@ -48,7 +49,8 @@ import {
   type Env,
   type App,
 } from '@/lib/inventory';
-import { appHasProcessOnIp, appProcessStatusSummary } from '@/lib/process-comparison';
+import { appHasProcessOnIp, appProcessStatusSummary, envServerVerdicts, ipServerState, ipSpecSummary, type ServerVerdicts } from '@/lib/process-comparison';
+import { appRepositoryNameMatches } from '@/lib/repositories';
 type Filter = 'all' | 'single' | 'unknown';
 
 // 环境列文案，页面展示与 CSV 导出共用同一口径。
@@ -59,6 +61,31 @@ function envCellText(a: App, e: Env): string {
   return `${s.ips.length} 台`;
 }
 
+// 环境规格列文案：每个 IP 附带服务器规格（多少核、多少内存），无数据标注未采集。
+function envSpecCellText(a: App, e: Env): string {
+  return info(a, e)
+    .ips.map((ip) => `${ip}：${ipSpecSummary(ip) || '未采集'}`)
+    .join('、');
+}
+
+// 服务器登录状态列：已收录服务器的登录情况（未收录的由「服务器未收录」列表达）。
+function loginVerdictText(v: ServerVerdicts): string {
+  if (v.canLogin && v.cannotLogin) return '部分不能登录';
+  if (v.cannotLogin) return '不能登录';
+  if (v.canLogin) return '能登录';
+  return '—';
+}
+
+// 进程未发现列：未登录/未收录的服务器无法核实进程，先标注原因，
+// 仅对可登录服务器给出 是（进程匹配）/ 否（进程未发现）。
+function processVerdictText(v: ServerVerdicts): string {
+  const parts: string[] = [];
+  if (v.cannotLogin) parts.push('未登录');
+  if (v.notCollected) parts.push('未收录');
+  if (v.canLogin) parts.push(v.unmatched ? '否' : '是');
+  return parts.join('、') || '—';
+}
+
 function csvCell(value: string): string {
   if (value.includes(',') || value.includes('"') || value.includes('\n')) {
     return '"' + value.replace(/"/g, '""') + '"';
@@ -66,49 +93,52 @@ function csvCell(value: string): string {
   return value;
 }
 
-// 按当前查询/筛选结果导出应用列表，包含页面表格字段、仓库原始地址及应用名旁的告警标识。
-function exportApplicationsCsv(rows: App[], pushEnv: Env | '') {
+// 按当前查询/筛选结果导出应用列表。登录状态与进程核实以环境为单位，
+// 因此每个应用固定导出三行（测试/仿真/生产各一行）。
+function exportApplicationsCsv(rows: App[]) {
   const header = [
     '应用ID',
     '应用名称',
+    '环境',
     '仓库类型',
     '仓库地址',
     '生产单点',
     '服务器共用（生产环境）',
     '进程未发现',
     '服务器未收录',
-    '待核实环境',
-    ...envs.map((e) => labels[e]),
-    `${pushEnv ? labels[pushEnv] : '全部环境'}最近成功 Push In`,
+    '服务器登录状态',
+    '服务器数量',
+    '服务器规格',
+    '最近成功 Push In',
     'HTTP 名',
     '端口号',
   ];
   const lines = [header.map(csvCell).join(',')];
   for (const a of rows) {
-    const processStatus = appProcessStatusSummary(a);
-    const unknownEnvs = envs
-      .filter((e) => info(a, e).unknown)
-      .map((e) => labels[e])
-      .join('、');
-    lines.push(
-      [
-        a.id,
-        a.name,
-        repositoryCategory(a.repository),
-        a.repository || '未提供',
-        info(a, 'PRODUCT').single ? '是' : '否',
-        sharedProductionAppIds.has(a.id) ? '是' : '否',
-        processStatus.hasUnmatched ? '是' : '否',
-        processStatus.hasNotCollected ? '是' : '否',
-        unknownEnvs,
-        ...envs.map((e) => envCellText(a, e)),
-        latestSuccessfulPushIn(a, pushEnv || undefined) || '无成功记录',
-        a.http || '未提供',
-        a.port || '未提供',
-      ]
-        .map(csvCell)
-        .join(','),
-    );
+    for (const e of envs) {
+      const v = envServerVerdicts(a, e);
+      lines.push(
+        [
+          a.id,
+          a.name,
+          labels[e],
+          repositoryCategory(a.repository),
+          a.repository || '未提供',
+          info(a, 'PRODUCT').single ? '是' : '否',
+          sharedProductionAppIds.has(a.id) ? '是' : '否',
+          processVerdictText(v),
+          v.notCollected ? '是' : '否',
+          loginVerdictText(v),
+          envCellText(a, e),
+          envSpecCellText(a, e),
+          latestSuccessfulPushIn(a, e) || '无成功记录',
+          a.http || '未提供',
+          a.port || '未提供',
+        ]
+          .map(csvCell)
+          .join(','),
+      );
+    }
   }
   const bom = '\uFEFF';
   const blob = new Blob([bom + lines.join('\r\n')], {
@@ -129,10 +159,41 @@ function repositorySearchValue(value: string) {
     .replace(/\.git\/?$/, '')
     .toLowerCase();
 }
+
+// 服务器 IP 的 JumpServer 收录/登录状态标记：红色=未收录，绿色=可登录，灰色=不能登录。
+function ServerStateMark({ ip }: { ip: string }) {
+  const meta = {
+    not_collected: {
+      className: 'server-state not-collected',
+      label: '未被JumpServer收录',
+      tooltip: '该服务器 IP 未被 JumpServer 收录',
+    },
+    can_login: {
+      className: 'server-state can-login',
+      label: '',
+      tooltip: '服务器已被 JumpServer 收录，可登录',
+    },
+    cannot_login: {
+      className: 'server-state cannot-login',
+      label: '服务器不能登录',
+      tooltip: '服务器已被 JumpServer 收录，但无法登录',
+    },
+  }[ipServerState(ip)];
+  return (
+    <Tooltip>
+      <TooltipTrigger className={meta.className} aria-label={meta.tooltip}>
+        <Server size={14} />
+        {meta.label && <span>{meta.label}</span>}
+      </TooltipTrigger>
+      <TooltipContent>{meta.tooltip}</TooltipContent>
+    </Tooltip>
+  );
+}
 function AppList() {
   const params = useSearchParams();
   const targetId = params.get('appId');
   const [query, setQuery] = useState('');
+  const [repoQuery, setRepoQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
   const [env, setEnv] = useState<Env | 'ALL'>('ALL');
   const [combination, setCombination] = useState<Env[] | null>(null);
@@ -141,7 +202,7 @@ function AppList() {
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   useEffect(() => {
-    setCombination(null);setPublishEnv('');setPublishPeriod('');
+    setCombination(null);setPublishEnv('');setPublishPeriod('');setRepoQuery('');
     const f = params.get('filter');
     const e = params.get('env');
     setFilter(f === 'single' || f === 'unknown' ? f : 'all');
@@ -228,7 +289,7 @@ function AppList() {
                 setQuery((value.query as string) || '');
                 setFilter((value.filter as Filter) || 'all');
                 setEnv('ALL');
-                setCombination(null);setPublishEnv('');setPublishPeriod('');
+                setCombination(null);setPublishEnv('');setPublishPeriod('');setRepoQuery('');
                 setPage(1);
               });
               return {
@@ -253,9 +314,14 @@ function AppList() {
       a.repository || '',
       ...envs.flatMap((e) => info(a, e).ips),
     ].some((v) => v.toLowerCase().includes(needle) || (a.repository && repositorySearchValue(a.repository).includes(repositorySearchValue(query))));
+    const repositoryUrls = [
+      a.repository,
+      ...envs.flatMap((e) => info(a, e).rows.map((r) => r.repository)),
+    ];
     const selected = env === 'ALL' ? envs : [env];
     return (
       match &&
+      appRepositoryNameMatches(a.id, repositoryUrls, repoQuery) &&
       matchesEnvironmentCombination(a,combination) &&
       matchesDeploymentPeriod(a,publishEnv,publishPeriod) &&
       (filter === 'single'
@@ -272,6 +338,7 @@ function AppList() {
   const reset = () => {
     setCombination(null);setPublishEnv('');setPublishPeriod('');
     setQuery('');
+    setRepoQuery('');
     setFilter('all');
     setEnv('ALL');
     setPage(1);
@@ -317,6 +384,31 @@ function AppList() {
                     aria-label="清空搜索"
                     onClick={() => {
                       setQuery('');
+                      setPage(1);
+                    }}
+                  >
+                    <X size={14} />
+                  </Button>
+                )}
+              </div>
+              <div className="search-field">
+                <GitBranch size={17} />
+                <Input
+                  aria-label="搜索 Git 仓库名"
+                  placeholder="搜索 Git 仓库名，如 tc-taicang…"
+                  value={repoQuery}
+                  onChange={(e) => {
+                    setRepoQuery(e.target.value);
+                    setPage(1);
+                  }}
+                />
+                {repoQuery && (
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="清空 Git 仓库名搜索"
+                    onClick={() => {
+                      setRepoQuery('');
                       setPage(1);
                     }}
                   >
@@ -380,14 +472,15 @@ function AppList() {
               </span>
               <div className="result-actions">
                 <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => exportApplicationsCsv(filtered, publishEnv)}
+                  variant="default"
+                  size="lg"
+                  className="export-button"
+                  onClick={() => exportApplicationsCsv(filtered)}
                   disabled={!filtered.length}
-                  aria-label="按当前查询和筛选条件导出应用列表 CSV"
+                  aria-label="按当前查询和筛选条件导出应用列表 CSV（每个应用每个环境一行）"
                 >
-                  <Download size={14} />
-                  导出 CSV（{filtered.length}）
+                  <Download size={16} />
+                  导出 CSV（{filtered.length} 个应用）
                 </Button>
                 <Button variant="ghost" size="sm" onClick={reset}>
                   重置筛选
@@ -549,6 +642,7 @@ function AppList() {
                                   <TableHeader>
                                     <TableRow>
                                       <TableHead>服务器 IP</TableHead>
+                                      <TableHead>规格</TableHead>
                                       <TableHead>端口号</TableHead>
                                       <TableHead>Git 分支</TableHead>
                                       <TableHead>
@@ -566,6 +660,7 @@ function AppList() {
                                       <TableRow key={`${r.deploy}-${i}`}>
                                         <TableCell>
                                           <code>{r.ip || '未返回 IP'}</code>
+                                          {r.ip && <ServerStateMark ip={r.ip} />}
                                           {r.ip && !appHasProcessOnIp(a.name, r.ip) && (
                                             <Tooltip>
                                               <TooltipTrigger
@@ -579,6 +674,9 @@ function AppList() {
                                               </TooltipContent>
                                             </Tooltip>
                                           )}
+                                        </TableCell>
+                                        <TableCell>
+                                          {ipSpecSummary(r.ip) || '—'}
                                         </TableCell>
                                         <TableCell>
                                           {r.port || a.port || '未提供'}

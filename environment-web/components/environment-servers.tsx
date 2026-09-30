@@ -1,6 +1,11 @@
 'use client';
 import { useState } from 'react';
-import { ArrowUpRight, ChevronRight, Download } from 'lucide-react';
+import {
+  ArrowUpRight,
+  ChevronRight,
+  Download,
+  Server,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -8,6 +13,12 @@ import {
   CollapsibleTrigger,
   CollapsibleContent,
 } from '@/components/ui/collapsible';
+import {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+  TooltipProvider,
+} from '@/components/ui/tooltip';
 import {
   Table,
   TableHeader,
@@ -20,9 +31,42 @@ import { environmentServers, labels, type App } from '@/lib/inventory';
 import {
   compareServerApps,
   ipInJumpServer,
+  ipServerState,
+  ipSpecSummary,
   type ServerComparison,
 } from '@/lib/process-comparison';
 import { privateIpForPublic } from '@/lib/ecs';
+
+// 服务器 IP 的 JumpServer 收录/登录状态标记：
+// 红色=未收录，绿色=可登录，灰色=不能登录。
+function ServerStateMark({ ip }: { ip: string }) {
+  const meta = {
+    not_collected: {
+      className: 'server-state not-collected',
+      label: '未被JumpServer收录',
+      tooltip: '该服务器 IP 未被 JumpServer 收录',
+    },
+    can_login: {
+      className: 'server-state can-login',
+      label: '',
+      tooltip: '服务器已被 JumpServer 收录，可登录',
+    },
+    cannot_login: {
+      className: 'server-state cannot-login',
+      label: '服务器不能登录',
+      tooltip: '服务器已被 JumpServer 收录，但无法登录',
+    },
+  }[ipServerState(ip)];
+  return (
+    <Tooltip>
+      <TooltipTrigger className={meta.className} aria-label={meta.tooltip}>
+        <Server size={14} />
+        {meta.label && <span>{meta.label}</span>}
+      </TooltipTrigger>
+      <TooltipContent>{meta.tooltip}</TooltipContent>
+    </Tooltip>
+  );
+}
 
 // 公网 IP（EIP）展示为「内网IP（公网IP: x.x.x.x）」，无映射时原样返回。
 function displayIp(ip: string): string {
@@ -58,13 +102,16 @@ function exportEnvironmentCsv(env: string, servers: ExportServer[]) {
   const lines: string[] = [];
   const header = [
     '服务器IP',
-    '部署应用数',
+    '服务器规格',
+    '部署应用总数',
     '应用ID',
     '应用名称',
-    '是否匹配进程',
-    '进程ID',
-    '进程详情',
-    '服务器是否可登录',
+    '端口号',
+    '进程匹配',
+    '采集进程数',
+    '匹配应用数',
+    '未匹配应用数',
+    '服务器登录状态',
   ];
   lines.push(header.map(csvCell).join(','));
 
@@ -72,26 +119,45 @@ function exportEnvironmentCsv(env: string, servers: ExportServer[]) {
     const comparison = compareServerApps(server.ip, server.apps);
     const loginStatus = loginStatusText(server.ip, comparison);
     const shownIp = displayIp(server.ip);
+    const spec = ipSpecSummary(server.ip) || '';
+    const totalApps = String(server.apps.length);
+    const collectedProcesses = String(comparison.processes.length);
+    const matchedApps = String(
+      comparison.apps.filter((a) => a.matched).length,
+    );
+    const unmatchedApps = String(
+      comparison.apps.filter((a) => !a.matched).length,
+    );
 
     server.apps.forEach((app, i) => {
       const ac = comparison.apps[i];
       const matched = ac?.matched ? '是' : '否';
-      const pid = ac?.process ? String(ac.process.pid) : '';
-      const processDetail = ac?.process ? ac.process.command : '';
-      lines.push(
-        [
-          shownIp,
-          i === 0 ? String(server.apps.length) : '',
-          app.id,
-          app.name,
-          matched,
-          pid,
-          processDetail,
-          i === 0 ? loginStatus : '',
-        ]
-          .map(csvCell)
-          .join(','),
-      );
+      // 端口与列表页展示一致：未匹配到进程时不补端口；
+      // 匹配到进程且原端口缺失时，附「（进程补充）」后缀的端口额外成行。
+      const realPorts = app.ports.filter((p) => p && p !== '未提供端口');
+      const portList = ac?.supplementedPort
+        ? [...realPorts, `${ac.supplementedPort}（进程补充）`]
+        : app.ports;
+      const ports = portList.length ? portList : [''];
+      ports.forEach((port) => {
+        lines.push(
+          [
+            shownIp,
+            spec,
+            totalApps,
+            app.id,
+            app.name,
+            port,
+            matched,
+            collectedProcesses,
+            matchedApps,
+            unmatchedApps,
+            loginStatus,
+          ]
+            .map(csvCell)
+            .join(','),
+        );
+      });
     });
   }
 
@@ -135,7 +201,8 @@ export function EnvironmentServers() {
     );
   }
   return (
-    <section className="panel environment-servers">
+    <TooltipProvider>
+      <section className="panel environment-servers">
       <div className="panel-title">
         <div>
           <h2>各环境服务器清单</h2>
@@ -205,6 +272,7 @@ export function EnvironmentServers() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>服务器 IP</TableHead>
+                    <TableHead>服务器规格</TableHead>
                     <TableHead>部署应用总数</TableHead>
                     <TableHead>应用名称：端口号</TableHead>
                     {compareMode && <TableHead>进程对比</TableHead>}
@@ -216,10 +284,19 @@ export function EnvironmentServers() {
                     const comparison = compareMode
                       ? compareServerApps(server.ip, server.apps)
                       : null;
+                    const spec = ipSpecSummary(server.ip);
                     return (
                       <TableRow key={server.ip}>
                         <TableCell>
                           <code>{displayIp(server.ip)}</code>
+                          <ServerStateMark ip={server.ip} />
+                        </TableCell>
+                        <TableCell>
+                          {spec ? (
+                            <code className="server-spec">{spec}</code>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
                         </TableCell>
                         <TableCell>
                           <strong className="shared-total">
@@ -299,33 +376,18 @@ export function EnvironmentServers() {
                             {comparison?.available ? (
                               <div className="text-xs space-y-1">
                                 <span className="text-muted-foreground">
-                                  进程 {comparison.processes.length} 个
+                                  采集进程数：{comparison.processes.length}
                                 </span>
                                 <br />
                                 <span className="text-muted-foreground">
-                                  未匹配{' '}
-                                  {comparison.apps.filter((a) => !a.matched).length}{' '}
-                                  应用
+                                  匹配应用数：
+                                  {comparison.apps.filter((a) => a.matched).length}
                                 </span>
                                 <br />
                                 <span className="text-muted-foreground">
-                                  补充端口{' '}
-                                  {
-                                    comparison.apps.filter(
-                                      (a) => a.supplementedPort,
-                                    ).length
-                                  }{' '}
-                                  个
+                                  未匹配应用数：
+                                  {comparison.apps.filter((a) => !a.matched).length}
                                 </span>
-                                {!!comparison.extraProcesses.length && (
-                                  <>
-                                    <br />
-                                    <span className="text-muted-foreground">
-                                      额外进程{' '}
-                                      {comparison.extraProcesses.length} 个
-                                    </span>
-                                  </>
-                                )}
                               </div>
                             ) : (
                               <span className="text-xs text-muted-foreground">
@@ -339,7 +401,7 @@ export function EnvironmentServers() {
                   })}
                   {!servers.length && (
                     <TableRow>
-                      <TableCell colSpan={compareMode ? 4 : 3}>
+                      <TableCell colSpan={compareMode ? 5 : 4}>
                         {search
                           ? '该环境没有匹配的服务器 IP。'
                           : '该环境暂无已知服务器 IP。'}
@@ -352,6 +414,7 @@ export function EnvironmentServers() {
           </CollapsibleContent>
         </Collapsible>
       ))}
-    </section>
+      </section>
+    </TooltipProvider>
   );
 }
