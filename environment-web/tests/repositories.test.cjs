@@ -160,3 +160,33 @@ test('app repository name search covers environment-level repository overrides',
   assert.equal(m('1865', [], '   '), true);
 });
 
+test('repository search supports prefix, exact and suffix URL matching', () => {
+  const m = mod.exports.appRepositoryNameMatches;
+  const url = 'https://codeup.aliyun.com/foliday-admin/fsop-productcenter.git';
+  // 前缀匹配：输入 https://codeup.aliyun.com 找出所有以该 host 开头的仓库
+  assert.equal(m('unknown-app', [url], 'https://codeup.aliyun.com'), true);
+  assert.equal(m('unknown-app', [url], 'https://codeup.aliyun.com/'), true);
+  // 精确匹配：输入完整 URL 等价命中
+  assert.equal(m('unknown-app', [url], 'https://codeup.aliyun.com/foliday-admin/fsop-productcenter.git'), true);
+  // 后缀匹配：输入 fsop-productcenter.git 命中以该串结尾的仓库
+  assert.equal(m('unknown-app', [url], 'fsop-productcenter.git'), true);
+  // 仅仓库名（去掉 .git）继续命中
+  assert.equal(m('unknown-app', [url], 'fsop-productcenter'), true);
+  // 子路径片段命中
+  assert.equal(m('unknown-app', [url], 'foliday-admin/fsop-productcenter'), true);
+  // 不匹配的仓库不命中
+  assert.equal(m('unknown-app', ['https://codeup.aliyun.com/foliday-admin/other.git'], 'fsop-productcenter.git'), false);
+  assert.equal(m('unknown-app', ['https://gitlab.example.com/team/other.git'], 'https://code.aliyun.com'), false);
+  // host 严格区分：code.aliyun.com 与 codeup.aliyun.com 是不同入口，不做别名合并
+  assert.equal(m('unknown-app', ['https://codeup.aliyun.com/foliday-admin/fsop-productcenter.git'], 'code.aliyun.com'), false);
+  assert.equal(m('unknown-app', ['https://code.aliyun.com/foliday-admin/fsop-productcenter.git'], 'code.aliyun.com'), true);
+  // SSH scp-like 形式同样支持三种匹配
+  const ssh = 'git@codeup.aliyun.com:foliday-admin/fsop-productcenter.git';
+  assert.equal(m('unknown-app', [ssh], 'https://codeup.aliyun.com'), true);
+  assert.equal(m('unknown-app', [ssh], 'fsop-productcenter.git'), true);
+  assert.equal(m('unknown-app', [ssh], 'codeup.aliyun.com/foliday-admin/fsop-productcenter.git'), true);
+  assert.equal(m('unknown-app', [ssh], 'code.aliyun.com'), false);
+  // 大小写不敏感
+  assert.equal(m('unknown-app', ['HTTPS://Codeup.Aliyun.com/Foliday-Admin/FSOP-ProductCenter.GIT'], 'fsop-productcenter.git'), true);
+});
+

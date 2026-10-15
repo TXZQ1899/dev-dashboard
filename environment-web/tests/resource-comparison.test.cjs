@@ -5,7 +5,19 @@ const vm=require('node:vm');
 const ts=require('typescript');
 const snapshots=Object.fromEntries(['eip-snapshot.json','nat-snapshot.json','dns-snapshot.json','clb-snapshot.json','snapshot.json','ecs-snapshot.json','jumpserver-snapshot.json','repositories.json'].map(name=>[name,JSON.parse(fs.readFileSync(process.env.RESOURCE_SNAPSHOT_DIR && fs.existsSync(process.env.RESOURCE_SNAPSHOT_DIR+'/'+name) ? process.env.RESOURCE_SNAPSHOT_DIR+'/'+name : 'lib/'+name,'utf8'))]));
 const compiled=ts.transpileModule(fs.readFileSync('lib/resource-comparison.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText;
-const sandbox={exports:{},require:name=>snapshots[name.replace('./','')],URL};
+const loadModule=path=>{
+  const code=ts.transpileModule(fs.readFileSync(path,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText;
+  const scope={exports:{},require:name=>{
+    if(name==='./datacenter-networks')return loadModule('lib/datacenter-networks.ts');
+    return snapshots[name.replace('./','')];
+  },URL};
+  vm.runInNewContext(code,scope);
+  return scope.exports;
+};
+const sandbox={exports:{},require:name=>{
+  if(name==='./datacenter-networks')return loadModule('lib/datacenter-networks.ts');
+  return snapshots[name.replace('./','')];
+},URL};
 vm.runInNewContext(compiled,sandbox);
 const c=sandbox.exports;
 const plain=value=>JSON.parse(JSON.stringify(value));
@@ -26,12 +38,13 @@ test('same ECS alternate IP does not imply exact-IP coverage or inherit unrelate
   assert.equal(row.sources.jumpserver,false);assert.deepEqual(plain(row.otherManagedIps),['10.1.1.1']);
   assert.deepEqual(plain(row.jumpGroups),[]);assert.deepEqual(plain(row.associations),[]);assert.deepEqual(plain(row.projectNames),[]);
 });
-test('on-prem is only the confirmed 10.58/16 range; unmatched private IP stays blank',()=>{
-  const input=empty();input.assets=['10.58.0.1','10.58.255.254','10.59.0.1','10.580.0.1'].map((ip,i)=>({id:String(i),ip}));
+test('on-prem is only the four confirmed /24 segments; other 10.58.x stays blank',()=>{
+  const input=empty();input.assets=['10.58.1.34','10.58.9.217','10.58.10.90','10.58.140.2','10.58.0.1','10.58.5.44','10.58.255.254','10.59.0.1','10.580.0.1'].map((ip,i)=>({id:String(i),ip}));
   const rows=c.buildComparison(input);
-  assert.equal(rows.find(r=>r.ip==='10.58.0.1').resourceType,'公司机房');
-  assert.equal(rows.find(r=>r.ip==='10.58.255.254').resourceType,'公司机房');
-  for(const ip of ['10.59.0.1','10.580.0.1'])assert.equal(rows.find(r=>r.ip===ip).resourceType,'');
+  for(const ip of ['10.58.1.34','10.58.9.217','10.58.10.90','10.58.140.2'])
+    assert.equal(rows.find(r=>r.ip===ip).resourceType,'公司机房');
+  for(const ip of ['10.58.0.1','10.58.5.44','10.58.255.254','10.59.0.1','10.580.0.1'])
+    assert.equal(rows.find(r=>r.ip===ip).resourceType,'');
 });
 test('duplicate IPs retain distinct most-specific memberships for every JumpServer asset',()=>{
   const input=empty();input.assets=[{id:'j1',ip:'10.1.1.1'},{id:'j2',ip:'10.1.1.1'}];

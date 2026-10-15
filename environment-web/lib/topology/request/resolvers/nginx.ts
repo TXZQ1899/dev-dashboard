@@ -535,6 +535,22 @@ export class NginxResolver implements PathResolver {
     evidence: Evidence[],
     warnings: string[],
   ): ResolutionResult {
+    // Static locations serve files from a local directory (root/alias); there
+    // is no proxied backend, so the branch stops here instead of treating the
+    // directory path as a hostname to resolve.
+    if (text(upstream.attributes.directive) === 'static/other') {
+      const path = text(upstream.attributes.target);
+      return {
+        rule: 'nginx:backend',
+        moves: [],
+        warnings: [
+          path
+            ? `Upstream ${upstream.id} is a static location serving the local directory ${path}; there is no proxied backend, branch stops.`
+            : `Upstream ${upstream.id} is a static location with no proxied backend; branch stops.`,
+          ...warnings,
+        ],
+      };
+    }
     const target = parseUpstreamTarget(upstream);
     switch (target.kind) {
       case 'none':

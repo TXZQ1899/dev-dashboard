@@ -6,6 +6,7 @@ import clbSnapshot from './clb-snapshot.json';
 import eipSnapshot from './eip-snapshot.json';
 import natSnapshot from './nat-snapshot.json';
 import dnsSnapshot from './dns-snapshot.json';
+import { isLocalDatacenterIp } from './datacenter-networks';
 
 type Deployment = {
   ip?: string | null;
@@ -266,9 +267,7 @@ export function buildComparison(input: ComparisonInput): ResourceRow[] {
           });
       }
   for (const row of rows.values()) {
-    const onPrem =
-      /^10\.58\.\d{1,3}\.\d{1,3}$/.test(row.ip) &&
-      row.ip.split('.').every((p) => Number(p) <= 255);
+    const onPrem = isLocalDatacenterIp(row.ip);
     row.classificationConflict = (onPrem && row.sources.aliyun) || (row.clbInstanceIds.length > 0 && row.cloudInstanceIds.length > 0);
     row.cloudInstanceIds = unique(row.cloudInstanceIds);
     row.clbInstanceIds = unique(row.clbInstanceIds);

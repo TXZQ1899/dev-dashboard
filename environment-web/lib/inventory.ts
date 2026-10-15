@@ -25,6 +25,7 @@ export type App = {
   repository?: string;
   id: string;
   name: string;
+  appType?: string;
   http: string;
   port: string;
   envs: Record<Env, Deployment[]>;

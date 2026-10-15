@@ -886,6 +886,11 @@ h2 {
   white-space: nowrap;
   cursor: help;
 }
+/* 原始配置文件中按 URI 定位到的 location 配置块高亮。 */
+.nginx-location-line {
+  background: #fff3bf;
+  box-shadow: inset 2px 0 0 #d69a50;
+}
 .server-state.not-collected {
   color: #c0392b;
 }
@@ -920,6 +925,172 @@ h2 {
 .server-count svg {
   width: 12px !important;
   height: 12px !important;
+}
+
+/* 按 IP 集查询子页面 */
+.ip-set-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 20px;
+  font-size: 12px;
+  color: #367e65;
+}
+.ip-set-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 22px;
+}
+.ip-set-input-area {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+}
+.ip-set-textarea {
+  flex: 1;
+  /* Textarea 组件自带 Tailwind field-sizing: content（高度随内容自适应，忽略
+     rows 属性）；此处改回 fixed，让 rows 控制高度（默认 10 行、收缩 3 行）。 */
+  field-sizing: fixed;
+  min-height: 200px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.ip-set-textarea.ip-set-textarea-collapsed {
+  min-height: 0;
+  opacity: 0.85;
+}
+.ip-set-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.ip-set-hint {
+  font-size: 11px;
+  color: #99a79e;
+  margin: 0;
+}
+.ip-set-result {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ip-set-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0;
+  font-size: 11px;
+  color: #99a79e;
+}
+.ip-set-summary > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.ip-set-summary b {
+  color: #63826e;
+  font-weight: 600;
+}
+.ip-set-table {
+  font-size: 11px;
+}
+.ip-set-table > thead th {
+  font-size: 11px;
+  color: #83968a;
+  font-weight: 400;
+  padding: 10px 12px;
+  background: #f8faf9;
+}
+.ip-set-table > tbody tr > td {
+  padding: 9px 12px;
+  border-color: #eef2ef;
+  vertical-align: top;
+}
+.ip-app-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: #374f42;
+}
+.ip-app-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-right: 6px;
+  color: #367e65;
+  font-weight: 600;
+}
+.ip-app-link:hover {
+  text-decoration: underline;
+  color: #2b6651;
+}
+.ip-env-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  font-size: 10px;
+  color: #87998d;
+}
+.ip-no-app {
+  color: #c0392b;
+  font-size: 11px;
+}
+.ip-miss-row {
+  background: #fdf5f4;
+}
+.ip-set-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid #e2e8e0;
+  padding-bottom: 0;
+}
+.ip-set-tab {
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  padding: 7px 16px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #83968a;
+  background: transparent;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.ip-set-tab:hover {
+  color: #475569;
+  background: #f8faf9;
+}
+.ip-set-tab.active {
+  color: #24866a;
+  border-color: #e2e8e0;
+  background: #fff;
+  position: relative;
+  top: 1px;
+}
+.ip-unmatched {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #c0392b;
+  background: #fdf5f4;
+  border: 1px solid #f3d5d0;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.ip-unmatched code {
+  color: #b04a3c;
+  font-size: 11px;
 }
 .server-count.uncertain {
   background: #f9f3e9;
@@ -1010,6 +1181,11 @@ h2 {
   white-space: normal;
   min-width: 180px;
   color: #ad8b66;
+}
+.detail-table .match-note-text {
+  white-space: normal;
+  min-width: 180px;
+  color: #478b60;
 }
 .empty-details {
   padding: 15px;
@@ -1199,6 +1375,39 @@ h2 {
 .environment-server-trigger[data-panel-open] svg {
   transform: rotate(90deg);
 }
+.ip-summary-row {
+  cursor: pointer;
+}
+.ip-summary-row:hover {
+  background: #f4f8f6;
+}
+.ip-summary-row .chevron {
+  color: #64756d;
+  transition: transform 0.15s ease;
+}
+.ip-summary-row.open .chevron {
+  transform: rotate(90deg);
+}
+.proc-chip {
+  display: inline-block;
+  margin: 1px 6px 1px 0;
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #f8faf9;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.proc-chip-warn {
+  border-color: #f59e0b;
+  background: #fef3c7;
+  color: #92400e;
+}
+.ip-detail-box {
+  padding: 16px 20px;
+  background: #fbfdfc;
+  box-shadow: inset 0 2px 6px rgba(36, 134, 106, 0.08);
+}
 .jumpserver-page {
   padding: 32px;
 }
@@ -1343,6 +1552,14 @@ h2 {
   background: #eaf5ef;
 }
 .settings-progress{font-weight:600;color:#175cd3}.settings-log{margin-top:16px}.settings-log pre{max-height:360px;overflow:auto;padding:12px;background:#101828;color:#d0d5dd;border-radius:6px;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap}
+.settings-failures{margin-top:12px;border:1px solid #fda29b;border-radius:8px;background:#fff0ed}
+.settings-failures > summary{padding:10px 14px;font-weight:600;color:#b42318;cursor:pointer;font-size:14px}
+.settings-failure-list{margin:0;padding:0 14px 14px;list-style:none}
+.settings-failure-item{padding:8px 0;border-bottom:1px solid #fdd0c9;display:flex;flex-wrap:wrap;gap:4px 8px;align-items:baseline}
+.settings-failure-item:last-child{border-bottom:none}
+.settings-failure-source{font-weight:600;color:#b42318;min-width:60px}
+.settings-failure-type{font-size:12px;color:#912018;background:#fee4e2;padding:1px 6px;border-radius:4px}
+.settings-failure-message{flex:1;min-width:200px;color:#475467;font-size:13px;line-height:1.5}
 .settings-error {
   background: #fff0ed;
   color: #a03f32;

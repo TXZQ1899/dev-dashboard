@@ -238,7 +238,7 @@ export function EnvironmentServers() {
         )}
         {compareMode && (
           <span className="text-sm text-muted-foreground">
-            红色标记的应用未在 JumpServer 进程中发现；绿色端口为从进程命令补充。
+            红色标记的应用未在 JumpServer 进程中发现；蓝色边框表示进程未匹配但 Webapps 应用目录存在同名应用；绿色端口为从进程命令补充。
           </span>
         )}
       </div>
@@ -335,14 +335,18 @@ export function EnvironmentServers() {
                                       ? { color: '#dc2626', borderColor: '#dc2626', background: '#fef2f2' }
                                       : supplemented
                                         ? { borderColor: '#16a34a' }
-                                        : undefined
+                                        : appComparison?.webapp
+                                          ? { borderColor: '#0ea5e9' }
+                                          : undefined
                                   }
                                   title={
                                     appComparison?.process
                                       ? `匹配进程 PID ${appComparison.process.pid}：${appComparison.process.command}`
-                                      : isUnmatched
-                                        ? '未在 JumpServer 进程中发现此应用'
-                                        : undefined
+                                      : appComparison?.webapp
+                                        ? `未匹配到进程；Webapps 应用目录存在同名应用：${appComparison.webapp.name}`
+                                        : isUnmatched
+                                          ? '未在 JumpServer 进程中发现此应用'
+                                          : undefined
                                   }
                                   href={`/applications?appId=${encodeURIComponent(app.id)}&env=${env}#app-${encodeURIComponent(app.id)}`}
                                 >

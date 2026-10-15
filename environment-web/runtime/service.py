@@ -148,6 +148,85 @@ class Service:
         if result is None: raise ValueError('该版本未保存此资产的 Nginx 原始配置')
         return result
 
+    def update_asset_root_password(self, asset_id, password):
+        """Store one user-supplied root password so the next inspection can su -l with it.
+
+        Writes only this asset's IP entry in the password map; collection then tries the
+        mapped su password first and falls back to the normal probe (re-marking
+        password_error if the new password is also wrong).
+        """
+        if not isinstance(asset_id, str) or not re.fullmatch(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}', asset_id):
+            raise ValueError('无效的资产 ID')
+        if not isinstance(password, str) or not password or len(password) > 4096 or any(c in password for c in ('\r','\n','\x00')):
+            raise ValueError('root 密码格式无效')
+        with self.lock:
+            current = read(DATA/'current.json')
+            identifier = current.get('id') if isinstance(current, dict) else None
+            if not isinstance(identifier, str) or not re.fullmatch(r'[A-Za-z0-9-]{1,80}', identifier):
+                raise ValueError('缺少当前数据版本')
+            snapshot = read(DATA/'versions'/identifier/'jumpserver-snapshot.json', {})
+            ip = next((a.get('ip') for a in snapshot.get('assets', []) if a.get('id') == asset_id and a.get('ip')), None)
+            if not ip: raise ValueError('当前数据版本不存在此资产')
+            ip_map = read(DATA/'secrets/ip-password-map.json', {})
+            ip_map[ip] = {'method':'su', 'password':password, 'status':'normal', 'updatedAt':now()}
+            write(DATA/'secrets/ip-password-map.json', ip_map)
+
+    def ip_login_info(self, ip):
+        """Return the login method and password stored for one JumpServer-managed IP.
+
+        Reads the current data version's JumpServer snapshot (for hostname / asset id /
+        inspection status) and secrets/ip-password-map.json (for the saved login
+        method and password). Backs the /jumpserver/login/<ip> URL an operator can
+        paste into the browser address bar to look up how to sudo or su into a
+        specific machine; the URL is intentionally not linked from any page.
+        """
+        if not isinstance(ip, str) or not re.fullmatch(r'\d{1,3}(?:\.\d{1,3}){3}', ip):
+            raise ValueError('IP 格式无效')
+        with self.lock:
+            current = read(DATA/'current.json')
+            identifier = current.get('id') if isinstance(current, dict) else None
+            if not isinstance(identifier, str) or not re.fullmatch(r'[A-Za-z0-9-]{1,80}', identifier):
+                raise ValueError('缺少当前数据版本')
+            snapshot = read(DATA/'versions'/identifier/'jumpserver-snapshot.json', {})
+            ip_map = read(DATA/'secrets/ip-password-map.json', {})
+        assets = snapshot.get('assets', []) if isinstance(snapshot, dict) else []
+        asset = next((a for a in assets if isinstance(a, dict) and a.get('ip') == ip), None)
+        if not asset:
+            raise ValueError('当前数据版本未收录此 IP')
+        inspection = asset.get('inspection') if isinstance(asset.get('inspection'), dict) else None
+        entry = ip_map.get(ip) if isinstance(ip_map, dict) else None
+        info = {
+            'ip': ip,
+            'hostname': asset.get('hostname'),
+            'assetId': asset.get('id'),
+            'loginStatus': inspection.get('loginStatus') if inspection else None,
+            'sudoStatus': inspection.get('sudoStatus') if inspection else None,
+            'inspectionCheckedAt': inspection.get('checkedAt') if inspection else None,
+            'elevation': None,
+            'note': '',
+        }
+        if isinstance(entry, dict):
+            method = entry.get('method')
+            status = entry.get('status')
+            info['elevation'] = {
+                'method': method,
+                'status': status,
+                # Only expose the password when the entry is known-good; never
+                # surface a stored value alongside a password_error marker.
+                'password': entry.get('password') if status == 'normal' else None,
+                'updatedAt': entry.get('updatedAt'),
+                'source': 'ip-password-map',
+            }
+            if status == 'password_error':
+                info['note'] = '映射表已标记密码错误，采集时跳过此服务器的 root 提权；请在 JumpServer 页面"单独采集"时输入新 root 密码清除标记'
+            elif status == 'normal' and method in ('sudo-i', 'su'):
+                info['note'] = f'采集时使用 {method} 提权到 root；密码来自最近一次成功的提权或手动配置'
+            else:
+                info['note'] = '映射表存在此 IP 的记录，但方法或状态不完整'
+        else:
+            info['note'] = '未在 ip-password-map 中配置此服务器的提权方式；采集时按默认探测顺序：sudo -i（folidev）→ su -l（备选 root 密码1）→ su -l（备选 root 密码2）'
+        return info
+
     def topology_status(self):
         pointer=read(DATA/'topology/latest.json')
         identifier=pointer.get('id') if isinstance(pointer,dict) else None
@@ -278,12 +357,35 @@ class Service:
         except json.JSONDecodeError: raise ValueError('请求链路查询结果无法解析')
         return {'topology':{'id':status['id'],'generatedAt':status['generatedAt']},'result':result}
 
+    def nginx_location_query(self,params):
+        """Reverse lookup: nginx routes whose location URI contains the query -> file/host/upstream/backends."""
+        status=self.topology_status()
+        if not status: raise ValueError('尚未生成 Topology；请先在 Settings 页面基于当前数据版本生成')
+        query=(params.get('q') or [''])[0].strip()
+        if not query or len(query)>253: raise ValueError('q 必须是 1-253 个字符的 location URI')
+        environment=(params.get('env') or [''])[0].strip().upper()
+        if environment and environment not in REQUEST_ENVIRONMENTS: raise ValueError('env 必须是 PRODUCT、TEST 或 SIMULATION')
+        command=['node',str(APP/'scripts'/'topology-path.mjs'),'nginx-location',query,'--json','--file',str(self.topology_file(status['id']))]
+        if environment: command+=['--env',environment]
+        try:
+            proc=subprocess.run(command,cwd=APP,capture_output=True,text=True,timeout=60)
+        except subprocess.TimeoutExpired:
+            raise ValueError('Nginx Location 查询超时')
+        if proc.returncode:
+            detail=(proc.stderr or proc.stdout).strip()[-400:] or '未知错误'
+            raise ValueError('Nginx Location 查询失败：'+detail)
+        try: result=json.loads(proc.stdout)
+        except json.JSONDecodeError: raise ValueError('Nginx Location 查询结果无法解析')
+        return {'topology':{'id':status['id'],'generatedAt':status['generatedAt']},'result':result}
+
     def status(self):
         with self.lock:
             saved = credentials()
             versions = [read(p) for p in (DATA/'versions').glob('*/version.json')]
             job = dict(self.job) if self.job else None
-            if job and job['status'] == 'running' and job['kind'] in ('sync', 'local_gitlab', 'jumpserver', 'jumpserver_asset'):
+            # Every kind except 'switch' runs collect.py and writes collection.log
+            # / progress.json / slots; switch only swaps an already-ready version.
+            if job and job['status'] == 'running' and job['kind'] != 'switch':
                 folder = DATA/'versions'/job['id']
                 try: progress = read(DATA/'versions'/job['id']/'progress.json')
                 except json.JSONDecodeError: progress = None
@@ -313,10 +415,26 @@ class Service:
                         try: slot_logs[path.stem] = path.read_text(errors='replace')[-12000:]
                         except OSError: pass
                     if slot_logs: job['slotLogs'] = slot_logs
+            # For failed (or still-finishing) jobs, surface the full collection
+            # log and structured failure details so the user can see exactly
+            # which source failed and why, not just a generic error string.
+            if job and job.get('id') and job.get('kind') != 'switch':
+                folder = DATA/'versions'/job['id']
+                if 'logTail' not in job:
+                    log = folder/'collection.log'
+                    if log.exists():
+                        try: job['logTail'] = log.read_text(errors='replace')[-12000:]
+                        except OSError: pass
+                try: error = read(folder/'collection-error.json', {})
+                except (json.JSONDecodeError, OSError): error = {}
+                if error.get('failures'):
+                    job['failures'] = error['failures']
             return {'cookies':{key:{'configured':bool(saved.get(key,{}).get('value')),
                     'updatedAt':saved.get(key,{}).get('updatedAt'),
                     'alert':read(DATA/'cookie-alerts.json',{}).get(key)} for key in ('devops','aliyun','jumpserver','local_gitlab')},
                     'folidev':{'configured':bool(saved.get('folidev',{}).get('value')), 'updatedAt':saved.get('folidev',{}).get('updatedAt')},
+                    'rootAlt1':{'configured':bool(saved.get('rootAlt1',{}).get('value')), 'updatedAt':saved.get('rootAlt1',{}).get('updatedAt')},
+                    'rootAlt2':{'configured':bool(saved.get('rootAlt2',{}).get('value')), 'updatedAt':saved.get('rootAlt2',{}).get('updatedAt')},
                     'current':read(DATA/'current.json'), 'schedule':read(DATA/'schedule.json'),
                     'versions':sorted(versions,key=lambda v:v['createdAt'],reverse=True), 'job':job,
                     'storage':'Docker 数据卷 envscope-data；每次同步独立目录，重建容器后保留','topology':self.topology_status()}
@@ -337,6 +455,19 @@ class Service:
             if not isinstance(password, str) or len(password) > 4096 or any(c in password for c in ('\r','\n','\x00')):
                 raise ValueError('folidev 密码格式无效')
             if password: saved['folidev'] = {'value':password, 'updatedAt':now()}
+            password_changed = bool(password)
+            for alt_key, alt_field in (('rootAlt1','rootPasswordAlt1'), ('rootAlt2','rootPasswordAlt2')):
+                alt_pw = payload.get(alt_field, '')
+                if not isinstance(alt_pw, str) or len(alt_pw) > 4096 or any(c in alt_pw for c in ('\r','\n','\x00')):
+                    raise ValueError('备选 root 密码格式无效')
+                if alt_pw:
+                    saved[alt_key] = {'value':alt_pw, 'updatedAt':now()}
+                    password_changed = True
+            if password_changed:
+                ip_map = read(DATA/'secrets/ip-password-map.json', {})
+                cleared = {ip: e for ip, e in ip_map.items() if e.get('status') != 'password_error'}
+                if len(cleared) != len(ip_map):
+                    write(DATA/'secrets/ip-password-map.json', cleared)
             schedule = payload.get('schedule')
             if schedule is not None:
                 if not isinstance(schedule.get('enabled'),bool) or not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d',schedule.get('time','')):
@@ -408,11 +539,22 @@ class Service:
                     # A source sync must produce fresh data, not accidentally retain the copied snapshot.
                     if kind in ('clb', 'nat'): (folder/f'{kind}-snapshot.json').unlink(missing_ok=True)
                     with tempfile.TemporaryDirectory(prefix='envscope-input-') as tmp:
-                        creds=Path(tmp)/'credentials.json'; write(creds, credentials())
+                        creds=Path(tmp)/'credentials.json'
+                        creds_data=credentials(); creds_data['_ipPasswordMap']=read(DATA/'secrets/ip-password-map.json',{})
+                        write(creds, creds_data)
                         command=['python3',str(APP/'runtime/collect.py'),str(folder),str(creds),kind]
                         if kind == 'jumpserver_asset': command.append(asset_id)
                         with (folder/'collection.log').open('w') as log:
                             p=subprocess.run(command,stdout=log,stderr=log,timeout=7200)
+                    if not p.returncode:
+                        map_path=folder/'ip-password-map-updated.json'
+                        if map_path.exists():
+                            updates=read(map_path,{})
+                            if updates:
+                                with self.lock:
+                                    ip_map=read(DATA/'secrets/ip-password-map.json',{})
+                                    ip_map.update(updates)
+                                    write(DATA/'secrets/ip-password-map.json',ip_map)
                     if p.returncode:
                         detail=self.collection_error(folder)
                         raise ValueError(f'{kind} 采集失败：{detail}；当前版本未改变')
@@ -428,9 +570,20 @@ class Service:
                     write(folder/'ecs-projects.json', {'projects':previous['projects'],'note':'项目名称目录沿用前版；ECS 实例及项目 ID 本次实时采集'})
                     with tempfile.TemporaryDirectory(prefix='envscope-input-') as tmp:
                         creds=Path(tmp)/'credentials.json'
-                        with self.lock: write(creds,credentials())
+                        with self.lock:
+                            creds_data=credentials(); creds_data['_ipPasswordMap']=read(DATA/'secrets/ip-password-map.json',{})
+                            write(creds,creds_data)
                         with (folder/'collection.log').open('w') as log:
                             p=subprocess.run(['python3',str(APP/'runtime/collect.py'),str(folder),str(creds)],stdout=log,stderr=log,timeout=7200)
+                        if not p.returncode:
+                            map_path=folder/'ip-password-map-updated.json'
+                            if map_path.exists():
+                                updates=read(map_path,{})
+                                if updates:
+                                    with self.lock:
+                                        ip_map=read(DATA/'secrets/ip-password-map.json',{})
+                                        ip_map.update(updates)
+                                        write(DATA/'secrets/ip-password-map.json',ip_map)
                         if p.returncode:
                             detail=self.collection_error(folder)
                             raise ValueError('采集失败：'+detail+'；当前版本未改变')
@@ -558,13 +711,30 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(body)))
         self.end_headers();self.wfile.write(body)
 
-    def topology_download(self,identifier):
+    def topology_download(self, identifier):
         try: body=self.server.service.topology_file(identifier).read_bytes()
         except (OSError,ValueError) as exc:return self.json(404,{'error':str(exc)})
         self.send_response(200);self.send_header('Content-Type','application/json; charset=utf-8')
         self.send_header('Content-Disposition',f'attachment; filename="envscope-{identifier}.json"')
         self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(body)))
         self.end_headers();self.wfile.write(body)
+
+    def jumpserver_login_info(self):
+        # /jumpserver/login/<ip> — operator-only lookup of the saved sudo/su
+        # method and password for one machine. The URL is not linked from any
+        # page; it must be typed into the browser address bar. The path may
+        # carry a query string (e.g. cache busters), so split before parsing.
+        path = urlsplit(self.path).path
+        prefix = '/jumpserver/login/'
+        if not path.startswith(prefix) or path == prefix:
+            return self.json(404, {'error': '请在 /jumpserver/login/ 后提供 IP 地址'})
+        ip = path[len(prefix):]
+        if not re.fullmatch(r'\d{1,3}(?:\.\d{1,3}){3}', ip):
+            return self.json(400, {'error': 'IP 格式无效'})
+        try:
+            return self.json(200, self.server.service.ip_login_info(ip))
+        except ValueError as exc:
+            return self.json(404, {'error': str(exc)})
 
     def allowed_host(self):
         host = urlsplit('http://' + self.headers.get('Host', '')).hostname
@@ -594,6 +764,12 @@ class Handler(BaseHTTPRequestHandler):
             params=parse_qs(urlsplit(self.path).query)
             try: return self.json(200,self.server.service.request_path_query(params))
             except ValueError as exc: return self.json(400,{'error':str(exc)})
+        if self.path == '/api/topology/nginx-location' or self.path.startswith('/api/topology/nginx-location?'):
+            params=parse_qs(urlsplit(self.path).query)
+            try: return self.json(200,self.server.service.nginx_location_query(params))
+            except ValueError as exc: return self.json(400,{'error':str(exc)})
+        if self.path.startswith('/jumpserver/login/'):
+            return self.jumpserver_login_info()
         if self.path.startswith('/api/settings/'):return self.json(404,{'error':'接口不存在'})
         self.proxy()
     def do_POST(self):
@@ -616,6 +792,10 @@ class Handler(BaseHTTPRequestHandler):
                 service.start(source)
                 return self.json(200, service.status())
             elif self.path=='/api/settings/jumpserver-inspect':
+                # rootPassword 存在时先更新这台服务器在密码映射表中的记录，再按原流程开始单独采集。
+                root_password = payload.get('rootPassword')
+                if root_password is not None:
+                    service.update_asset_root_password(payload.get('asset'), root_password)
                 service.start('jumpserver_asset', asset_id=payload.get('asset'))
                 return self.json(200, service.status())
             elif self.path=='/api/settings/switch':service.start('switch',payload.get('id'))

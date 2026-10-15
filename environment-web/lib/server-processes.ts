@@ -1,9 +1,49 @@
-export type Process = { pid: number; ppid: number; user: string; name: string; kind: string; startedAt: string; elapsedSeconds: number; command: string };
-export type Route = { domains: string[]; listen: string[]; uri: string; directive: string; target: string; upstream: string; instance?: string; backends: {host: string; port: string | null; resolution: string}[] };
+export type Process = { pid: number; ppid: number; user: string; name: string; kind: string; startedAt: string; elapsedSeconds: number; command: string; cpuPercent?: number; memPercent?: number; rssKB?: number; vszKB?: number; ports?: number[]; system?: boolean };
+export type Route = { domains: string[]; listen: string[]; uri: string; directive: string; target: string; upstream: string; file?: string; instance?: string; backends: {host: string; port: string | null; resolution: string}[] };
 export type AppPort = { app: string; kind: string; port: number; addresses: string[]; pids: number[] };
-export type Inspection = { sudoStatus?: string; configurationCount?: number; configurationVersion?: string; checkedAt: string; loginStatus: string; reason: string; account?: string; processStatus: string; processes: Process[]; appPorts?: AppPort[]; nginxStatus: string; nginxRoutes: Route[]; warnings: string[]; attempts?: {account: string; reason: string}[] };
+export type Webapp = { name: string; mtime: string | null };
+export type Webapps = { status: string; apps: Webapp[] };
+export type ServerUsage = { cpuPercent: number; memPercent: number; memTotalMB: number; memUsedMB: number };
+export type Inspection = { sudoStatus?: string; configurationCount?: number; configurationVersion?: string; checkedAt: string; loginStatus: string; reason: string; account?: string; processStatus: string; processes: Process[]; appPorts?: AppPort[]; webapps?: Webapps; nginxStatus: string; nginxRoutes: Route[]; warnings: string[]; serverUsage?: ServerUsage; attempts?: {account: string; reason: string}[] };
 export type Asset = { id: string; ip: string; hostname: string; inspection?: Inspection };
-export const processTypes = ['全部进程','Tomcat','Java Jar','其他 Java','Nginx','Kafka','Node','Redis','MySQL','PostgreSQL','Python','其他进程'] as const;
+// 把 location 修饰符翻译成给非 Nginx 读者看的匹配说明；无法识别时返回空串。
+export function locationHint(uri: string): string {
+  if(uri==='(TCP/UDP)')return '四层 stream 转发，按监听端口匹配';
+  if(uri==='/')return '匹配所有请求（默认入口）';
+  const parts=uri.split(' ');
+  if(parts.length>1){
+    const path=parts.slice(1).join(' ');
+    if(parts[0]==='=')return `仅精确匹配 ${path}`;
+    if(parts[0]==='^~')return `匹配所有以 ${path} 开头的请求`;
+    if(parts[0]==='~')return `正则匹配（区分大小写）：${path}`;
+    if(parts[0]==='~*')return `正则匹配（不区分大小写）：${path}`;
+  }
+  if(uri.startsWith('@'))return '命名 location，仅供内部跳转（如 try_files、error_page）';
+  if(uri.startsWith('/'))return `匹配所有以 ${uri} 开头的请求`;
+  return '';
+}
+// 在原始配置文本中定位 uri 对应的 location 块，返回 [起始行, 结束行]（0 起、含端点）；无法定位时返回 null。
+// uri 为采集器归一化后的 location 参数（如 /fotour、^~ /api、= /login、~ .php$），这里按任意空白还原成原文匹配。
+export function findLocationBlock(content: string, uri: string): {start: number; end: number} | null {
+  const tokens=uri.trim().split(/\s+/).filter(Boolean);
+  if(!tokens.length)return null;
+  const escaped=tokens.map(t=>t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'));
+  // location 与参数、参数之间允许任意空白；参数后必须是块起始 {、注释或行尾，避免匹配到更长路径。
+  const directive=new RegExp('^[ \\t]*location[ \\t]+'+escaped.join('[ \\t]+')+'(?:[ \\t]*\\{|[ \\t]*#|[ \\t]*$)');
+  const lines=content.split(/\r?\n/);
+  for(let i=0;i<lines.length;i++){
+    if(!directive.test(lines[i]))continue;
+    // 从该行起统计花括号，第一次回到 0 即为 location 块结束；块未闭合则放弃定位，避免误高亮。
+    let depth=0,opened=false;
+    for(let j=i;j<lines.length;j++){
+      for(const ch of lines[j]){if(ch==='{'){depth++;opened=true;}else if(ch==='}')depth--;}
+      if(opened&&depth<=0)return {start:i,end:j};
+    }
+    return null;
+  }
+  return null;
+}
+export const processTypes = ['全部进程','Tomcat','Java Jar','其他 Java','Nginx','Kafka','Node','Redis','MySQL','PostgreSQL','Python','其他进程','系统进程'] as const;
 export type ProcessType = typeof processTypes[number];
 export const durations = [
   ['all','全部运行时间'],['week','未超过1星期（≤7天）'],['fortnight','未超过2星期（≤14天）'],
@@ -17,6 +57,7 @@ export function jarName(process: Process) {
   return i>=0 && tokens[i+1] ? tokens[i+1].split('/').pop() : undefined;
 }
 export function processType(process: Process): ProcessType {
+  if(process.system)return '系统进程';
   const command=process.command;const executable=(args(command)[0]||'').split('/').pop()||'';
   const java=/^(?:java|jsvc)$/i.test(process.name)||/^(?:java|jsvc)$/i.test(executable);
   if(java) {
@@ -53,9 +94,24 @@ export function matchesDuration(seconds: number, filter: Duration) {
 export function formatDuration(seconds: number) {
   return `${Math.floor(seconds/86400)}天 ${Math.floor(seconds%86400/3600)}小时 ${Math.floor(seconds%3600/60)}分钟`;
 }
-export type ProcessRow = { asset: Asset; process: Process; type: ProcessType; name: string; seconds: number };
+export type ProcessRow = { asset: Asset; process: Process; type: ProcessType; name: string; seconds: number; workerCount?: number };
+function isNginxWorker(process: Process): boolean {
+  return processType(process)==='Nginx' && /worker process/i.test(process.command);
+}
 export function processRows(assets: Asset[], now: number): ProcessRow[] {
-  return assets.filter(a=>a.inspection?.loginStatus==='can_login').flatMap(asset=>asset.inspection!.processes.map(process=>({asset,process,type:processType(process),name:jarName(process)||process.name,seconds:runningSeconds(process,asset.inspection!.checkedAt,now)})));
+  return assets.filter(a=>a.inspection?.loginStatus==='can_login').flatMap(asset=>{
+    const processes=asset.inspection!.processes;
+    const workers=processes.filter(isNginxWorker);
+    const rows: ProcessRow[]=processes.filter(p=>!isNginxWorker(p)).map(process=>({asset,process,type:processType(process),name:jarName(process)||process.name,seconds:runningSeconds(process,asset.inspection!.checkedAt,now)}));
+    if(workers.length) {
+      // 同一台服务器的所有 Nginx worker 进程合并为一条记录，提示 worker 数量；
+      // 用 PID 最小的 worker 作为代表（通常最早启动），合并各 worker 的监听端口。
+      const rep=workers.slice().sort((a,b)=>a.pid-b.pid)[0];
+      const ports=[...new Set(workers.flatMap(w=>w.ports||[]))].sort((a,b)=>a-b);
+      rows.push({asset,process:{...rep,ports},type:'Nginx',name:rep.name,seconds:runningSeconds(rep,asset.inspection!.checkedAt,now),workerCount:workers.length});
+    }
+    return rows;
+  });
 }
 export function filterProcesses(rows: ProcessRow[], query: string, duration: Duration, type: ProcessType='全部进程') {
   const words=query.trim().toLowerCase().split(/\s+/).filter(Boolean);

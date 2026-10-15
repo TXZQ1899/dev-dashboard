@@ -70,16 +70,39 @@ def latest_push_in(steps):
             raise ExportError('Push In 时间格式变化') from None
         candidates.append((stamp, step))
     if not candidates:
+        # No PushIn step ran; surface the latest failed step so the operator sees why.
+        failed = [s for s in steps
+                  if (s.get('status') or '').upper() == 'FAILED'
+                  and (s.get('endTime') or s.get('startTime'))]
+        if failed:
+            chosen = max(failed, key=lambda s: s.get('endTime') or s.get('startTime') or '')
+            stamp = chosen.get('endTime') or chosen.get('startTime')
+            return {'lastPublishedAt': '', 'publishStatus': f"步骤：{chosen.get('operation', '')} 状态：{chosen.get('status', '')}，时间：{stamp}",
+                    'publishTimeSource': '', 'pushIn': steps}
         return {'lastPublishedAt': '', 'publishStatus': '无 Push In 时间', 'publishTimeSource': '', 'pushIn': steps}
     stamp, chosen = max(candidates, key=lambda item: item[0])
     return {'lastPublishedAt': stamp, 'publishStatus': chosen['status'],
             'publishTimeSource': 'Push In endTime' if chosen.get('endTime') else 'Push In startTime（无完成时间）', 'pushIn': steps}
 
 
+def deploy_failure_status(deploy):
+    """Surface a failed deploy step from deployList when runtime detail is unavailable.
+
+    A failed deploy (status "执行失败", e.g. at "部署环境"/"安装环境"/"属性赋值"/"缩容")
+    leaves no PushIn record and the runtime page often cannot open; report the
+    failing deployStep with no timestamp. Returns None when the deploy succeeded
+    or carries no failure status.
+    """
+    if deploy.get('status') != '执行失败':
+        return None
+    step = deploy.get('deployStep') or deploy.get('actionType') or '部署'
+    return f"步骤：{step} 状态：{deploy.get('status')}，无时间"
+
+
 def collect_application(app, cookie, delay=.1):
     client = RuntimeClient(DEVOPS, cookie, timeout=25, delay=delay)
     ar = app_row(app, DEVOPS)
-    result = {'id': str(app['id']), 'name': ar['应用名'], 'http': ar['HTTP名'], 'port': str(ar['HTTP端口'] or ''),
+    result = {'id': str(app['id']), 'name': ar['应用名'], 'appType': ar['应用类型'], 'http': ar['HTTP名'], 'port': str(ar['HTTP端口'] or ''),
               'repository': ar['Git/代码库地址'], 'branch': ar['分支'], 'envs': {}, 'errors': [], 'capturedAt': now()}
     csv_rows = []
     configs = {}
@@ -121,13 +144,28 @@ def collect_application(app, cookie, delay=.1):
                         if page.strip() and ('<table' not in page or '操作' not in page):
                             raise ExportError('运行详情不是可识别的步骤表格')
                     else:
+                        all_steps = parse_steps(page)
                         states = []
-                        for step in parse_steps(page):
+                        for step in all_steps:
                             if re.sub(r'[\s_-]', '', step['operation']).lower() != 'pushin':
                                 continue
                             status = client.read('/theone-web/build/{build_id}/{resource_id}/{action_id}/actionRun'.format(**step), json_response=True)
                             states.append({**step, **{k: status.get(k) for k in ['startTime', 'endTime', 'status', 'toActionRunId']}})
+                        if not any(s.get('endTime') or s.get('startTime') for s in states):
+                            # No PushIn step ran (none collected, or all "not run" with no time);
+                            # collect non-PushIn step statuses so the latest failure surfaces.
+                            for step in all_steps:
+                                if re.sub(r'[\s_-]', '', step['operation']).lower() == 'pushin':
+                                    continue
+                                status = client.read('/theone-web/build/{build_id}/{resource_id}/{action_id}/actionRun'.format(**step), json_response=True)
+                                states.append({**step, **{k: status.get(k) for k in ['startTime', 'endTime', 'status', 'toActionRunId']}})
                         row.update(latest_push_in(states))
+                if not row['lastPublishedAt'] and row['publishStatus'] in ('无运行记录', '无 Push In 时间'):
+                    # Runtime detail missing or has no PushIn; a deployList-level
+                    # failure still explains why nothing was published.
+                    failed = deploy_failure_status(deploy)
+                    if failed:
+                        row['publishStatus'] = failed
             result['envs'][env].append(row)
             csv_rows.append({**record, 'HTTP端口': row['port'], 'Git分支': row['branch'], '分支来源': row['branchSource'],
                              '环境代码库地址': row['repository'], '最后发布时间': row['lastPublishedAt'], '发布状态': row['publishStatus'], '发布时间来源': row['publishTimeSource']})

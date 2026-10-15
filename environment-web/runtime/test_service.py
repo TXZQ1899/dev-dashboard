@@ -259,6 +259,100 @@ class SettingsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'资产'):
             self.service.start('jumpserver_asset', asset_id=None)
 
+    def test_update_asset_root_password_updates_only_that_ip_entry(self):
+        identifier=self.service.status()['current']['id']
+        folder=self.data/'versions'/identifier
+        snapshot=s.read(folder/'jumpserver-snapshot.json')
+        snapshot['assets'].append({'id':'00000000-0000-0000-0000-000000000002','ip':'10.58.9.5'})
+        s.write(folder/'jumpserver-snapshot.json',snapshot)
+        s.write(self.data/'secrets/ip-password-map.json',
+                {'10.58.9.5':{'status':'password_error'},'10.58.9.6':{'status':'password_error'}})
+        self.service.update_asset_root_password('00000000-0000-0000-0000-000000000002','new-root-pass')
+        ip_map=s.read(self.data/'secrets/ip-password-map.json')
+        self.assertEqual(ip_map['10.58.9.5'],{'method':'su','password':'new-root-pass','status':'normal',
+                                              'updatedAt':ip_map['10.58.9.5']['updatedAt']})
+        self.assertEqual(ip_map['10.58.9.6'],{'status':'password_error'})
+        self.assertEqual((self.data/'secrets/ip-password-map.json').stat().st_mode & 0o777, 0o600)
+        with self.assertRaisesRegex(ValueError,'资产'):
+            self.service.update_asset_root_password('00000000-0000-0000-0000-000000000003','pw')
+        with self.assertRaisesRegex(ValueError,'资产 ID'):
+            self.service.update_asset_root_password('server2','pw')
+        for bad in ('', None, 'bad\npassword', 123):
+            with self.assertRaises(ValueError): self.service.update_asset_root_password('00000000-0000-0000-0000-000000000002',bad)
+        self.assertEqual(s.read(self.data/'secrets/ip-password-map.json')['10.58.9.5']['password'],'new-root-pass')
+
+    def _seed_ip_login_asset(self, ip='10.58.1.74', hostname='host-74', asset_id='00000000-0000-0000-0000-000000000074', inspection=None):
+        identifier=self.service.status()['current']['id']
+        folder=self.data/'versions'/identifier
+        snapshot=s.read(folder/'jumpserver-snapshot.json')
+        asset={'id':asset_id,'ip':ip,'hostname':hostname}
+        if inspection is not None: asset['inspection']=inspection
+        snapshot['assets'].append(asset)
+        s.write(folder/'jumpserver-snapshot.json',snapshot)
+
+    def test_ip_login_info_returns_method_and_password_when_map_has_normal_entry(self):
+        self._seed_ip_login_asset(inspection={'loginStatus':'can_login','sudoStatus':'root','checkedAt':'2026-10-13T10:00:00+08:00'})
+        s.write(self.data/'secrets/ip-password-map.json',
+                {'10.58.1.74':{'method':'su','password':'root-pw','status':'normal','updatedAt':'2026-10-12T18:00:00+08:00'}})
+        info=self.service.ip_login_info('10.58.1.74')
+        self.assertEqual(info['ip'],'10.58.1.74')
+        self.assertEqual(info['hostname'],'host-74')
+        self.assertEqual(info['assetId'],'00000000-0000-0000-0000-000000000074')
+        self.assertEqual(info['loginStatus'],'can_login')
+        self.assertEqual(info['sudoStatus'],'root')
+        self.assertEqual(info['inspectionCheckedAt'],'2026-10-13T10:00:00+08:00')
+        self.assertEqual(info['elevation'],{'method':'su','status':'normal','password':'root-pw',
+                                            'updatedAt':'2026-10-12T18:00:00+08:00','source':'ip-password-map'})
+        self.assertIn('su 提权',info['note'])
+
+    def test_ip_login_info_hides_password_when_status_is_password_error(self):
+        self._seed_ip_login_asset(ip='10.58.9.7',inspection={'loginStatus':'can_login','sudoStatus':'password_error','checkedAt':'2026-10-12T10:00:00+08:00'})
+        s.write(self.data/'secrets/ip-password-map.json',
+                {'10.58.9.7':{'method':'su','password':'stale-pw','status':'password_error','updatedAt':'2026-10-12T09:00:00+08:00'}})
+        info=self.service.ip_login_info('10.58.9.7')
+        self.assertEqual(info['elevation']['status'],'password_error')
+        self.assertIsNone(info['elevation']['password'])  # never surface a stale password alongside an error marker
+        self.assertIn('密码错误',info['note'])
+
+    def test_ip_login_info_reports_default_probe_chain_when_ip_not_in_map(self):
+        self._seed_ip_login_asset(ip='10.58.9.8',inspection={'loginStatus':'cannot_login','reason':'连接超时','sudoStatus':None,'checkedAt':'2026-10-12T10:00:00+08:00'})
+        s.write(self.data/'secrets/ip-password-map.json',{})
+        info=self.service.ip_login_info('10.58.9.8')
+        self.assertIsNone(info['elevation'])
+        self.assertEqual(info['loginStatus'],'cannot_login')
+        self.assertIsNone(info['sudoStatus'])
+        self.assertIn('探测顺序',info['note'])
+        self.assertIn('sudo -i',info['note'])
+        self.assertIn('su -l',info['note'])
+
+    def test_ip_login_info_handles_asset_without_inspection(self):
+        # Older snapshots may have assets with no inspection field at all.
+        self._seed_ip_login_asset(ip='10.58.9.9',inspection=None)
+        s.write(self.data/'secrets/ip-password-map.json',
+                {'10.58.9.9':{'method':'sudo-i','password':'folidev-pw','status':'normal','updatedAt':'2026-10-12T08:00:00+08:00'}})
+        info=self.service.ip_login_info('10.58.9.9')
+        self.assertIsNone(info['loginStatus'])
+        self.assertIsNone(info['sudoStatus'])
+        self.assertIsNone(info['inspectionCheckedAt'])
+        self.assertEqual(info['elevation']['method'],'sudo-i')
+        self.assertEqual(info['elevation']['password'],'folidev-pw')
+
+    def test_ip_login_info_rejects_invalid_ip_format(self):
+        for bad in (None, '', 'not-an-ip', '10.58.1', '10.58.1.74.5', 123, '10.58.1.74/24', '../../etc/passwd'):
+            with self.assertRaisesRegex(ValueError,'IP 格式无效'):
+                self.service.ip_login_info(bad)
+
+    def test_ip_login_info_404s_when_ip_not_in_jumpserver_snapshot(self):
+        # Snapshot has no asset with this IP.
+        with self.assertRaisesRegex(ValueError,'未收录此 IP'):
+            self.service.ip_login_info('10.99.99.99')
+
+    def test_ip_login_info_404s_when_no_current_version(self):
+        # Drop the current pointer entirely.
+        (self.data/'current.json').unlink()
+        with self.assertRaisesRegex(ValueError,'当前数据版本'):
+            self.service.ip_login_info('10.58.1.74')
+
     def test_jumpserver_asset_work_passes_asset_id_to_collector(self):
         identifier='js-asset'
         folder=self.data/'versions'/identifier
@@ -352,6 +446,62 @@ class SettingsTests(unittest.TestCase):
         # Without a source list the JumpServer phase is still shown.
         self.service.job['phase']='正在采集数据'
         self.assertEqual(self.service.status()['job']['progress']['sources'],sources)
+
+    def test_single_source_sync_exposes_log_tail_and_progress(self):
+        # status() used to only read collection.log / progress.json for sync,
+        # local_gitlab, jumpserver and jumpserver_asset, so a standalone DevOps
+        # (or Codeup / ECS / CLB / NAT) sync hid the log panel even while running.
+        for kind,phase in [('devops','正在独立采集 DevOps 应用、环境和发布记录'),
+                            ('codeup','正在独立采集 Codeup 代码组和仓库'),
+                            ('ecs','正在独立采集阿里云 ECS 实例')]:
+            folder=self.data/'versions'/f'running-{kind}'
+            s.write(folder/'version.json',{'id':f'running-{kind}','createdAt':s.now(),'status':'collecting','kind':kind})
+            s.write(folder/'progress.json',{'phase':phase})
+            (folder/'collection.log').write_text(f'{kind} collection line')
+            self.service.backend={'port':3101}
+            self.service.job={'id':f'running-{kind}','status':'running','kind':kind,'phase':'正在采集数据'}
+            status=self.service.status()
+            self.assertEqual(status['job']['logTail'],'{kind} collection line'.format(kind=kind),
+                             f'{kind} logTail must be exposed so the Settings log panel renders')
+            self.assertEqual(status['job']['progress']['phase'],phase)
+
+    def test_switch_job_does_not_look_for_collection_log(self):
+        # switch re-activates an already-ready version and writes no collection.log;
+        # status() must not raise trying to read per-source files for it.
+        self.service.backend={'port':3101}
+        self.service.job={'id':'switch-job','status':'running','kind':'switch','phase':'正在切换版本'}
+        status=self.service.status()
+        self.assertNotIn('logTail',status['job'])
+        self.assertNotIn('progress',status['job'])
+
+    def test_failed_job_exposes_structured_failures_and_log(self):
+        # A failed collection job must surface collection-error.json failures
+        # and the full collection.log so the user can see which source failed
+        # and why — not just a generic "采集失败" phase string.
+        folder=self.data/'versions'/'failed-sync'
+        s.write(folder/'version.json',{'id':'failed-sync','createdAt':s.now(),
+              'status':'failed','kind':'sync','error':'采集失败：ECS：…；当前版本未改变'})
+        (folder/'collection.log').write_text('ECS: connection refused\nCLB: timeout\n')
+        s.write(folder/'collection-error.json',{'type':'ExportError',
+              'message':'ECS：…；CLB：…',
+              'failures':[
+                  {'source':'ECS','type':'ConnectionError','message':'ECS：连接被拒绝'},
+                  {'source':'CLB','type':'HTTPError','credential':'aliyun','message':'CLB：请求超时'},
+              ]})
+        self.service.backend={'port':3101}
+        self.service.job={'id':'failed-sync','status':'failed','kind':'sync',
+                          'phase':'采集失败：ECS：…；当前版本未改变','finishedAt':s.now()}
+        status=self.service.status()
+        # logTail must be populated for failed jobs so the log panel renders.
+        self.assertIn('connection refused',status['job']['logTail'])
+        # failures array must be forwarded verbatim from collection-error.json.
+        self.assertEqual(len(status['job']['failures']),2)
+        self.assertEqual(status['job']['failures'][0]['source'],'ECS')
+        self.assertEqual(status['job']['failures'][1]['credential'],'aliyun')
+        # switch jobs must still be exempt from this path.
+        self.service.job={'id':'switch-job','status':'failed','kind':'switch','phase':'切换失败'}
+        status=self.service.status()
+        self.assertNotIn('failures',status['job'])
 
     def test_startup_cannot_race_activation(self):
         with self.assertRaisesRegex(ValueError,'恢复'):

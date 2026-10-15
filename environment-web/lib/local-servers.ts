@@ -1,6 +1,6 @@
-import { apps, envs, inventoryDate, type App, type Env, type Deployment } from './inventory';
-import { instances } from './ecs';
+import { apps, envs, inventoryDate, type Deployment } from './inventory';
 import { specs as jumpserverSpecs, fetchedAt as specsDate, type ServerSpec } from './server-specs';
+import { isLocalDatacenterIp } from './datacenter-networks';
 
 export type LocalServer = {
   ip: string;
@@ -12,6 +12,7 @@ export type LocalServer = {
   specsCollected: boolean;
   loginStatus?: string;
   appCount: number;
+  appId: string;
   appName: string;
   environments: string[];
 };
@@ -32,13 +33,6 @@ export function nominalMemoryGiB(memoryMB: number): number {
 export const compareText = (a: string, b: string) =>
   a === b ? 0 : a < b ? -1 : 1;
 
-// All ECS IPs (private + public) — these are cloud, not local.
-const ecsIpSet = new Set<string>();
-for (const inst of instances) {
-  for (const ip of inst.privateIps) ecsIpSet.add(ip);
-  for (const ip of inst.publicIps) ecsIpSet.add(ip);
-}
-
 // JumpServer specs keyed by IP for enrichment.
 const specsByIp = new Map<string, ServerSpec>();
 for (const s of jumpserverSpecs) {
@@ -48,25 +42,39 @@ for (const s of jumpserverSpecs) {
   }
 }
 
-// Build DevOps deployment map: IP -> { apps, environments }
-const devopsMap = new Map<string, { apps: Set<string>; environments: Set<string> }>();
+// Build DevOps deployment map: IP -> { appIds, appNames, environments }
+const devopsMap = new Map<string, { appIds: Set<string>; appNames: Set<string>; environments: Set<string> }>();
 for (const app of apps) {
   for (const env of envs) {
     for (const row of (app.envs[env] || []) as Deployment[]) {
       const ip = row.ip?.trim();
       if (!ip) continue;
-      if (!devopsMap.has(ip)) devopsMap.set(ip, { apps: new Set(), environments: new Set() });
+      if (!devopsMap.has(ip)) devopsMap.set(ip, { appIds: new Set(), appNames: new Set(), environments: new Set() });
       const entry = devopsMap.get(ip)!;
-      entry.apps.add(app.name);
+      entry.appIds.add(app.id);
+      entry.appNames.add(app.name);
       entry.environments.add(env);
     }
   }
 }
 
-// Local servers = DevOps IPs not in ECS, enriched with specs where available.
-export const localServers: LocalServer[] = [...devopsMap.entries()]
-  .filter(([ip]) => !ecsIpSet.has(ip))
-  .map(([ip, info]) => {
+// Candidate on-premises IPs: DevOps deployment IPs or JumpServer spec
+// records that fall inside the four confirmed local datacenter segments.
+const candidateIps = new Set<string>();
+for (const ip of devopsMap.keys()) {
+  if (isLocalDatacenterIp(ip)) candidateIps.add(ip);
+}
+for (const s of jumpserverSpecs) {
+  for (const raw of s.ip.split(/[\s,]+/)) {
+    const ip = raw.trim();
+    if (ip && isLocalDatacenterIp(ip)) candidateIps.add(ip);
+  }
+}
+
+// Local servers = candidates in the confirmed segments, enriched with specs.
+export const localServers: LocalServer[] = [...candidateIps]
+  .map((ip) => {
+    const info = devopsMap.get(ip);
     const specs = specsByIp.get(ip);
     const collected = !!(specs && (specs.specsCollected ?? specs.cpu > 0));
     return {
@@ -78,9 +86,10 @@ export const localServers: LocalServer[] = [...devopsMap.entries()]
       os: specs?.os || '未采集',
       specsCollected: collected,
       loginStatus: specs?.loginStatus,
-      appCount: info.apps.size,
-      appName: [...info.apps].sort(compareText).join(', '),
-      environments: [...info.environments].sort(),
+      appCount: info?.appNames.size ?? 0,
+      appId: info ? [...info.appIds].sort(compareText).join(', ') : '',
+      appName: info ? [...info.appNames].sort(compareText).join(', ') : '',
+      environments: info ? [...info.environments].sort() : [],
     };
   })
   .sort((a, b) =>

@@ -91,7 +91,7 @@ def jumpserver_getter(cookie, fetcher=None):
     return get
 
 
-def jumpserver(cookie, folder, password="", fetcher=None):
+def jumpserver(cookie, folder, folidev_pw="", root_alt1="", root_alt2="", ip_map=None, fetcher=None):
     get = jumpserver_getter(cookie, fetcher)
     def assets(path):
         rows, expected = [], None
@@ -134,12 +134,13 @@ def jumpserver(cookie, folder, password="", fetcher=None):
         # Log at a readable cadence; the last asset always closes the run.
         if done % 25 == 0 or done == total:
             print(f'JumpServer 检查：{done}/{total} 台', flush=True)
-    inspections = collect_servers(all_assets, get, cookie, password, report_progress)
+    inspections, map_updates = collect_servers(all_assets, get, cookie, folidev_pw, root_alt1, root_alt2, ip_map or {}, report_progress)
     specs_list = []
     for asset in result['assets']:
         inspection = inspections[asset['id']]
         configs = inspection.pop('nginxConfigurations', [])
         specs = inspection.pop('specs', None)
+        inspection.pop('elevationInfo', None)
         if is_10_58(asset.get('ip', '')):
             specs_list.append({
                 'ip': asset.get('ip', ''),
@@ -168,15 +169,22 @@ def jumpserver(cookie, folder, password="", fetcher=None):
         'app_ports': sum(len(i.get('appPorts') or []) for i in inspections.values()),
         'nginx': sum(1 for i in inspections.values() if i.get('nginxStatus') == 'complete'),
         'configs': sum(i.get('configurationCount', 0) for i in inspections.values()),
+        'webapps': sum(len((i.get('webapps') or {}).get('apps') or []) for i in inspections.values()),
     }
+    webapps_servers = sum(
+        1 for i in inspections.values()
+        if (i.get('webapps') or {}).get('status') in ('complete', 'partial'))
     print(f"JumpServer 登录：可登录 {summary['can_login']} 台，不能登录 {summary['cannot_login']} 台", flush=True)
     print(f"JumpServer 进程：{summary['processes']} 条；应用监听端口 {summary['app_ports']} 条；Nginx 读取完整 {summary['nginx']} 台，原始配置 {summary['configs']} 份", flush=True)
+    print(f"JumpServer Webapps：{webapps_servers} 台服务器的 /var/www/webapps 已采集，共 {summary['webapps']} 个应用", flush=True)
     print(f"JumpServer 采集完成：{len(result['assets'])} 台资产，{len(result['groups'])} 个分组", flush=True)
     daily.save_json(folder / 'jumpserver-snapshot.json', result)
+    if map_updates:
+        daily.save_json(folder / 'ip-password-map-updated.json', map_updates)
     return result
 
 
-def jumpserver_asset(cookie, folder, password, asset_id, fetcher=None):
+def jumpserver_asset(cookie, folder, folidev_pw, root_alt1, root_alt2, ip_map, asset_id, fetcher=None):
     """Re-inspect one asset only (processes and Nginx) and merge into the copied snapshot."""
     get = jumpserver_getter(cookie, fetcher)
     snapshot = json.loads((folder / 'jumpserver-snapshot.json').read_text())
@@ -185,11 +193,12 @@ def jumpserver_asset(cookie, folder, password, asset_id, fetcher=None):
         raise ExportError('当前数据版本不存在此资产')
     phase = '正在单独采集服务器的进程与 Nginx'
     write(folder/'server-progress.json', {'phase':phase, 'completed':0, 'total':1})
-    inspections = collect_servers([asset], get, cookie, password,
+    inspections, map_updates = collect_servers([asset], get, cookie, folidev_pw, root_alt1, root_alt2, ip_map or {},
                                   lambda done, total: write(folder/'server-progress.json', {'phase':phase, 'completed':done, 'total':total}))
     inspection = inspections[asset_id]
     configs = inspection.pop('nginxConfigurations', [])
     specs = inspection.pop('specs', None)
+    inspection.pop('elevationInfo', None)
     inspection['configurationCount'] = len(configs)
     inspection['configurationVersion'] = folder.name
     filename = hashlib.sha256(asset_id.encode()).hexdigest()+'.json'
@@ -217,7 +226,9 @@ def jumpserver_asset(cookie, folder, password, asset_id, fetcher=None):
     specs_snapshot['available'] = True
     daily.save_json(folder / 'server-specs.json', specs_snapshot)
     daily.save_json(folder / 'jumpserver-snapshot.json', snapshot)
-    print(f"JumpServer 单独采集完成：{asset.get('ip','')} 进程 {len(inspection.get('processes') or [])} 条，Nginx 状态 {inspection.get('nginxStatus')}", flush=True)
+    if map_updates:
+        daily.save_json(folder / 'ip-password-map-updated.json', map_updates)
+    print(f"JumpServer 单独采集完成：{asset.get('ip','')} 进程 {len(inspection.get('processes') or [])} 条，Nginx 状态 {inspection.get('nginxStatus')}，Webapps 状态 {(inspection.get('webapps') or {}).get('status')}", flush=True)
     return snapshot
 
 
@@ -337,7 +348,11 @@ def main():
                 daily.save_json(folder/'nat-snapshot.json', normalize_nat(collect_nat(credentials['aliyun']['value'], folder/'nat')))
             elif mode == 'jumpserver':
                 daily.save_json(folder / 'progress.json', {'phase': '正在独立采集 JumpServer 资产和分组'})
-                jumpserver(credentials['jumpserver']['value'], folder, credentials.get('folidev',{}).get('value',''))
+                jumpserver(credentials['jumpserver']['value'], folder,
+                           credentials.get('folidev',{}).get('value',''),
+                           credentials.get('rootAlt1',{}).get('value',''),
+                           credentials.get('rootAlt2',{}).get('value',''),
+                           credentials.get('_ipPasswordMap',{}))
             elif mode == 'jumpserver_asset':
                 asset_id = sys.argv[4] if len(sys.argv) > 4 else ''
                 try:
@@ -345,7 +360,12 @@ def main():
                 except (ValueError, AttributeError, TypeError):
                     raise ExportError('单独采集需要有效的资产 ID')
                 daily.save_json(folder / 'progress.json', {'phase': '正在单独采集一台服务器的进程与 Nginx', 'completed': 0, 'total': 1})
-                jumpserver_asset(credentials['jumpserver']['value'], folder, credentials.get('folidev',{}).get('value',''), asset_id)
+                jumpserver_asset(credentials['jumpserver']['value'], folder,
+                           credentials.get('folidev',{}).get('value',''),
+                           credentials.get('rootAlt1',{}).get('value',''),
+                           credentials.get('rootAlt2',{}).get('value',''),
+                           credentials.get('_ipPasswordMap',{}),
+                           asset_id)
             else:
                 daily.save_json(folder / 'progress.json', {'phase': '正在独立采集 DevOps 应用、环境和发布记录'})
                 result = daily.collect_devops(folder, 4)
@@ -418,7 +438,11 @@ def main():
             'ECS': ecs_job,
             'CLB': lambda: write(folder/'clb-snapshot.json', normalize_clb(collect_clb(credentials['aliyun']['value'], folder/'clb'))),
             'NAT': lambda: write(folder/'nat-snapshot.json', normalize_nat(collect_nat(credentials['aliyun']['value'], folder/'nat'))),
-            'JumpServer': lambda: jumpserver(credentials['jumpserver']['value'], folder, credentials.get('folidev',{}).get('value','')),
+            'JumpServer': lambda: jumpserver(credentials['jumpserver']['value'], folder,
+                           credentials.get('folidev',{}).get('value',''),
+                           credentials.get('rootAlt1',{}).get('value',''),
+                           credentials.get('rootAlt2',{}).get('value',''),
+                           credentials.get('_ipPasswordMap',{})),
             'Codeup': lambda: daily.collect_codeup(codeup_folder),
             'Local GitLab': lambda: daily.collect_local_gitlab(credentials['local_gitlab']['value'], folder/'gitlab-progress.json'),
             'DevOps': lambda: daily.collect_devops(folder, 4),

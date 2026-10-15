@@ -399,6 +399,36 @@ test('nginx: unresolved hostname backend stops the branch without DNS speculatio
   assert.ok(trace.warnings.some(w => w.includes('api.internal') && w.includes('without DNS speculation')));
 });
 
+test('nginx: static location upstream stops with the serving directory, not hostname guessing', async () => {
+  const { resolveRequestPath, STOP_REASON } = await framework();
+  const assetId = 'asset-1';
+  const d = domain('hotels.example.com');
+  const entryEp = endpoint('10.1.1.5', '443', 'https');
+  const hostNode = host('10.1.1.5', { assetIds: [assetId] });
+  const route = nginxRoute(assetId, 'static', {
+    domains: ['hotels.example.com'],
+    uri: '^~ /tc-fostay',
+    listen: ['443 ssl'],
+    directive: 'static/other',
+    target: '/var/www/webapps/tc-fostay',
+    upstreamName: '/var/www/webapps/tc-fostay',
+  });
+  const up = upstream(assetId, '/var/www/webapps/tc-fostay', { target: '/var/www/webapps/tc-fostay', directive: 'static/other' });
+  const nodes = [d, entryEp, hostNode, route, up];
+  const edges = [
+    edge('r1', d.id, entryEp.id, 'RESOLVES_TO'),
+    edge('oh1', entryEp.id, hostNode.id, 'ON_HOST'),
+    edge('uu1', route.id, up.id, 'USES_UPSTREAM'),
+  ];
+  const trace = resolveRequestPath('https://hotels.example.com/tc-fostay/index.html', graph(nodes, edges), { registry: await dnsNginxRegistry() });
+  assert.equal(trace.paths.length, 1);
+  const [path] = trace.paths;
+  assert.deepEqual(path.nodes.map(n => n.type), ['DOMAIN', 'ENDPOINT', 'HOST', 'NGINX_ROUTE', 'UPSTREAM']);
+  assert.equal(path.stoppedAt, up.id);
+  assert.equal(path.reason, STOP_REASON.NO_CANDIDATE);
+  assert.ok(trace.warnings.some(w => w.includes('/var/www/webapps/tc-fostay') && w.includes('static location')));
+});
+
 test('nginx: hostname backend continues through an existing DOMAIN node', async () => {
   const { resolveRequestPath } = await framework();
   const topo = nginxTopology({ target: 'http://uaa.tcc.cn:80', upstreamName: 'uaa.tcc.cn:80' });

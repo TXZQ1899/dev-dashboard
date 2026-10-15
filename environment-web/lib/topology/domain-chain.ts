@@ -530,9 +530,9 @@ function endpointHost(index: GraphIndex, endpoint: TopologyNode | null): Topolog
   return null;
 }
 
-type Listener = { endpoint: TopologyNode; edge: TopologyEdge; deployment: TopologyNode; application: TopologyNode };
+export type Listener = { endpoint: TopologyNode; edge: TopologyEdge; deployment: TopologyNode; application: TopologyNode };
 
-function buildListenerIndex(index: GraphIndex, environment: TopologyEnvironment | null): Map<string, Listener[]> {
+export function buildListenerIndex(index: GraphIndex, environment: TopologyEnvironment | null): Map<string, Listener[]> {
   const byIpPort = new Map<string, Listener[]>();
   const allowed = (edge: TopologyEdge) => !environment || edge.environment === 'GLOBAL' || edge.environment === environment;
   for (const edge of index.topology.edges) {
@@ -554,7 +554,7 @@ function buildListenerIndex(index: GraphIndex, environment: TopologyEnvironment 
   return byIpPort;
 }
 
-function matchBackend(index: GraphIndex, endpoint: TopologyNode, forwardEdge: TopologyEdge, listeners: Map<string, Listener[]>): ChainBackend {
+export function matchBackend(index: GraphIndex, endpoint: TopologyNode, forwardEdge: TopologyEdge, listeners: Map<string, Listener[]>): ChainBackend {
   const ip = normalizeIp(text(endpoint.identity.ip));
   const port = text(endpoint.identity.port);
   const host = endpointHost(index, endpoint);

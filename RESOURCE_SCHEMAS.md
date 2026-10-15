@@ -628,7 +628,7 @@
 | `listen` | `string[]` | 是 | `listen` 指令参数 |
 | `uri` | `string` | 是 | `location` URI；非 location 为空 |
 | `directive` | `string` | 是 | `proxy_pass`、`fastcgi_pass` 等；静态/其他为 `static/other` |
-| `target` | `string` | 是 | 原转发目标；静态/其他为空 |
+| `target` | `string` | 是 | 原转发目标；`static/other` 时为由 `alias`/`root` 解析出的静态目录（如 `/var/www/webapps/tc-fostay`），无 alias/root 或旧快照为空 |
 | `upstream` | `string` | 是 | upstream 名称或直接目标 |
 | `instance` | `string` | 是 | 运行中的 Nginx 可执行文件 |
 | `backends` | `Backend[]` | 是 | upstream 展开后的后端 |

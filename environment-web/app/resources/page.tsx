@@ -141,7 +141,8 @@ export default function ResourcesPage() {
               `有 ${summary.alternate} 个未收录 IP 的同一 ECS 实例存在其他已纳管 IP，表中单独注明。`}
           </p>
           <p>
-            已纳入 CLB 后端、EIP 及备注、NAT 公网与后端映射、DNS 地址记录。DNS 暂停记录也可搜索，不代表当前生效。10.58.0.0/16 为公司机房（
+            已纳入 CLB 后端、EIP 及备注、NAT 公网与后端映射、DNS 地址记录。DNS 暂停记录也可搜索，不代表当前生效。10.58.1 / 10.58.9 / 10.58.10 / 10.58.140
+            四个网段为公司机房（
             {summary.onPrem} 个 IP）；其余 {summary.unknown} 个 IP
             暂留空。阿里云仅包含当前上海区域快照。公网与内网 IP
             分别列出，数量不等于机器台数。

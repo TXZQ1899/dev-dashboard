@@ -41,6 +41,8 @@ type Topology = {
 type State = {
   topology?: Topology | null;
   folidev?: { configured: boolean; updatedAt?: string };
+  rootAlt1?: { configured: boolean; updatedAt?: string };
+  rootAlt2?: { configured: boolean; updatedAt?: string };
   cookies: Record<Source, { configured: boolean; updatedAt?: string; alert?: { message: string; detectedAt: string } }>;
   schedule: { enabled: boolean; time: string };
   current: { id: string; activatedAt: string };
@@ -63,6 +65,7 @@ type State = {
     };
     logTail?: string;
     slotLogs?: Record<string, string>;
+    failures?: { source: string; type: string; credential?: string; message: string; credentialUpdatedAt?: string }[];
   };
   storage: string;
 };
@@ -89,6 +92,8 @@ export default function SettingsPage() {
     local_gitlab: '',
   });
   const [folidevPassword, setFolidevPassword] = useState('');
+  const [rootPasswordAlt1, setRootPasswordAlt1] = useState('');
+  const [rootPasswordAlt2, setRootPasswordAlt2] = useState('');
   const [schedule, setSchedule] = useState({ enabled: false, time: '18:00' });
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
@@ -135,8 +140,10 @@ export default function SettingsPage() {
     setBusy(true);
     setError('');
     try {
-      await post('config', { cookies, schedule, folidevPassword });
+      await post('config', { cookies, schedule, folidevPassword, rootPasswordAlt1, rootPasswordAlt2 });
       setFolidevPassword('');
+      setRootPasswordAlt1('');
+      setRootPasswordAlt2('');
       setCookies({ devops: '', aliyun: '', jumpserver: '', local_gitlab: '' });
       const data = await post(`sync/${source}`, {});
       setMessage(`${source} 独立同步任务已启动`);
@@ -166,8 +173,10 @@ export default function SettingsPage() {
     setMessage('');
     try {
       if (kind !== 'switch') {
-        await post('config', { cookies, schedule, folidevPassword });
+        await post('config', { cookies, schedule, folidevPassword, rootPasswordAlt1, rootPasswordAlt2 });
         setFolidevPassword('');
+        setRootPasswordAlt1('');
+        setRootPasswordAlt2('');
         setCookies({ devops: '', aliyun: '', jumpserver: '', local_gitlab: '' });
       }
       if (kind === 'sync' || kind === 'local_gitlab') await post(kind === 'local_gitlab' ? 'sync/local-gitlab' : 'sync', {});
@@ -243,6 +252,16 @@ export default function SettingsPage() {
                 <Input id="folidev-password" type="password" autoComplete="new-password" value={folidevPassword} onChange={(e) => setFolidevPassword(e.target.value)} placeholder="留空保留已保存密码" />
                 <small>用于 JumpServer 的 folidev 登录及只读 sudo 采集；不回显。最后保存：{date(state.folidev?.updatedAt)}</small>
               </div>
+              <div className="settings-field">
+                <label htmlFor="root-alt1">备选 root 密码 1 · {state.rootAlt1?.configured ? '已配置' : '未配置'}</label>
+                <Input id="root-alt1" type="password" autoComplete="new-password" value={rootPasswordAlt1} onChange={(e) => setRootPasswordAlt1(e.target.value)} placeholder="留空保留已保存密码" />
+                <small>folidev sudo 失败时，通过 su 使用此 root 密码登录；不回显。最后保存：{date(state.rootAlt1?.updatedAt)}</small>
+              </div>
+              <div className="settings-field">
+                <label htmlFor="root-alt2">备选 root 密码 2 · {state.rootAlt2?.configured ? '已配置' : '未配置'}</label>
+                <Input id="root-alt2" type="password" autoComplete="new-password" value={rootPasswordAlt2} onChange={(e) => setRootPasswordAlt2(e.target.value)} placeholder="留空保留已保存密码" />
+                <small>第二个备选 root 密码（su 方式）；不回显。最后保存：{date(state.rootAlt2?.updatedAt)}</small>
+              </div>
               <div className="settings-schedule">
                 <label>
                   <input
@@ -310,10 +329,32 @@ export default function SettingsPage() {
                   </p>
                 ) : null}
                 <CollectionProgress job={state.job} />
-                {state.job.status === 'running' && state.job.logTail ? (
+                {state.job.logTail ? (
                   <details className="settings-log">
-                    <summary>查看完整合并日志（实时刷新）</summary>
+                    <summary>
+                      {state.job.status === 'running'
+                        ? '查看完整合并日志（实时刷新）'
+                        : '查看完整合并日志'}
+                    </summary>
                     <pre>{state.job.logTail}</pre>
+                  </details>
+                ) : null}
+                {state.job.failures && state.job.failures.length > 0 ? (
+                  <details className="settings-log settings-failures" open>
+                    <summary>
+                      采集失败原因（{state.job.failures.length} 项）
+                    </summary>
+                    <ul className="settings-failure-list">
+                      {state.job.failures.map((f, i) => (
+                        <li key={i} className="settings-failure-item">
+                          <span className="settings-failure-source">{f.source}</span>
+                          <span className="settings-failure-type">
+                            {f.credential ? `${f.type}（凭据：${f.credential}）` : f.type}
+                          </span>
+                          <span className="settings-failure-message">{f.message}</span>
+                        </li>
+                      ))}
+                    </ul>
                   </details>
                 ) : null}
                 <small>

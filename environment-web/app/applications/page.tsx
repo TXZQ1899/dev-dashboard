@@ -1,7 +1,7 @@
 'use client';
 import { Fragment, Suspense, useEffect, useState } from 'react';
 import { flushSync } from 'react-dom';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   Search,
   GitBranch,
@@ -15,6 +15,7 @@ import {
   TriangleAlert,
   X,
   Download,
+  ListFilter,
 } from 'lucide-react';
 import { Shell } from '../page';
 import { Button } from '@/components/ui/button';
@@ -42,14 +43,11 @@ import {
   sharedProductionAppIds,
   environmentPresent,
   matchesEnvironmentCombination,
-  matchesDeploymentPeriod,
-  latestSuccessfulPushIn,
-  overYearUndeployed,
   repositoryCategory,
   type Env,
   type App,
 } from '@/lib/inventory';
-import { appHasProcessOnIp, appProcessStatusSummary, envServerVerdicts, ipServerState, ipSpecSummary, type ServerVerdicts } from '@/lib/process-comparison';
+import { appHasProcessOnIp, appProcessStatusSummary, appMatchesDeploymentPeriod, appOverYearUndeployed, appMatchOnIp, envServerVerdicts, formatBeijingTime, ipServerState, ipSpecSummary, latestAppDeploymentTime, type ServerVerdicts } from '@/lib/process-comparison';
 import { appRepositoryNameMatches } from '@/lib/repositories';
 type Filter = 'all' | 'single' | 'unknown';
 
@@ -86,6 +84,26 @@ function processVerdictText(v: ServerVerdicts): string {
   return parts.join('、') || '—';
 }
 
+// 展开明细「说明」列：进程命中给出 PID/进程名/监听端口；进程未命中但 webapps
+// 同名目录命中给出部署目录；都未命中时回退读取错误或占位文案。
+function detailNote(
+  a: App,
+  ip: string | undefined,
+  fallbackPort: string | undefined,
+  error?: string,
+): { text: string; matched: boolean } {
+  if (!ip) return { text: error || '缺少服务器 IP，数量待核实', matched: false };
+  const note = appMatchOnIp(a, ip, fallbackPort);
+  if (note?.kind === 'process')
+    return {
+      text: `进程ID：${note.pid}，进程名称：${note.processName}，端口号：${note.port || '—'}`,
+      matched: true,
+    };
+  if (note?.kind === 'webapp')
+    return { text: `部署目录：/var/www/webapps/${note.webappName}`, matched: true };
+  return { text: error || '—', matched: false };
+}
+
 function csvCell(value: string): string {
   if (value.includes(',') || value.includes('"') || value.includes('\n')) {
     return '"' + value.replace(/"/g, '""') + '"';
@@ -99,6 +117,7 @@ function exportApplicationsCsv(rows: App[]) {
   const header = [
     '应用ID',
     '应用名称',
+    '应用类型',
     '环境',
     '仓库类型',
     '仓库地址',
@@ -121,6 +140,7 @@ function exportApplicationsCsv(rows: App[]) {
         [
           a.id,
           a.name,
+          a.appType || '—',
           labels[e],
           repositoryCategory(a.repository),
           a.repository || '未提供',
@@ -131,7 +151,7 @@ function exportApplicationsCsv(rows: App[]) {
           loginVerdictText(v),
           envCellText(a, e),
           envSpecCellText(a, e),
-          latestSuccessfulPushIn(a, e) || '无成功记录',
+          formatBeijingTime(latestAppDeploymentTime(a, e)) || '无成功记录',
           a.http || '未提供',
           a.port || '未提供',
         ]
@@ -154,8 +174,7 @@ function exportApplicationsCsv(rows: App[]) {
 
 function repositorySearchValue(value: string) {
   return value
-    .replace(/^https?:\/\/gitlab\.dev\.thomascook\.com\.cn/i, 'gitlab.dev.thomascook.com.cn')
-    .replace(/^https?:\/\/(codeup\.aliyun\.com|code\.aliyun\.com)/i, 'code.aliyun.com')
+    .replace(/^https?:\/\//i, '')
     .replace(/\.git\/?$/, '')
     .toLowerCase();
 }
@@ -190,6 +209,7 @@ function ServerStateMark({ ip }: { ip: string }) {
   );
 }
 function AppList() {
+  const router = useRouter();
   const params = useSearchParams();
   const targetId = params.get('appId');
   const [query, setQuery] = useState('');
@@ -323,7 +343,7 @@ function AppList() {
       match &&
       appRepositoryNameMatches(a.id, repositoryUrls, repoQuery) &&
       matchesEnvironmentCombination(a,combination) &&
-      matchesDeploymentPeriod(a,publishEnv,publishPeriod) &&
+      appMatchesDeploymentPeriod(a,publishEnv,publishPeriod) &&
       (filter === 'single'
         ? info(a, 'PRODUCT').single
         : filter === 'unknown'
@@ -395,7 +415,7 @@ function AppList() {
                 <GitBranch size={17} />
                 <Input
                   aria-label="搜索 Git 仓库名"
-                  placeholder="搜索 Git 仓库名，如 tc-taicang…"
+                  placeholder="搜索 Git 仓库名/地址，如 tc-taicang 或 https://code.aliyun.com…"
                   value={repoQuery}
                   onChange={(e) => {
                     setRepoQuery(e.target.value);
@@ -458,7 +478,7 @@ function AppList() {
                     <option value="">不限时间</option><option value="week">一个星期内</option><option value="fortnight">半个月内（15 天）</option><option value="month">一个月内</option><option value="quarter">三个月内</option><option value="half">半年内</option><option value="year">一年内</option><option value="older">超过一年</option>
                   </select>
                 </div>
-                <p>列表默认显示全部环境中最近的 SUCCESS Push In 时间；选择环境后显示该环境的时间，以快照时间为基准；没有成功记录不匹配时间条件。</p>
+                <p>列表默认显示全部环境中最近的部署时间（取 JumpServer 进程启动时间与 webapps 目录更新时间中最新的）；选择环境后显示该环境的时间，以快照时间为基准；没有成功记录不匹配时间条件。</p>
               </fieldset>
             </div>
             <div className="result-line">
@@ -471,6 +491,15 @@ function AppList() {
                     : ''}
               </span>
               <div className="result-actions">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  aria-label="按一组 IP 批量查询关联应用"
+                  onClick={() => router.push('/applications/ip-set')}
+                >
+                  <ListFilter size={14} />
+                  按 IP 集查询
+                </Button>
                 <Button
                   variant="default"
                   size="lg"
@@ -491,6 +520,7 @@ function AppList() {
               <TableHeader>
                 <TableRow>
                   <TableHead>应用名称</TableHead>
+                  <TableHead>应用类型</TableHead>
                   {envs.map((e) => (
                     <TableHead key={e}>
                       <span className={'env-dot ' + e} />
@@ -573,6 +603,9 @@ function AppList() {
                           )}
                         </div>
                       </TableCell>
+                      <TableCell>
+                        <code className="port">{a.appType || '—'}</code>
+                      </TableCell>
                       {envs.map((e) => {
                         const s = info(a, e),
                           key = `${a.id}-${e}`;
@@ -609,7 +642,7 @@ function AppList() {
                         );
                       })}
                       <TableCell>{repositoryCategory(a.repository)}</TableCell>
-                      <TableCell>{latestSuccessfulPushIn(a,publishEnv || undefined)||'无成功记录'}</TableCell>
+                      <TableCell>{formatBeijingTime(latestAppDeploymentTime(a,publishEnv || undefined))||'无成功记录'}</TableCell>
                       <TableCell>
                         <span className="http-name">{a.http || '未提供'}</span>
                       </TableCell>
@@ -623,7 +656,7 @@ function AppList() {
                         const s = info(a, e);
                         return (
                           <TableRow key={e} className="expanded-row">
-                            <TableCell colSpan={8}>
+                            <TableCell colSpan={9}>
                               <div
                                 className="server-details"
                                 id={`details-${a.id}-${e}`}
@@ -656,7 +689,9 @@ function AppList() {
                                     </TableRow>
                                   </TableHeader>
                                   <TableBody>
-                                    {s.rows.map((r, i) => (
+                                    {s.rows.map((r, i) => {
+                                      const note = detailNote(a, r.ip, r.port || a.port, r.error);
+                                      return (
                                       <TableRow key={`${r.deploy}-${i}`}>
                                         <TableCell>
                                           <code>{r.ip || '未返回 IP'}</code>
@@ -687,8 +722,8 @@ function AppList() {
                                         <TableCell title={r.publishTimeSource}>
                                           {r.lastPublishedAt || '无记录'}
                                         </TableCell>
-                                        <TableCell title={overYearUndeployed(a, e) ? '当前环境存在服务器，但没有一年内成功 Push In 记录' : undefined}>
-                                          {overYearUndeployed(a, e)
+                                        <TableCell title={appOverYearUndeployed(a, e) && !(r.publishStatus || '').startsWith('步骤：') ? '当前环境存在服务器，但没有一年内部署记录（未匹配到进程或 webapps 目录）' : undefined}>
+                                          {appOverYearUndeployed(a, e) && !(r.publishStatus || '').startsWith('步骤：')
                                             ? '超过一年未部署'
                                             : r.publishStatus || '未采集'}
                                         </TableCell>
@@ -705,14 +740,12 @@ function AppList() {
                                             {r.status || '未知'}
                                           </span>
                                         </TableCell>
-                                        <TableCell className="error-text">
-                                          {r.error ||
-                                            (r.ip
-                                              ? '—'
-                                              : '缺少服务器 IP，数量待核实')}
+                                        <TableCell className={note.matched ? 'match-note-text' : 'error-text'}>
+                                          {note.text}
                                         </TableCell>
                                       </TableRow>
-                                    ))}
+                                      );
+                                    })}
                                   </TableBody>
                                 </Table>
                                 {!s.rows.length && (
@@ -730,7 +763,7 @@ function AppList() {
                 })}
                 {!visible.length && (
                   <TableRow>
-                    <TableCell colSpan={8}>
+                    <TableCell colSpan={9}>
                       <div className="empty-state">
                         <Search size={28} />
                         <h2>未找到匹配的应用</h2>

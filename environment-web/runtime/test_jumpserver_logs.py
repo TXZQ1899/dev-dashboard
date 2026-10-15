@@ -34,18 +34,22 @@ def make_fetcher(assets=ASSETS, inspection=None):
     return get
 
 
-def fake_collect_servers(assets, get, cookie, password, progress=None):
+def fake_collect_servers(assets, get, cookie, folidev_pw='', root_alt1='', root_alt2='', ip_map=None, progress=None):
     """Report progress like the real collector, without opening any terminal."""
     result = {}
     for index, asset in enumerate(assets, 1):
-        result[asset['id']] = {'checkedAt': '2026-09-20T00:00:00+00:00', 'loginStatus': 'can_login' if index <= 20 else 'cannot_login',
+        result[asset['id']] = {'checkedAt': '2026-09-20T00:00:00+00:00',
+                               'loginStatus': 'can_login' if index <= 20 else 'cannot_login',
                                'processStatus': 'complete', 'processes': [{'pid': 1, 'name': 'java'}],
-                               'nginxStatus': 'complete' if index <= 10 else 'not_running', 'nginxRoutes': [],
+                               'nginxStatus': 'complete' if index <= 10 else 'not_running',
+                               'nginxRoutes': [],
                                'nginxConfigurations': ([{'path': '/etc/nginx/nginx.conf', 'content': 'x'}] if index <= 5 else []),
+                               'webapps': {'status': 'complete' if index <= 15 else 'absent',
+                                           'apps': [{'name': 'demo', 'mtime': '2026-01-01T00:00:00+00:00'}] if index <= 15 else []},
                                'warnings': []}
         if progress:
             progress(index, len(assets))
-    return result
+    return result, {}
 
 
 class JumpServerLogTests(unittest.TestCase):
@@ -109,11 +113,12 @@ SINGLE_ASSET_SNAPSHOT = {'collectedAt': 'old', 'groups': [{'id': 'g', 'assetIds'
 
 
 def single_inspection(configs):
-    def inspect(assets, get, cookie, password, progress=None):
+    def inspect(assets, get, cookie, folidev_pw='', root_alt1='', root_alt2='', ip_map=None, progress=None):
         assert [a['id'] for a in assets] == ['a1']
         return {'a1': {'checkedAt': 'new', 'loginStatus': 'can_login', 'processStatus': 'complete',
                        'processes': [{'pid': 1, 'name': 'nginx'}], 'nginxStatus': 'complete',
-                       'nginxRoutes': [], 'nginxConfigurations': configs, 'warnings': []}}
+                       'nginxRoutes': [], 'nginxConfigurations': configs,
+                       'webapps': {'status': 'complete', 'apps': []}, 'warnings': []}}, {}
     return inspect
 
 
@@ -124,7 +129,7 @@ class JumpServerAssetTests(unittest.TestCase):
             (tmp / 'jumpserver-snapshot.json').write_text(json.dumps(SINGLE_ASSET_SNAPSHOT))
             configs = [{'path': '/etc/nginx/nginx.conf', 'content': 'x'}]
             with patch.object(collect, 'collect_servers', single_inspection(configs)):
-                result = collect.jumpserver_asset('cookie', tmp, 'pw', 'a1', fetcher=make_fetcher())
+                result = collect.jumpserver_asset('cookie', tmp, 'pw', '', '', {}, 'a1', fetcher=make_fetcher())
             asset = result['assets'][0]
             self.assertEqual(asset['inspection']['checkedAt'], 'new')
             self.assertEqual(asset['inspection']['configurationCount'], 1)
@@ -140,7 +145,7 @@ class JumpServerAssetTests(unittest.TestCase):
             stale = tmp / 'nginx-configs' / (hashlib.sha256(b'a1').hexdigest() + '.json')
             stale.parent.mkdir(); stale.write_text('{"assetId":"a1"}')
             with patch.object(collect, 'collect_servers', single_inspection([])):
-                result = collect.jumpserver_asset('cookie', tmp, 'pw', 'a1', fetcher=make_fetcher())
+                result = collect.jumpserver_asset('cookie', tmp, 'pw', '', '', {}, 'a1', fetcher=make_fetcher())
             self.assertEqual(result['assets'][0]['inspection']['configurationCount'], 0)
             self.assertFalse(stale.exists())
 

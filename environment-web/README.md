@@ -78,7 +78,7 @@ docker compose down
 
 更换本机端口：`ENVSCOPE_PORT=8080 docker compose up -d`。更新清单后重新执行导入和 `docker compose up -d --build`。镜像包含导入时的内部环境快照，应留在本地或授权的内部镜像仓库。
 
-本机访问 Docker Hub 超时，Compose 默认使用 ECR 中的 Docker 官方 Node 镜像。网络恢复后可指定 `NODE_IMAGE=node:22-bookworm-slim docker compose up -d --build`。
+本机访问 Docker Hub / public.ecr.aws 超时，默认使用 1ms.run 上的 Docker 官方 Node 镜像。网络恢复后可指定 `NODE_IMAGE=node:22-bookworm-slim docker compose up -d --build`。
 
 页面之间使用标准 HTML 链接导航（保留筛选参数和应用 ID 锚点），避免当前 Vinext 生产构建中的客户端路由异常；页内搜索、分页和详情展开仍由 React 处理。
 

@@ -5,6 +5,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { NODE_TYPE_BY_KIND, buildGraphIndex, explorePaths } from '../lib/topology/path-explorer.ts';
 import { exploreDomainChain } from '../lib/topology/domain-chain.ts';
+import { findNginxLocations } from '../lib/topology/nginx-location.ts';
 import { createDefaultResolverRegistry, resolveRequestPathWithIndex } from '../lib/topology/request/index.ts';
 
 // stdout is a pipe whenever this script is driven by the runtime service or any
@@ -39,6 +40,11 @@ Commands:
   domain-chain <name>    staged domain landing report (DNS -> EIP -> NAT/ECS/CLB
                          -> nginx host -> upstream backends -> applications)
                          e.g. npm run topology:path -- domain-chain api.example.com
+
+  nginx-location <uri>   reverse lookup: find nginx routes whose location URI
+                         contains the query (e.g. /tc-fostay), then report the
+                         source config file, host, upstream and backends
+                         e.g. npm run topology:path -- nginx-location /tc-fostay
 
   <kind> <name|ip>       generic path enumeration (all simple paths to the target)
     domain <name>          e.g. npm run topology:path -- domain api.example.com
@@ -98,19 +104,22 @@ async function main() {
   }
   const chainMode = positional[0] === 'domain-chain';
   const requestMode = positional[0] === 'request';
+  const nginxLocationMode = positional[0] === 'nginx-location';
   if (chainMode && positional.length < 2) throw usage('domain-chain requires a domain name.');
   if (requestMode && positional.length < 2) throw usage('request requires a URL or domain name.');
-  if (!chainMode && !requestMode && positional.length < 2) throw usage('Expected a kind and a name/IP query.');
-  const [rawKind, ...queryParts] = chainMode || requestMode ? positional.slice(1) : positional;
+  if (nginxLocationMode && positional.length < 2) throw usage('nginx-location requires a URI, e.g. /tc-fostay.');
+  if (!chainMode && !requestMode && !nginxLocationMode && positional.length < 2) throw usage('Expected a kind and a name/IP query.');
+  const [rawKind, ...queryParts] = chainMode || requestMode || nginxLocationMode ? positional.slice(1) : positional;
   const kind = chainMode ? 'domain' : rawKind.toLowerCase();
-  if (!chainMode && !requestMode && !KINDS.includes(rawKind.toLowerCase())) throw usage(`Unsupported kind "${rawKind}". Expected one of: ${KINDS.join(', ')}`);
+  if (!chainMode && !requestMode && !nginxLocationMode && !KINDS.includes(rawKind.toLowerCase())) throw usage(`Unsupported kind "${rawKind}". Expected one of: ${KINDS.join(', ')}`);
   if (requestMode && options.to.length > 0) throw usage('request mode walks the full resolver chain; --to is not applicable.');
-  const query = chainMode || requestMode ? positional.slice(1).join(' ') : queryParts.join(' ');
+  if (nginxLocationMode && options.to.length > 0) throw usage('nginx-location projects matched routes; --to is not applicable.');
+  const query = chainMode || requestMode || nginxLocationMode ? positional.slice(1).join(' ') : queryParts.join(' ');
   const file = await resolveTopologyFile(options.file);
 
   if (options.env && !ENVIRONMENTS.includes(options.env)) throw usage(`Unsupported environment "${options.env}".`);
-  if (requestMode && options.env && !REQUEST_ENVIRONMENTS.includes(options.env)) {
-    throw usage(`request mode accepts environments: ${REQUEST_ENVIRONMENTS.join(', ')}.`);
+  if ((requestMode || nginxLocationMode) && options.env && !REQUEST_ENVIRONMENTS.includes(options.env)) {
+    throw usage(`request/nginx-location mode accepts environments: ${REQUEST_ENVIRONMENTS.join(', ')}.`);
   }
   const targets = options.to.map(item => item.toUpperCase());
   for (const target of targets) if (!NODE_TYPES.includes(target)) throw usage(`Unsupported target node type "${target}".`);
@@ -150,6 +159,15 @@ async function main() {
       return 0;
     }
     for (const line of renderDomainChain(chain)) await out(line);
+    return 0;
+  }
+  if (nginxLocationMode) {
+    const result = findNginxLocations(index, { uri: query, environment: options.env || null });
+    if (options.json) {
+      await out(JSON.stringify(result, null, 2));
+      return 0;
+    }
+    for (const line of renderNginxLocation(result)) await out(line);
     return 0;
   }
   const result = explorePaths(index, {
@@ -454,6 +472,65 @@ function hostName(host) {
   if (!host) return '';
   const ecs = host.attributes?.ecs;
   return ecs?.name ? `${ecs.name} (${ecs.id})` : host.attributes?.jumpserver?.hostname || '';
+}
+
+/**
+ * Concise human-readable report for the nginx-location reverse lookup:
+ * per matched route — config file, host, server_name/listen, upstream and
+ * IP+port backend/application landing.
+ */
+function renderNginxLocation(result) {
+  const lines = [];
+  const q = result.query;
+  lines.push(`Nginx Location 查找: "${q.uri}"${q.environment ? ` (env=${q.environment})` : ' (全部环境)'}`);
+  if (result.status === 'not-found') {
+    lines.push('状态: 未找到（拓扑中没有 location URI 包含该关键字的 Nginx 路由）');
+    for (const warning of result.warnings) lines.push(`提示: ${warning}`);
+    return lines;
+  }
+  const s = result.stats;
+  lines.push(`状态: 命中 ${s.routeCount} 条路由 · ${s.upstreamCount} 组 upstream · ${s.backendCount} 个后端端点（精确 ${s.exactBackendCount} / 待确认 ${s.ambiguousBackendCount} / 未匹配 ${s.unresolvedBackendCount}） · ${s.applicationIds.length} 个应用`);
+  lines.push('');
+
+  result.matches.forEach((match, index) => {
+    const domains = match.domains.length ? match.domains.join(', ') : '(无 server_name)';
+    const hostLabel = match.host
+      ? `${match.host.id}${hostName(match.host) ? ` · ${hostName(match.host)}` : ''}`
+      : `资产 ${match.assetId} 不在主机清单`;
+    lines.push(`[${index + 1}] location ${match.uri}   server_name: ${domains}   listen: ${match.listen.join(', ') || '?'}`);
+    if (match.target) lines.push(`    指令: ${match.directive} ${match.target}`);
+    lines.push(`    文件: ${match.file || '未记录（需重新生成拓扑）'}`);
+    lines.push(`    主机: ${hostLabel}`);
+    for (const { upstream, backends } of match.upstreams) {
+      lines.push(`    upstream ${upstream.identity?.name || upstream.id}`);
+      if (!backends.length) {
+        lines.push('      （无具体 IP 后端：主机名/动态目标或静态指令）');
+        continue;
+      }
+      for (const backend of backends) {
+        const ep = backend.endpoint.identity;
+        const base = `      -> ${ep.ip}:${ep.port}`;
+        if (backend.status === 'unresolved') {
+          lines.push(`${base}  => 未匹配到 DevOps 部署`);
+          if (backend.sameHostCandidates.length) {
+            lines.push(`         同机其他端口（仅供排查）: ${backend.sameHostCandidates.map(c => `${c.port}=${c.application.label}(${c.application.identity?.devopsAppId ?? '?'})[${c.environment}]`).join('; ')}`);
+          }
+        } else {
+          for (const app of backend.matches) {
+            const tag = backend.status === 'exact' ? '✓' : '?';
+            lines.push(`${base}  => ${tag} ${app.application.label} (应用 ${app.application.identity?.devopsAppId ?? '?'}) [${app.environment}] (${CONFIDENCE_LABEL[app.confidence] ?? app.confidence})`);
+          }
+        }
+      }
+    }
+    lines.push('');
+  });
+
+  if (result.warnings.length) {
+    lines.push('提示:');
+    for (const warning of result.warnings) lines.push(`  - ${warning}`);
+  }
+  return lines;
 }
 
 function endpointText(node) {

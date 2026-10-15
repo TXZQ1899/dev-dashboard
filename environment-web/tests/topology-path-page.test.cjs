@@ -53,8 +53,8 @@ test('path explorer page queries the runtime API with kind, query and filters', 
   for (const label of ['查询模式', '查询起点类型', '目标节点类型', '环境过滤', '最大深度']) {
     assert.match(source, new RegExp(`aria-label="${label}"`), `缺少 ${label} 控件`);
   }
-  // The query input label switches with the mode (chain / request / paths).
-  assert.match(source, /aria-label=\{mode === 'chain' \? '域名' : mode === 'request' \? 'URL 或域名' : '域名、应用名或 IP'\}/);
+  // The query input label switches with the mode (chain / request / nginx / paths).
+  assert.match(source, /aria-label=\{mode === 'chain' \? '域名' : mode === 'request' \? 'URL 或域名' : mode === 'nginx' \? 'Nginx location URI' : '域名、应用名或 IP'\}/);
 });
 
 test('path explorer page defaults each kind to the documented target direction', () => {
@@ -85,23 +85,29 @@ test('path explorer is reachable from the sidebar navigation', () => {
   assert.match(shell, /active === 'topology' \? '拓扑路径查询'/);
 });
 
-test('path explorer page defaults to the staged domain landing chain mode', () => {
+test('topology page only offers the request chain mode and defaults to it', () => {
+  const source = fs.readFileSync(SOURCE, 'utf8');
+  // The mode dropdown only contains the request chain mode.
+  assert.doesNotMatch(source, /\['chain', '域名落点链路（推荐域名）'\]/);
+  assert.doesNotMatch(source, /\['paths', '通用路径遍历'\]/);
+  assert.match(source, /\['request', '请求链路（URL 端到端）'\]/);
+
   const html = renderPage();
   assert.match(html, /拓扑路径查询/);
   assert.match(html, /TOPOLOGY PATH EXPLORER/);
   assert.match(html, /aria-label="查询模式"/);
-  assert.match(html, /域名落点链路（推荐域名）/);
-  assert.match(html, /查询链路/);
-  assert.match(html, /apis\.folidaymall\.com/);
-  // In chain mode the kind selector is forced to domain and disabled.
-  assert.match(
-    html,
-    /aria-label="查询起点类型" disabled=""[\s\S]*<option value="domain" selected="">/,
-  );
-  // Path-mode-only controls are hidden in chain mode.
+  assert.match(html, /请求链路（URL 端到端）/);
+  assert.doesNotMatch(html, /域名落点链路（推荐域名）/);
+  assert.doesNotMatch(html, /通用路径遍历/);
+  // Default mode is request: URL input, PRODUCT environment, 解析请求 button.
+  assert.match(html, /aria-label="URL 或域名"/);
+  assert.match(html, /placeholder="https:\/\/api\.example\.com\/order\/123"/);
+  assert.match(html, /<option value="PRODUCT" selected="">/);
+  assert.match(html, /解析请求/);
+  // Path-mode-only controls are hidden in request mode.
   assert.doesNotMatch(html, /aria-label="目标节点类型"/);
   assert.doesNotMatch(html, /aria-label="最大深度"/);
-  assert.match(html, /域名落点链路按 5 层展开/);
+  assert.match(html, /请求链路按完整 URL 端到端解析/);
 });
 
 test('domain chain mode queries the staged API and renders all five layers', () => {

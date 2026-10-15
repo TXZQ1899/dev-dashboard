@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import patch
-from daily_collection import latest_push_in, reconcile, normalize_repository, paginate, collect_application, collect_commit_time, collect_commit_history, ExportError, unique_records
+from daily_collection import latest_push_in, deploy_failure_status, reconcile, normalize_repository, paginate, collect_application, collect_commit_time, collect_commit_history, ExportError, unique_records
 
 
 def app(url):
@@ -87,6 +87,84 @@ class DailyTests(unittest.TestCase):
         self.assertEqual(value['lastPublishedAt'],'2026-09-07 10:01:00')
         self.assertEqual(value['publishStatus'],'FAILED')
         self.assertEqual(latest_push_in([])['lastPublishedAt'],'')
+
+    def test_failed_step_surfaces_when_no_pushin_step_ran(self):
+        steps=[{'operation':'Stop','startTime':'2026-10-08 11:38:44','endTime':'2026-10-08 11:38:44','status':'FAILED'},
+               {'operation':'Deploy','status':'INIT'}]
+        value=latest_push_in(steps)
+        self.assertEqual(value['lastPublishedAt'],'')
+        self.assertEqual(value['publishStatus'],'步骤：Stop 状态：FAILED，时间：2026-10-08 11:38:44')
+
+    def test_failed_step_picks_latest_failure_by_time(self):
+        steps=[{'operation':'Stop','endTime':'2026-10-08 10:00:00','status':'FAILED'},
+               {'operation':'Deploy','endTime':'2026-10-08 11:38:44','status':'FAILED'}]
+        value=latest_push_in(steps)
+        self.assertIn('Deploy', value['publishStatus'])
+        self.assertIn('2026-10-08 11:38:44', value['publishStatus'])
+
+    def test_no_pushin_and_no_failed_step_keeps_generic_message(self):
+        steps=[{'operation':'Stop','endTime':'2026-10-08 10:00:00','status':'SUCCESS'}]
+        value=latest_push_in(steps)
+        self.assertEqual(value['publishStatus'],'无 Push In 时间')
+        self.assertEqual(value['lastPublishedAt'],'')
+
+    def test_failed_step_without_time_is_skipped(self):
+        steps=[{'operation':'Stop','status':'FAILED'},
+               {'operation':'Deploy','endTime':'2026-10-08 11:38:44','status':'FAILED'}]
+        value=latest_push_in(steps)
+        self.assertIn('Deploy', value['publishStatus'])
+        self.assertIn('2026-10-08 11:38:44', value['publishStatus'])
+
+    def test_failed_step_surfaces_when_pushin_did_not_run(self):
+        # PushIn step exists but didn't run (status "not run", no time);
+        # a non-PushIn step failed and should surface instead.
+        steps=[{'operation':'PushIn','startTime':None,'endTime':None,'status':'not run'},
+               {'operation':'Stop','startTime':'2026-10-08 11:38:44','endTime':'2026-10-08 11:38:44','status':'FAILED'}]
+        value=latest_push_in(steps)
+        self.assertEqual(value['lastPublishedAt'],'')
+        self.assertEqual(value['publishStatus'],'步骤：Stop 状态：FAILED，时间：2026-10-08 11:38:44')
+
+    def test_deploy_failure_status_formats_deploy_step_without_time(self):
+        self.assertEqual(deploy_failure_status({'status':'执行失败','deployStep':'部署环境','actionType':'部署'}),
+                         '步骤：部署环境 状态：执行失败，无时间')
+        # Other failed steps are reported verbatim.
+        self.assertEqual(deploy_failure_status({'status':'执行失败','deployStep':'属性赋值'}),
+                         '步骤：属性赋值 状态：执行失败，无时间')
+        # Missing deployStep falls back to actionType then 部署.
+        self.assertEqual(deploy_failure_status({'status':'执行失败','actionType':'部署'}),
+                         '步骤：部署 状态：执行失败，无时间')
+        self.assertIsNone(deploy_failure_status({'status':'执行成功','deployStep':'部署环境'}))
+        self.assertIsNone(deploy_failure_status({}))
+
+    def test_failed_deploy_list_row_surfaces_when_runtime_page_unavailable(self):
+        class Client:
+            def __init__(self,*args,**kwargs):pass
+            def get(self,path,params,**kwargs):
+                if 'config/list' in path:
+                    return {'content':[{'id':params['search.id_eq'],'versionControlName':'trunk'}]}
+                if params.get('envtype')!='TEST':return None
+                # Failed deploy: runtime link unavailable; deployStep failed before PushIn.
+                return {'deployList':[{'ip':'10.179.1.224','deployId':15593,'configId':14136,
+                                       'sceneId':283,'status':'执行失败','deployStep':'部署环境','actionType':'部署'}]}
+            def read(self,*args,**kwargs):return '\r\n\n'
+        with patch('daily_collection.RuntimeClient',Client):
+            result=collect_application({'id':1416,'appName':'tims-order-web','httpPort':'34801'},'not-a-real-cookie')
+        row=result['envs']['TEST'][0]
+        self.assertEqual(row['lastPublishedAt'],'')
+        self.assertEqual(row['publishStatus'],'步骤：部署环境 状态：执行失败，无时间')
+
+    def test_successful_deploy_without_runtime_keeps_generic_status(self):
+        class Client:
+            def __init__(self,*args,**kwargs):pass
+            def get(self,path,params,**kwargs):
+                if 'config/list' in path:
+                    return {'content':[{'id':params['search.id_eq'],'versionControlName':'trunk'}]}
+                if params.get('envtype')!='TEST':return None
+                return {'deployList':[{'ip':'10.0.0.1','deployId':1,'configId':3,'status':'执行成功','deployStep':'部署环境'}]}
+            def read(self,*args,**kwargs):return '\r\n\n'
+        with patch('daily_collection.RuntimeClient',Client):
+            result=collect_application({'id':1,'appName':'x','httpPort':'80'},'not-a-real-cookie')
+        self.assertEqual(result['envs']['TEST'][0]['publishStatus'],'无运行记录')
 
     def test_repo_statistics_do_not_fabricate_missing_values(self):
         row={'http_url_to_repo':'https://codeup.aliyun.com/org/repo.git','name':'repo','namespace_id':2,'id':1,'updated_at':'2026-09-07T00:00:00+08:00'}

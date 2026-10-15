@@ -64,6 +64,12 @@ ENV NODE_ENV=production \
     MINIFLARE_REGISTRY_PATH=/tmp/miniflare \
     TZ=Asia/Shanghai
 
+# 接受 build.sh 传入的 CACHEBUST；写一个 marker 文件使该层失效，
+# 从而强制后续 COPY --from=collectors 重新拉取最新 collectors 源码，
+# 避免 BuildKit Layer Cache 跳过 collectors 上下文的文件更新。
+ARG CACHEBUST=1
+RUN echo "$CACHEBUST" > /tmp/collectors-cachebust.marker
+
 # 拷贝构建产物
 COPY --from=build --chown=node:node /app ./
 

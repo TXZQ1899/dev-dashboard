@@ -1,8 +1,9 @@
 'use client';
 import { useState } from 'react';
-import { Cpu, MemoryStick, Server, Boxes } from 'lucide-react';
+import { Cpu, MemoryStick, Server, Boxes, Download } from 'lucide-react';
 import { Shell } from '../page';
 import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
 import {
   Table,
   TableHeader,
@@ -33,6 +34,46 @@ function isCollected(r: LocalServer) {
   return r.specsCollected ?? r.cpu > 0;
 }
 
+function specSummary(r: LocalServer): string {
+  if (!isCollected(r) || !r.cpu) return '—';
+  return `${r.cpu}C ${r.memoryGiB}G`;
+}
+
+function csvCell(value: string): string {
+  if (value.includes(',') || value.includes('"') || value.includes('\n')) {
+    return '"' + value.replace(/"/g, '""') + '"';
+  }
+  return value;
+}
+
+function exportCsv(rows: LocalServer[]) {
+  const header = ['IP', '机器名称', '规格', '部署应用ID', '部署应用名称', '环境'];
+  const lines = [header.map(csvCell).join(',')];
+  for (const r of rows) {
+    lines.push(
+      [
+        r.ip,
+        r.hostname,
+        specSummary(r),
+        r.appId || '—',
+        r.appName || '—',
+        r.environments.join(', ') || '—',
+      ]
+        .map(csvCell)
+        .join(','),
+    );
+  }
+  const csv = lines.join('\r\n');
+  const bom = '\uFEFF';
+  const blob = new Blob([bom + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'local-datacenter-servers.csv';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function Metrics({ rows }: { rows: LocalServer[] }) {
   const s = summarize(rows);
   return (
@@ -45,7 +86,7 @@ function Metrics({ rows }: { rows: LocalServer[] }) {
           {s.count.toLocaleString('zh-CN')}
           <small>台</small>
         </strong>
-        <p>DevOps 部署 IP 减去阿里云 ECS · 已采集规格 {s.collected} 台</p>
+        <p>本地机房四大网段（10.58.1 / 9 / 10 / 140）· 已采集规格 {s.collected} 台</p>
       </section>
       <section className="panel dc-metric">
         <span>
@@ -90,10 +131,11 @@ export default function DatacenterPage() {
       <main className="dc-page">
         <div className="page-heading">
           <div>
-            <div className="eyebrow">LOCAL DATACENTER · NON-ECS</div>
+            <div className="eyebrow">LOCAL DATACENTER · 10.58 SEGMENTS</div>
             <h1>本地机房资源</h1>
             <p>
-              DevOps 部署 IP 中不属于阿里云 ECS 的服务器
+              本地机房服务器：10.58.1 / 10.58.9 / 10.58.10 / 10.58.140
+              四个网段
               {fetchedAt
                 ? ' · 规格采集 ' +
                   new Date(fetchedAt).toLocaleString('zh-CN', {
@@ -118,6 +160,15 @@ export default function DatacenterPage() {
                 按部署应用数排序 · 已采集规格的显示 CPU/内存/OS，未采集的以灰色标注
               </p>
             </div>
+            <Button
+              className="export-button"
+              size="sm"
+              disabled={!shown.length}
+              onClick={() => exportCsv(shown)}
+            >
+              <Download size={16} />
+              导出 CSV（{shown.length} 台）
+            </Button>
           </div>
           <div className="dc-filters">
             <div className="dc-filter-row">
@@ -207,8 +258,8 @@ export default function DatacenterPage() {
         <footer className="page-footer">
           <span>
             <i />
-            DevOps 部署 IP 减去阿里云 ECS · CPU 为 nproc 逻辑核数 · 内存从
-            /proc/meminfo 换算
+            本地机房四大网段（10.58.1 / 9 / 10 / 140）· CPU 为 nproc
+            逻辑核数 · 内存从 /proc/meminfo 换算
           </span>
           <span>静态快照 · 规格基于 JumpServer 终端采集</span>
         </footer>

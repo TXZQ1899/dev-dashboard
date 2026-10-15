@@ -26,6 +26,13 @@ const jumpserverModule = {
   },
 };
 
+// inventory 运行时依赖：latestAppDeploymentTime 用 envs 遍历全部环境，
+// appOverYearUndeployed / appMatchesDeploymentPeriod 用 inventoryDate 做默认基准。
+const inventoryModule = {
+  envs: ['TEST', 'SIMULATION', 'PRODUCT'],
+  inventoryDate: '2026-09-30T12:00:00+08:00',
+};
+
 // server-specs 覆盖：新格式（含 specsCollected/loginStatus）、旧格式（仅 cpu）、多 IP 记录。
 const serverSpecRows = [
   { ip: '10.58.0.1', hostname: 'a', specsCollected: true, loginStatus: 'can_login', cpu: 2, memoryMB: 3936, os: 'CentOS 7.9' },
@@ -42,8 +49,17 @@ const lib = evaluate(
   path.join(__dirname, '../lib/process-comparison.ts'),
   (id) => {
     if (id === '@/lib/jumpserver') return jumpserverModule;
-    if (id === '@/lib/server-processes') return {};
-    if (id === '@/lib/inventory') return {};
+    if (id === '@/lib/server-processes')
+      return {
+        // 与 lib/server-processes.ts 的 jarName 保持一致：取 -jar 参数的 basename。
+        jarName: (p) => {
+          const tokens = (p.command.match(/"(?:\\.|[^"\\])*"|'[^']*'|[^\s]+/g) || [])
+            .map((s) => s.replace(/^(['"])(.*)\1$/, '$2'));
+          const i = tokens.indexOf('-jar');
+          return i >= 0 && tokens[i + 1] ? tokens[i + 1].split('/').pop() : undefined;
+        },
+      };
+    if (id === '@/lib/inventory') return inventoryModule;
     if (id === '@/lib/server-specs') return { specs: serverSpecRows };
     if (id === '@/lib/ecs') return { instances: ecsInstanceRows };
     if (id === '@/lib/local-servers')
@@ -230,6 +246,139 @@ test('compareServerApps returns unavailable for IP without inspection data', () 
   assert.equal(result.available, false);
   assert.equal(result.processes.length, 0);
   assert.equal(result.apps[0].matched, false);
+});
+
+test('compareServerApps falls back to webapps match when process does not match', () => {
+  jumpserverModule.jumpserver.assets = [
+    {
+      id: 'w1',
+      ip: '10.0.0.41',
+      hostname: 'host41',
+      inspection: {
+        checkedAt: '2026-09-20T00:00:00+00:00',
+        loginStatus: 'can_login',
+        reason: '',
+        processStatus: 'complete',
+        processes: [makeProcess('java -jar /srv/other-app.jar')],
+        nginxStatus: 'not_running',
+        nginxRoutes: [],
+        warnings: [],
+        webapps: {
+          status: 'complete',
+          apps: [
+            { name: 'frontend-portal', mtime: '2026-09-01T00:00:00+00:00' },
+            { name: 'Backend_Api', mtime: '2026-09-02T00:00:00+00:00' },
+          ],
+        },
+      },
+    },
+  ];
+  const apps = [
+    { id: '1', name: 'frontend-portal', ports: ['80'] },
+    { id: '2', name: 'backend-api', ports: ['8080'] },
+    { id: '3', name: 'missing-app', ports: [] },
+  ];
+  const result = lib.compareServerApps('10.0.0.41', apps);
+  // 1: 进程不匹配，但 webapps 同名目录命中（忽略大小写/连字符/下划线）→ matched, webapp 填充
+  assert.equal(result.apps[0].matched, true);
+  assert.equal(result.apps[0].process, undefined);
+  assert.equal(result.apps[0].webapp?.name, 'frontend-portal');
+  // 2: 同样命中（Backend_Api 规范化后与 backend-api 相同）
+  assert.equal(result.apps[1].matched, true);
+  assert.equal(result.apps[1].process, undefined);
+  assert.equal(result.apps[1].webapp?.name, 'Backend_Api');
+  // 3: 进程与 webapps 均无匹配 → 仍标红
+  assert.equal(result.apps[2].matched, false);
+  assert.equal(result.apps[2].process, undefined);
+  assert.equal(result.apps[2].webapp, undefined);
+});
+
+test('compareServerApps does not fall back to webapps when webapps is absent or not collected', () => {
+  jumpserverModule.jumpserver.assets = [
+    {
+      id: 'w2',
+      ip: '10.0.0.42',
+      hostname: 'host42',
+      inspection: {
+        checkedAt: '2026-09-20T00:00:00+00:00',
+        loginStatus: 'can_login',
+        reason: '',
+        processStatus: 'complete',
+        processes: [makeProcess('java -jar /srv/other.jar')],
+        nginxStatus: 'not_running',
+        nginxRoutes: [],
+        warnings: [],
+        webapps: { status: 'absent', apps: [] },
+      },
+    },
+    {
+      id: 'w3',
+      ip: '10.0.0.43',
+      hostname: 'host43',
+      inspection: {
+        checkedAt: '2026-09-20T00:00:00+00:00',
+        loginStatus: 'can_login',
+        reason: '',
+        processStatus: 'complete',
+        processes: [makeProcess('java -jar /srv/other.jar')],
+        nginxStatus: 'not_running',
+        nginxRoutes: [],
+        warnings: [],
+      },
+    },
+  ];
+  // absent 状态：webapps 不可用作回退
+  let result = lib.compareServerApps('10.0.0.42', [{ id: '1', name: 'frontend-portal', ports: [] }]);
+  assert.equal(result.apps[0].matched, false);
+  assert.equal(result.apps[0].webapp, undefined);
+  // 未采集 webapps：同样不可回退
+  result = lib.compareServerApps('10.0.0.43', [{ id: '1', name: 'frontend-portal', ports: [] }]);
+  assert.equal(result.apps[0].matched, false);
+  assert.equal(result.apps[0].webapp, undefined);
+});
+
+test('compareServerApps only skips too-short webapp names, not common words', () => {
+  jumpserverModule.jumpserver.assets = [
+    {
+      id: 'w4',
+      ip: '10.0.0.44',
+      hostname: 'host44',
+      inspection: {
+        checkedAt: '2026-09-20T00:00:00+00:00',
+        loginStatus: 'can_login',
+        reason: '',
+        processStatus: 'complete',
+        processes: [makeProcess('java -jar /srv/other.jar')],
+        nginxStatus: 'not_running',
+        nginxRoutes: [],
+        warnings: [],
+        webapps: {
+          status: 'complete',
+          apps: [
+            { name: 'a', mtime: null },
+            { name: 'app', mtime: null },
+            { name: 'webapps', mtime: null },
+            { name: 'static', mtime: null },
+          ],
+        },
+      },
+    },
+  ];
+  const apps = [
+    { id: '1', name: 'a', ports: [] },
+    { id: '2', name: 'app', ports: [] },
+    { id: '3', name: 'webapps', ports: [] },
+    { id: '4', name: 'static', ports: [] },
+  ];
+  const result = lib.compareServerApps('10.0.0.44', apps);
+  // 仅长度 <2 的名称（"a"）不匹配；"app"/"webapps"/"static" 这类通用目录词也可作为合法应用名匹配
+  assert.equal(result.apps[0].matched, false);
+  assert.equal(result.apps[1].matched, true);
+  assert.equal(result.apps[1].webapp?.name, 'app');
+  assert.equal(result.apps[2].matched, true);
+  assert.equal(result.apps[2].webapp?.name, 'webapps');
+  assert.equal(result.apps[3].matched, true);
+  assert.equal(result.apps[3].webapp?.name, 'static');
 });
 
 test('compareServerApps returns unavailable for cannot_login asset', () => {
@@ -454,4 +603,392 @@ test('envServerVerdicts aggregates each environment independently', () => {
     matched: false,
     unmatched: false,
   });
+});
+
+// ---- latestAppDeploymentTime / appOverYearUndeployed / appMatchesDeploymentPeriod ----
+// 这些函数用 JumpServer 进程启动时间与 webapps 目录 mtime 替代 DevOps Push In 时间。
+
+function makeProc(command, startedAt, name = 'java', kind = 'Java') {
+  return { pid: 1, ppid: 0, user: 'app', name, kind, startedAt, elapsedSeconds: 0, command };
+}
+
+function makeInspection(loginStatus, processes, webapps) {
+  const insp = {
+    checkedAt: '2026-09-20T00:00:00+00:00',
+    loginStatus,
+    reason: '',
+    processStatus: processes.length ? 'complete' : 'not_collected',
+    processes,
+    nginxStatus: 'not_running',
+    nginxRoutes: [],
+    warnings: [],
+  };
+  if (webapps) insp.webapps = webapps;
+  return insp;
+}
+
+test('latestAppDeploymentTime uses matched process startedAt', () => {
+  jumpserverModule.jumpserver.assets = [
+    { id: 'd1', ip: '10.0.0.31', hostname: 'h31', inspection: makeInspection('can_login', [
+      makeProc('java -jar /srv/deploy-app.jar --server.port=8080', '2026-09-10T08:00:00+00:00'),
+    ]) },
+  ];
+  const app = makeEnvApp('deploy-app', [{ ip: '10.0.0.31', deploy: '', config: '', status: '成功', error: '' }]);
+  assert.equal(lib.latestAppDeploymentTime(app, 'TEST'), '2026-09-10T08:00:00+00:00');
+  // 全部环境也应命中
+  assert.equal(lib.latestAppDeploymentTime(app), '2026-09-10T08:00:00+00:00');
+});
+
+test('latestAppDeploymentTime uses webapp mtime when process does not match', () => {
+  jumpserverModule.jumpserver.assets = [
+    { id: 'd2', ip: '10.0.0.32', hostname: 'h32', inspection: makeInspection('can_login',
+      [makeProc('java -jar /srv/other.jar', '2026-09-01T00:00:00+00:00')],
+      { status: 'complete', apps: [{ name: 'frontend-portal', mtime: '2026-09-15T00:00:00+00:00' }] }) },
+  ];
+  const app = makeEnvApp('frontend-portal', [{ ip: '10.0.0.32', deploy: '', config: '', status: '成功', error: '' }]);
+  assert.equal(lib.latestAppDeploymentTime(app, 'TEST'), '2026-09-15T00:00:00+00:00');
+});
+
+test('latestAppDeploymentTime picks the latest of process time and webapp mtime', () => {
+  jumpserverModule.jumpserver.assets = [
+    { id: 'd3', ip: '10.0.0.33', hostname: 'h33', inspection: makeInspection('can_login',
+      [makeProc('java -jar /srv/mix-app.jar', '2026-09-05T00:00:00+00:00')],
+      { status: 'complete', apps: [{ name: 'mix-app', mtime: '2026-09-20T00:00:00+00:00' }] }) },
+  ];
+  const app = makeEnvApp('mix-app', [{ ip: '10.0.0.33', deploy: '', config: '', status: '成功', error: '' }]);
+  // webapp mtime 更新 → 取 mtime
+  assert.equal(lib.latestAppDeploymentTime(app, 'TEST'), '2026-09-20T00:00:00+00:00');
+  // 反过来进程更新 → 取进程时间
+  jumpserverModule.jumpserver.assets[0].inspection.processes[0].startedAt = '2026-09-25T00:00:00+00:00';
+  assert.equal(lib.latestAppDeploymentTime(app, 'TEST'), '2026-09-25T00:00:00+00:00');
+});
+
+test('latestAppDeploymentTime returns empty when neither process nor webapp matches', () => {
+  jumpserverModule.jumpserver.assets = [
+    { id: 'd4', ip: '10.0.0.34', hostname: 'h34', inspection: makeInspection('can_login',
+      [makeProc('java -jar /srv/unrelated.jar', '2026-09-01T00:00:00+00:00')],
+      { status: 'complete', apps: [{ name: 'other-dir', mtime: '2026-09-01T00:00:00+00:00' }] }) },
+  ];
+  const app = makeEnvApp('no-match-app', [{ ip: '10.0.0.34', deploy: '', config: '', status: '成功', error: '' }]);
+  assert.equal(lib.latestAppDeploymentTime(app, 'TEST'), '');
+  assert.equal(lib.latestAppDeploymentTime(app), '');
+});
+
+test('latestAppDeploymentTime takes the latest across multiple IPs', () => {
+  jumpserverModule.jumpserver.assets = [
+    { id: 'd5', ip: '10.0.0.35', hostname: 'h35', inspection: makeInspection('can_login',
+      [makeProc('java -jar /srv/multi.jar', '2026-09-02T00:00:00+00:00')]) },
+    { id: 'd6', ip: '10.0.0.36', hostname: 'h36', inspection: makeInspection('can_login',
+      [makeProc('java -jar /srv/multi.jar', '2026-09-18T00:00:00+00:00')]) },
+  ];
+  const app = makeEnvApp('multi', [
+    { ip: '10.0.0.35', deploy: '', config: '', status: '成功', error: '' },
+    { ip: '10.0.0.36', deploy: '', config: '', status: '成功', error: '' },
+  ]);
+  assert.equal(lib.latestAppDeploymentTime(app, 'TEST'), '2026-09-18T00:00:00+00:00');
+});
+
+test('latestAppDeploymentTime returns empty for app without any deployment IPs', () => {
+  jumpserverModule.jumpserver.assets = [];
+  const app = makeEnvApp('no-deploy', []);
+  assert.equal(lib.latestAppDeploymentTime(app, 'TEST'), '');
+  assert.equal(lib.latestAppDeploymentTime(app), '');
+});
+
+test('appOverYearUndeployed returns false when env has no servers', () => {
+  jumpserverModule.jumpserver.assets = [];
+  const app = makeEnvApp('app', []);
+  assert.equal(lib.appOverYearUndeployed(app, 'TEST', '2026-09-30T12:00:00+08:00'), false);
+});
+
+test('appOverYearUndeployed returns true when servers exist but no deployment record', () => {
+  jumpserverModule.jumpserver.assets = [
+    { id: 'd7', ip: '10.0.0.37', hostname: 'h37', inspection: makeInspection('can_login',
+      [makeProc('java -jar /srv/other.jar', '2026-09-01T00:00:00+00:00')]) },
+  ];
+  const app = makeEnvApp('no-record', [{ ip: '10.0.0.37', deploy: '', config: '', status: '成功', error: '' }]);
+  assert.equal(lib.appOverYearUndeployed(app, 'TEST', '2026-09-30T12:00:00+08:00'), true);
+});
+
+test('appOverYearUndeployed returns false for recent deployment and true for over-year', () => {
+  jumpserverModule.jumpserver.assets = [
+    { id: 'd8', ip: '10.0.0.38', hostname: 'h38', inspection: makeInspection('can_login',
+      [makeProc('java -jar /srv/recent.jar', '2026-09-01T00:00:00+00:00')]) },
+  ];
+  const app = makeEnvApp('recent', [{ ip: '10.0.0.38', deploy: '', config: '', status: '成功', error: '' }]);
+  // 近期部署 → 非超年
+  assert.equal(lib.appOverYearUndeployed(app, 'TEST', '2026-09-30T12:00:00+08:00'), false);
+  // 改成超过一年 → 超年
+  jumpserverModule.jumpserver.assets[0].inspection.processes[0].startedAt = '2025-08-01T00:00:00+00:00';
+  assert.equal(lib.appOverYearUndeployed(app, 'TEST', '2026-09-30T12:00:00+08:00'), true);
+});
+
+test('appMatchesDeploymentPeriod passes when no env or period selected', () => {
+  jumpserverModule.jumpserver.assets = [];
+  const app = makeEnvApp('app', []);
+  assert.equal(lib.appMatchesDeploymentPeriod(app, '', '', '2026-09-30T12:00:00+08:00'), true);
+  assert.equal(lib.appMatchesDeploymentPeriod(app, 'TEST', '', '2026-09-30T12:00:00+08:00'), true);
+});
+
+test('formatBeijingTime converts UTC ISO microsecond timestamp to Beijing wall time', () => {
+  assert.equal(lib.formatBeijingTime('2026-09-28T01:55:21.608206+00:00'), '2026-09-28 09:55:21');
+});
+
+test('formatBeijingTime keeps +08:00 ISO and naive space-formatted values as Beijing time', () => {
+  assert.equal(lib.formatBeijingTime('2026-09-30T15:30:26+08:00'), '2026-09-30 15:30:26');
+  // 无时区的 "YYYY-MM-DD HH:MM:SS" 按北京时间解析
+  assert.equal(lib.formatBeijingTime('2026-09-30 15:30:26'), '2026-09-30 15:30:26');
+});
+
+test('formatBeijingTime returns empty string for empty or unparsable input', () => {
+  assert.equal(lib.formatBeijingTime(''), '');
+  assert.equal(lib.formatBeijingTime('not-a-date'), '');
+});
+
+function makePidProc(pid, command, name = 'java', kind = 'Java') {
+  return { pid, ppid: 1, user: 'app', name, kind, startedAt: '', elapsedSeconds: 0, command };
+}
+
+test('appMatchOnIp returns process pid/name/port from command line port flag', () => {
+  jumpserverModule.jumpserver.assets = [
+    { id: 'n1', ip: '10.0.0.51', hostname: 'h51', inspection: makeInspection('can_login', [
+      makePidProc(384, 'java -Dappid=cashier -jar /srv/cashier.jar --server.port=7003'),
+    ]) },
+  ];
+  const app = makeEnvApp('cashier', [{ ip: '10.0.0.51', deploy: '', config: '', status: '成功', error: '' }]);
+  const note = lib.appMatchOnIp(app, '10.0.0.51');
+  assert.equal(note.kind, 'process');
+  assert.equal(note.pid, 384);
+  // 业务名取 -jar 的 jar 包名，而不是运行时名 java
+  assert.equal(note.processName, 'cashier.jar');
+  assert.equal(note.port, '7003');
+});
+
+test('processBusinessName prefers jar name then tomcat base and falls back to process name', () => {
+  // -jar 包名（含完整路径时取 basename）
+  assert.equal(
+    lib.processBusinessName(makePidProc(1, 'java -Xmx2G -Dappid=fcrs-base -jar /var/www/webapps/fcrs-base/fcrs-base-exec.jar --server.port=7005')),
+    'fcrs-base-exec.jar',
+  );
+  // 显式 -Dcatalina.base
+  assert.equal(
+    lib.processBusinessName(makePidProc(2, '/opt/jdk/bin/java -Dcatalina.base=/opt/apache-tomcat_phoenix-open-web_37864 -Dcatalina.home=/opt/apache-tomcat_phoenix-open-web_37864 org.apache.catalina.startup.Bootstrap start')),
+    '/opt/apache-tomcat_phoenix-open-web_37864',
+  );
+  // 无 catalina 参数时从 logging.config.file 中的 apache-tomcat_* 路径提取
+  assert.equal(
+    lib.processBusinessName(makePidProc(3, '/opt/jdk1.8.0_101/jre/bin/java -Djava.util.logging.config.file=/opt/apache-tomcat_phoenix-open-web_37864/conf/logging.properties -Djava.util.logging.manager=org.apache.juli.ClassLoaderLogManager -server')),
+    '/opt/apache-tomcat_phoenix-open-web_37864',
+  );
+  // 非 Java 进程回退进程名本身
+  assert.equal(
+    lib.processBusinessName(makePidProc(4, 'nginx: master process /usr/sbin/nginx -c /etc/nginx/nginx.conf', 'nginx', 'Nginx')),
+    'nginx',
+  );
+  assert.equal(
+    lib.processBusinessName(makePidProc(5, '/usr/bin/node /var/www/webapps/atlantis_nuxt/node_modules/nuxt/bin/nuxt.js', 'node', 'Node')),
+    'node',
+  );
+});
+
+test('appMatchOnIp uses tomcat base directory as business name', () => {
+  jumpserverModule.jumpserver.assets = [
+    { id: 'n7', ip: '10.0.0.57', hostname: 'h57', inspection: makeInspection('can_login', [
+      makePidProc(401, '/opt/jdk1.8.0_101/jre/bin/java -Djava.util.logging.config.file=/opt/apache-tomcat_phoenix-open-web_37864/conf/logging.properties -Djava.util.logging.manager=org.apache.juli.ClassLoaderLogManager -Dcatalina.base=/opt/apache-tomcat_phoenix-open-web_37864'),
+    ]) },
+  ];
+  const app = makeEnvApp('phoenix-open-web', [{ ip: '10.0.0.57', deploy: '', config: '', status: '成功', error: '' }]);
+  const note = lib.appMatchOnIp(app, '10.0.0.57');
+  assert.equal(note.kind, 'process');
+  assert.equal(note.processName, '/opt/apache-tomcat_phoenix-open-web_37864');
+});
+
+test('appMatchOnIp prefers appPorts listening port correlated by pid over command flag', () => {
+  const inspection = makeInspection('can_login', [
+    makePidProc(385, 'java -Dappid=port-app -jar /srv/port-app.jar --server.port=7003'),
+  ]);
+  inspection.appPorts = [
+    { app: 'port-app', kind: 'Java', port: 7004, addresses: ['0.0.0.0'], pids: [385] },
+  ];
+  jumpserverModule.jumpserver.assets = [
+    { id: 'n2', ip: '10.0.0.52', hostname: 'h52', inspection },
+  ];
+  const app = makeEnvApp('port-app', [{ ip: '10.0.0.52', deploy: '', config: '', status: '成功', error: '' }]);
+  const note = lib.appMatchOnIp(app, '10.0.0.52');
+  assert.equal(note.kind, 'process');
+  assert.equal(note.port, '7004');
+});
+
+test('appMatchOnIp joins multiple listening ports and falls back to declared port', () => {
+  const inspection = makeInspection('can_login', [
+    makePidProc(386, 'java -Dappid=multi-port -jar /srv/multi-port.jar'),
+  ]);
+  inspection.appPorts = [
+    { app: 'multi-port', kind: 'Java', port: 7001, addresses: ['0.0.0.0'], pids: [386] },
+    { app: 'multi-port', kind: 'Java', port: 7002, addresses: ['0.0.0.0'], pids: [386] },
+    { app: 'other', kind: 'Java', port: 9999, addresses: ['0.0.0.0'], pids: [999] },
+  ];
+  jumpserverModule.jumpserver.assets = [
+    { id: 'n3', ip: '10.0.0.53', hostname: 'h53', inspection },
+  ];
+  const app = makeEnvApp('multi-port', [{ ip: '10.0.0.53', deploy: '', config: '', status: '成功', error: '' }]);
+  assert.equal(lib.appMatchOnIp(app, '10.0.0.53').port, '7001、7002');
+
+  // 无 appPorts 关联、命令行也无端口参数时回退清单声明端口
+  jumpserverModule.jumpserver.assets = [
+    { id: 'n4', ip: '10.0.0.54', hostname: 'h54', inspection: makeInspection('can_login', [
+      makePidProc(387, 'java -Dappid=declared-port -jar /srv/declared-port.jar'),
+    ]) },
+  ];
+  const app2 = makeEnvApp('declared-port', [{ ip: '10.0.0.54', deploy: '', config: '', status: '成功', error: '' }]);
+  const note2 = lib.appMatchOnIp(app2, '10.0.0.54', '8088');
+  assert.equal(note2.kind, 'process');
+  assert.equal(note2.port, '8088');
+  // 无任何端口来源时为空串（页面展示「—」）
+  assert.equal(lib.appMatchOnIp(app2, '10.0.0.54').port, '');
+});
+
+test('appMatchOnIp falls back to webapps directory when process unmatched', () => {
+  jumpserverModule.jumpserver.assets = [
+    { id: 'n5', ip: '10.0.0.55', hostname: 'h55', inspection: makeInspection('can_login',
+      [makePidProc(388, 'java -jar /srv/other.jar')],
+      { status: 'complete', apps: [{ name: 'frontend-portal', mtime: '2026-09-15T00:00:00+00:00' }] }) },
+  ];
+  const app = makeEnvApp('frontend-portal', [{ ip: '10.0.0.55', deploy: '', config: '', status: '成功', error: '' }]);
+  const note = lib.appMatchOnIp(app, '10.0.0.55');
+  assert.equal(note.kind, 'webapp');
+  assert.equal(note.webappName, 'frontend-portal');
+});
+
+test('appMatchOnIp returns undefined when neither process nor webapp matches', () => {
+  jumpserverModule.jumpserver.assets = [
+    { id: 'n6', ip: '10.0.0.56', hostname: 'h56', inspection: makeInspection('can_login',
+      [makePidProc(389, 'java -jar /srv/other.jar')],
+      { status: 'complete', apps: [{ name: 'other-dir', mtime: null }] }) },
+  ];
+  const app = makeEnvApp('no-match-app', [{ ip: '10.0.0.56', deploy: '', config: '', status: '成功', error: '' }]);
+  assert.equal(lib.appMatchOnIp(app, '10.0.0.56'), undefined);
+  // 未收录/无巡检的 IP 同样返回 undefined
+  assert.equal(lib.appMatchOnIp(app, '10.0.0.99'), undefined);
+});
+
+test('appMatchesDeploymentPeriod filters by latestAppDeploymentTime', () => {
+  jumpserverModule.jumpserver.assets = [
+    { id: 'd9', ip: '10.0.0.39', hostname: 'h39', inspection: makeInspection('can_login',
+      [makeProc('java -jar /srv/period-app.jar', '2026-09-25T00:00:00+00:00')]) },
+  ];
+  const app = makeEnvApp('period-app', [{ ip: '10.0.0.39', deploy: '', config: '', status: '成功', error: '' }]);
+  const now = '2026-09-30T12:00:00+08:00';
+  // 2026-09-25 在一个星期内
+  assert.equal(lib.appMatchesDeploymentPeriod(app, 'TEST', 'week', now), true);
+  assert.equal(lib.appMatchesDeploymentPeriod(app, 'TEST', 'month', now), true);
+  // 没有部署记录的不在区间内
+  const empty = makeEnvApp('nope', [{ ip: '10.0.0.39', deploy: '', config: '', status: '成功', error: '' }]);
+  assert.equal(lib.appMatchesDeploymentPeriod(empty, 'TEST', 'week', now), false);
+  // 超过一年
+  jumpserverModule.jumpserver.assets[0].inspection.processes[0].startedAt = '2025-08-01T00:00:00+00:00';
+  assert.equal(lib.appMatchesDeploymentPeriod(app, 'TEST', 'older', now), true);
+  assert.equal(lib.appMatchesDeploymentPeriod(app, 'TEST', 'year', now), false);
+});
+
+// ---- parseIpList / queryAppsByIpSet：按 IP 集批量查询 ----
+
+function makeFullApp(id, name, appType, envIps) {
+  const row = (ip) => ({ ip, deploy: '', config: '', status: '成功', error: '' });
+  return {
+    id,
+    name,
+    appType,
+    http: '',
+    port: '',
+    repository: '',
+    envs: {
+      TEST: (envIps.TEST || []).map(row),
+      SIMULATION: (envIps.SIMULATION || []).map(row),
+      PRODUCT: (envIps.PRODUCT || []).map(row),
+    },
+  };
+}
+
+const ipInventory = [
+  makeFullApp('a1', 'alpha-service', 'app', { TEST: ['10.0.0.1'], PRODUCT: ['10.0.0.1', '10.0.0.2'] }),
+  makeFullApp('a2', 'beta', 'node', { TEST: ['10.0.0.2'] }),
+  makeFullApp('a3', 'ten-app', 'node-backend', { PRODUCT: ['10.0.0.10'] }),
+];
+
+test('parseIpList splits by newline, comma, space, semicolon and trims', () => {
+  assert.equal(
+    lib.parseIpList('10.0.0.1\n10.0.0.2, 10.0.0.3;10.0.0.4').join('|'),
+    '10.0.0.1|10.0.0.2|10.0.0.3|10.0.0.4',
+  );
+});
+
+test('parseIpList dedups and keeps first-seen order', () => {
+  assert.equal(
+    lib.parseIpList(' 10.0.0.2 \n10.0.0.1\n10.0.0.2 ').join('|'),
+    '10.0.0.2|10.0.0.1',
+  );
+});
+
+test('parseIpList returns empty for blank input', () => {
+  assert.equal(lib.parseIpList('  \n , ').length, 0);
+});
+
+test('queryAppsByIpSet returns one row per IP in input order', () => {
+  const rows = lib.queryAppsByIpSet(['10.0.0.1', '10.0.0.9'], ipInventory);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].ip, '10.0.0.1');
+  assert.equal(rows[1].ip, '10.0.0.9');
+});
+
+test('queryAppsByIpSet matches apps and their environments', () => {
+  const row = lib.queryAppsByIpSet(['10.0.0.1'], ipInventory)[0];
+  assert.equal(row.matched, true);
+  assert.equal(row.hits.length, 1);
+  assert.equal(row.hits[0].appId, 'a1');
+  assert.equal(row.hits[0].appName, 'alpha-service');
+  assert.equal(row.hits[0].appType, 'app');
+  assert.equal(row.hits[0].envs.join(','), 'TEST,PRODUCT');
+});
+
+test('queryAppsByIpSet matches an IP shared by multiple apps', () => {
+  const hits = lib.queryAppsByIpSet(['10.0.0.2'], ipInventory)[0].hits;
+  const byId = Object.fromEntries(
+    hits.map((h) => [h.appId, h.envs.join(',')]),
+  );
+  assert.equal(hits.map((h) => h.appId).join(','), 'a1,a2');
+  assert.equal(byId.a1, 'PRODUCT');
+  assert.equal(byId.a2, 'TEST');
+});
+
+test('queryAppsByIpSet uses exact match, not substring', () => {
+  // 10.0.0.1 不得误命中部署在 10.0.0.10 上的应用
+  assert.equal(
+    lib.queryAppsByIpSet(['10.0.0.1'], ipInventory)[0]
+      .hits.map((h) => h.appId)
+      .join(','),
+    'a1',
+  );
+  // 10.0.0.10 仅命中 ten-app
+  assert.equal(
+    lib.queryAppsByIpSet(['10.0.0.10'], ipInventory)[0]
+      .hits.map((h) => h.appId)
+      .join(','),
+    'a3',
+  );
+});
+
+test('queryAppsByIpSet marks unmatched IP with empty hits', () => {
+  const row = lib.queryAppsByIpSet(['10.0.0.99'], ipInventory)[0];
+  assert.equal(row.matched, false);
+  assert.equal(row.hits.length, 0);
+});
+
+test('queryAppsByIpSet builds one row for deduped input', () => {
+  const rows = lib.queryAppsByIpSet(
+    lib.parseIpList('10.0.0.1\n10.0.0.1'),
+    ipInventory,
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].matched, true);
 });

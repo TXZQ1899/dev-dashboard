@@ -145,23 +145,43 @@ export const appRepositoryIndex: Map<string, Repository[]> = (() => {
   }
   return index;
 })();
-// 按 Git 仓库名/路径筛选应用：优先使用代码库清单中按完整地址确认的关联，
+// 标准化仓库地址用于搜索匹配：保留 .git 后缀以便支持「以 .git 结尾」的后缀匹配；
+// SSH scp-like 与 ssh:// 形式转成 host/path，去掉协议前缀。host 严格区分：
+// code.aliyun.com 与 codeup.aliyun.com 是不同入口，不做别名合并，
+// 这样输入 https://code.aliyun.com 只命中以该 host 开头的仓库。
+export function normalizeRepositoryForSearch(raw: string | null | undefined): string {
+  if (!raw || typeof raw !== 'string') return '';
+  const value = raw.trim();
+  if (!value) return '';
+  let v = value;
+  const scp = v.match(/^[^/@:]+@([^:[\]]+):(.+)$/);
+  if (scp) {
+    v = `${scp[1]}/${scp[2]}`;
+  } else {
+    v = v.replace(/^ssh:\/\//i, '').replace(/^https?:\/\//i, '');
+  }
+  return v.toLowerCase();
+}
+
+// 按 Git 仓库名/地址筛选应用：优先使用代码库清单中按完整地址确认的关联，
 // 对未在清单中建立关联的应用再回退到其自身提供的仓库地址（含各环境行）。
 // 关键字大小写不敏感；为空时不过滤。不按同名猜测未确认的关联。
+// 支持三种模糊匹配：输入 https://code.aliyun.com 等前缀匹配、完整 URL 精确匹配、
+// fsop-productcenter.git 后缀匹配；同时保留对仓库名/path 的 includes 匹配。
 export function appRepositoryNameMatches(
   appId: string,
   repositoryUrls: (string | null | undefined)[],
   query: string,
 ): boolean {
-  const needle = query.trim().toLowerCase();
+  const needle = normalizeRepositoryForSearch(query);
   if (!needle) return true;
   const haystack: string[] = [];
   for (const repo of appRepositoryIndex.get(appId) || []) {
-    haystack.push(repo.name, repo.path || '');
+    haystack.push(repo.name, repo.path || '', normalizeRepositoryForSearch(repo.url));
   }
   for (const raw of repositoryUrls) {
     const parts = splitGitAddress(raw);
-    haystack.push(parts.name, parts.path);
+    haystack.push(parts.name, parts.path, normalizeRepositoryForSearch(raw));
   }
   return haystack.some((value) => !!value && value.includes(needle));
 }

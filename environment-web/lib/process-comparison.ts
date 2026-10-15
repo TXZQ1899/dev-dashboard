@@ -1,6 +1,6 @@
 import { jumpserver } from '@/lib/jumpserver';
-import type { Process, Asset } from '@/lib/server-processes';
-import type { App, Env } from '@/lib/inventory';
+import { jarName, type Process, type Asset, type Webapp, type AppPort } from '@/lib/server-processes';
+import { envs, inventoryDate, type App, type Env } from '@/lib/inventory';
 import { specs as serverSpecs, type ServerSpec } from '@/lib/server-specs';
 import { instances } from '@/lib/ecs';
 import { nominalMemoryGiB } from '@/lib/local-servers';
@@ -10,6 +10,8 @@ export type AppComparison = {
   matched: boolean;
   process?: Process;
   supplementedPort?: string;
+  // 进程未匹配时回退到 Webapps 应用目录匹配；命中时填充该 Webapp。
+  webapp?: Webapp;
 };
 
 export type ServerComparison = {
@@ -66,6 +68,16 @@ export function processesForIp(ip: string): Process[] {
   return asset.inspection.processes || [];
 }
 
+// 取该 IP 上已采集的 Webapps 应用目录列表（仅在可登录服务器上有效）。
+// absent/not_collected/未采集时返回空数组。
+export function webappsForIp(ip: string): Webapp[] {
+  const asset = findAssetByIp(ip);
+  const webapps = asset?.inspection?.webapps;
+  if (!webapps) return [];
+  if (webapps.status === 'absent' || webapps.status === 'not_collected') return [];
+  return webapps.apps || [];
+}
+
 function inspectionInfo(ip: string): { loginStatus?: string; processStatus?: string } {
   const asset = findAssetByIp(ip);
   if (!asset?.inspection) return {};
@@ -116,19 +128,38 @@ export function matchAppToProcess(app: App & { ports: string[] }, processes: Pro
   return undefined;
 }
 
+// 进程未匹配时，与 /var/www/webapps 一级子目录名做精确（忽略大小写与分隔符）匹配。
+// 仅过滤过短（<2）的名称；webapps 目录名本身就是应用名（如 static、www），
+// 不再套用进程匹配用的 COMMON_PATH_WORDS 通用目录词过滤。
+export function matchAppToWebapp(appName: string, webapps: Webapp[]): Webapp | undefined {
+  const appNorm = normalize(appName);
+  if (appNorm.length < 2) return undefined;
+  for (const webapp of webapps) {
+    const nameNorm = normalize(webapp.name);
+    if (nameNorm.length < 2) continue;
+    if (appNorm === nameNorm) return webapp;
+  }
+  return undefined;
+}
+
 export function compareServerApps(ip: string, apps: Array<App & { ports: string[] }>): ServerComparison {
   const processes = processesForIp(ip);
+  const webapps = webappsForIp(ip);
   const info = inspectionInfo(ip);
   const usedProcesses = new Set<Process>();
   const appComparisons: AppComparison[] = apps.map((app) => {
     const process = matchAppToProcess(app, processes);
     let supplementedPort: string | undefined;
+    let webapp: Webapp | undefined;
     if (process) {
       usedProcesses.add(process);
       const hasEmptyPort = app.ports.every((p) => !p || p === '未提供端口');
       if (hasEmptyPort) supplementedPort = extractPortFromCommand(process.command);
+    } else {
+      // 进程未匹配时回退到 Webapps 应用目录匹配；命中视为匹配，不再标红。
+      webapp = matchAppToWebapp(app.name, webapps);
     }
-    return { app, matched: !!process, process: process, supplementedPort };
+    return { app, matched: !!process || !!webapp, process: process, supplementedPort, webapp };
   });
   const extraProcesses = processes.filter((p) => !usedProcesses.has(p));
   return {
@@ -154,6 +185,124 @@ export function appHasProcessOnIp(appName: string, ip: string): boolean {
     if (appMatchesProcess(appName, process)) return true;
   }
   return false;
+}
+
+// 进程实际监听端口：优先 ss 采集的 appPorts（按 PID 关联，可能多个），
+// 其次解析进程命令行中的端口参数，最后回退调用方给的清单声明端口；均无返回空串。
+export function processListeningPort(
+  process: Process,
+  ip: string,
+  fallbackPort?: string,
+): string {
+  const appPorts = findAssetByIp(ip)?.inspection?.appPorts;
+  const listened = (appPorts || [])
+    .filter((ap: AppPort) => ap.pids.includes(process.pid))
+    .map((ap) => String(ap.port));
+  if (listened.length) return [...new Set(listened)].join('、');
+  const fromCommand = extractPortFromCommand(process.command);
+  if (fromCommand) return fromCommand;
+  return fallbackPort?.trim() || '';
+}
+
+// Tomcat 实例目录：优先取 -Dcatalina.base/home，其次从命令行中出现的
+// apache-tomcat_* 路径提取（如 logging.config.file 指向的目录）。
+function tomcatBase(command: string): string | undefined {
+  const tokens = tokenizeArgs(command);
+  for (const key of ['-Dcatalina.base=', '-Dcatalina.home=']) {
+    const token = tokens.find((t) => t.startsWith(key));
+    if (token) return token.slice(key.length).replace(/\/+$/, '');
+  }
+  const match = command.match(/(\/[\w./~-]*apache-tomcat[\w.-]*)/i);
+  return match?.[1].replace(/\/+$/, '');
+}
+
+// 进程业务名：java 只是运行时名，不具备业务意义。优先取 -jar 的 jar 包名，
+// 其次 Tomcat 实例目录（如 /opt/apache-tomcat_phoenix-open-web_37864），
+// 都没有时回退进程名（nginx/node/redis-server 等本身即有标识意义）。
+export function processBusinessName(process: Process): string {
+  return jarName(process) || tomcatBase(process.command) || process.name;
+}
+
+export type AppMatchNote =
+  | { kind: 'process'; pid: number; processName: string; port: string }
+  | { kind: 'webapp'; webappName: string };
+
+// 应用在指定 IP 上的匹配说明（应用列表展开明细「说明」列使用）：
+// 先匹配 JumpServer 进程（PID/进程名/监听端口），进程未命中再回退 webapps 同名目录，
+// 都未命中返回 undefined，由调用方展示原有错误/占位文案。
+export function appMatchOnIp(
+  app: App,
+  ip: string,
+  fallbackPort?: string,
+): AppMatchNote | undefined {
+  const process = matchAppToProcess(
+    { ...app, ports: [] },
+    processesForIp(ip),
+  );
+  if (process) {
+    return {
+      kind: 'process',
+      pid: process.pid,
+      processName: processBusinessName(process),
+      port: processListeningPort(process, ip, fallbackPort),
+    };
+  }
+  const webapp = matchAppToWebapp(app.name, webappsForIp(ip));
+  if (webapp) return { kind: 'webapp', webappName: webapp.name };
+  return undefined;
+}
+
+// 解析批量 IP 输入：支持换行、空白、逗号、分号分隔，去重并保留首次出现顺序。
+export function parseIpList(text: string): string[] {
+  const seen = new Set<string>();
+  const ips: string[] = [];
+  for (const token of text.split(/[\s,;]+/)) {
+    const ip = token.trim();
+    if (!ip || seen.has(ip)) continue;
+    seen.add(ip);
+    ips.push(ip);
+  }
+  return ips;
+}
+
+export type IpSetAppHit = {
+  appId: string;
+  appName: string;
+  appType: string;
+  // 该 IP 在此应用的哪些环境中出现。
+  envs: Env[];
+};
+
+export type IpSetQueryRow = {
+  ip: string;
+  matched: boolean;
+  hits: IpSetAppHit[];
+};
+
+// 按一组 IP 精确匹配关联应用：逐 IP、逐应用、逐环境比对部署记录中的 IP，
+// 使用精确相等（trim 后），不做子串匹配，避免 10.0.0.1 误匹配 10.0.0.10。
+// 返回行顺序与输入 IP 顺序一致；未命中的 IP 返回 matched:false、空 hits。
+export function queryAppsByIpSet(
+  ips: string[],
+  inventory: App[],
+): IpSetQueryRow[] {
+  return ips.map((ip) => {
+    const hits: IpSetAppHit[] = [];
+    for (const app of inventory) {
+      const hitEnvs = envs.filter((e) =>
+        (app.envs[e] || []).some((r) => (r.ip || '').trim() === ip),
+      );
+      if (hitEnvs.length) {
+        hits.push({
+          appId: app.id,
+          appName: app.name,
+          appType: app.appType || '',
+          envs: [...hitEnvs],
+        });
+      }
+    }
+    return { ip, matched: hits.length > 0, hits };
+  });
 }
 
 // 服务器 IP 是否被 JumpServer 收录（不论是否可登录/是否采集到进程）。
@@ -265,4 +414,77 @@ export function envServerVerdicts(app: App, env: Env): ServerVerdicts {
     }
   }
   return { notCollected, cannotLogin, canLogin, matched, unmatched };
+}
+
+// 解析部署时间字符串为时间戳；「YYYY-MM-DD HH:MM:SS」按 +08:00 处理，
+// 其余（含 ISO）交给 Date.parse。
+function deploymentTimestamp(value: string) {
+  return Date.parse(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value) ? value.replace(' ', 'T') + '+08:00' : value);
+}
+
+// 格式化为中国北京时间（UTC+8）24 小时制 "YYYY-MM-DD HH:mm:ss"；
+// 空值或无法解析时返回空串。
+export function formatBeijingTime(value: string): string {
+  if (!value) return '';
+  const ts = deploymentTimestamp(value);
+  if (!Number.isFinite(ts)) return '';
+  const d = new Date(ts + 8 * 3600000);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+}
+
+// 应用在指定环境（或全部环境）的最近部署时间：
+// 遍历该应用部署 IP，匹配 JumpServer 进程（startedAt）与 webapps 目录（mtime），
+// 取两者中最新的一条；都未命中返回空串（页面展示「无成功记录」）。
+// 用途：替代 DevOps Push In 时间，作为应用列表「最近成功 Push In」列的数据来源。
+export function latestAppDeploymentTime(app: App, env?: Env): string {
+  const candidates: string[] = [];
+  const rows = env ? app.envs[env] : envs.flatMap(e => app.envs[e]);
+  const seenIps = new Set<string>();
+  for (const row of rows) {
+    const ip = row.ip?.trim();
+    if (!ip || seenIps.has(ip)) continue;
+    seenIps.add(ip);
+    const process = matchAppToProcess({ ...app, ports: [] }, processesForIp(ip));
+    if (process?.startedAt) candidates.push(process.startedAt);
+    const webapp = matchAppToWebapp(app.name, webappsForIp(ip));
+    if (webapp?.mtime) candidates.push(webapp.mtime);
+  }
+  return candidates.filter(v => Number.isFinite(deploymentTimestamp(v))).sort((a, b) => deploymentTimestamp(b) - deploymentTimestamp(a))[0] || '';
+}
+
+// 当前环境存在部署服务器但最近部署时间超过一年（含无成功记录）。
+export function appOverYearUndeployed(app: App, env: Env, reference = inventoryDate): boolean {
+  const rows = app.envs[env] || [];
+  if (!rows.some(row => row.ip?.trim())) return false;
+  const now = Date.parse(reference);
+  if (!Number.isFinite(now)) return false;
+  const date = latestAppDeploymentTime(app, env);
+  if (!date) return true;
+  const deployed = deploymentTimestamp(date);
+  if (!Number.isFinite(deployed) || deployed > now) return false;
+  const current = new Date(now + 8 * 3600000);
+  const day = current.getUTCDate();
+  current.setUTCDate(1);
+  current.setUTCMonth(current.getUTCMonth() - 12);
+  current.setUTCDate(Math.min(day, new Date(Date.UTC(current.getUTCFullYear(), current.getUTCMonth() + 1, 0)).getUTCDate()));
+  return deployed < current.getTime() - 8 * 3600000;
+}
+
+// 按部署时间区间筛选：未选环境或未选区间时放行；「超过一年」走 appOverYearUndeployed；
+// 其余区间以 latestAppDeploymentTime 为基准。
+export function appMatchesDeploymentPeriod(app: App, env: Env | '', period: string, reference = inventoryDate): boolean {
+  if (!env || !period) return true;
+  const now = Date.parse(reference);
+  if (period === 'older') return appOverYearUndeployed(app, env, reference);
+  const time = deploymentTimestamp(latestAppDeploymentTime(app, env));
+  if (!Number.isFinite(time) || !Number.isFinite(now) || time > now) return false;
+  const monthsAgo = (n: number) => {
+    const d = new Date(now + 8 * 3600000), day = d.getUTCDate();
+    d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() - n);
+    d.setUTCDate(Math.min(day, new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate()));
+    return d.getTime() - 8 * 3600000;
+  };
+  const thresholds: Record<string, number> = { week: now - 7 * 86400000, fortnight: now - 15 * 86400000, month: monthsAgo(1), quarter: monthsAgo(3), half: monthsAgo(6), year: monthsAgo(12) };
+  return period in thresholds && time >= thresholds[period];
 }

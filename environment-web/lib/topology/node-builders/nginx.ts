@@ -62,6 +62,7 @@ export function buildNginxNodes(graph: GraphCollector, input: SnapshotInput): Ng
           instance: text(route.instance),
           nginxStatus: text(inspection.nginxStatus),
           configurationVersion: text(inspection.configurationVersion),
+          file: text(route.file),
         },
       });
 

@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 import { AlertTriangle, Network, Route, Search } from 'lucide-react';
 
 type Kind = 'domain' | 'application' | 'host';
-type Mode = 'chain' | 'paths' | 'request';
+type Mode = 'chain' | 'paths' | 'request' | 'nginx';
 type NodeRef = { id: string; type: string; label?: string; status?: string };
 type Evidence = { source: string; reference?: string; detail?: string; observedAt?: string };
 type EdgeRef = {
@@ -114,6 +114,39 @@ type DomainChain = {
 };
 type ChainPayload = { topology: { id: string; generatedAt: string }; result: DomainChain };
 
+// ---- Nginx location reverse lookup (mirrors nginx-location.ts) ----
+type NginxLocationUpstream = { upstream: ChainNode; backends: ChainBackend[] };
+type NginxLocationMatch = {
+  route: ChainNode;
+  uri: string;
+  domains: string[];
+  listen: string[];
+  directive: string;
+  target: string;
+  file: string;
+  assetId: string;
+  host: ChainNode | null;
+  upstreams: NginxLocationUpstream[];
+};
+type NginxLocationPayload = {
+  topology: { id: string; generatedAt: string };
+  result: {
+    query: { uri: string; normalizedUri: string; environment: string | null };
+    status: 'found' | 'not-found';
+    matches: NginxLocationMatch[];
+    stats: {
+      routeCount: number;
+      upstreamCount: number;
+      backendCount: number;
+      exactBackendCount: number;
+      ambiguousBackendCount: number;
+      unresolvedBackendCount: number;
+      applicationIds: string[];
+    };
+    warnings: string[];
+  };
+};
+
 // ---- Request-aware end-to-end trace (staged projection, mirrors request/index.ts) ----
 type RequestStep = {
   resolver: string;
@@ -185,9 +218,8 @@ function confidenceLabel(value: string) {
 }
 
 const QUERY_MODES: [Mode, string][] = [
-  ['chain', '域名落点链路（推荐域名）'],
   ['request', '请求链路（URL 端到端）'],
-  ['paths', '通用路径遍历'],
+  ['nginx', 'Nginx Location 查找（URI 反查）'],
 ];
 const REQUEST_STATUS_LABELS: Record<string, string> = {
   RESOLVED: '已解析',
@@ -228,15 +260,16 @@ function endpointLabel(node: ChainNode | null): string {
 }
 
 export default function TopologyPathPage() {
-  const [mode, setMode] = useState<Mode>('chain');
+  const [mode, setMode] = useState<Mode>('request');
   const [kind, setKind] = useState<Kind>('domain');
   const [query, setQuery] = useState('');
   const [target, setTarget] = useState('');
-  const [environment, setEnvironment] = useState('');
+  const [environment, setEnvironment] = useState('PRODUCT');
   const [maxDepth, setMaxDepth] = useState('8');
   const [data, setData] = useState<Payload | null>(null);
   const [chainData, setChainData] = useState<ChainPayload | null>(null);
   const [requestData, setRequestData] = useState<RequestPayload | null>(null);
+  const [nginxData, setNginxData] = useState<NginxLocationPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -245,6 +278,7 @@ export default function TopologyPathPage() {
     setData(null);
     setChainData(null);
     setRequestData(null);
+    setNginxData(null);
     setError('');
     if (next === 'chain') setKind('domain');
     // request 模式默认 PRODUCT 环境，避免遍历所有环境导致路径爆炸（maxPaths 提前触发）
@@ -261,7 +295,9 @@ export default function TopologyPathPage() {
           ? '请输入要查询的域名'
           : mode === 'request'
             ? '请输入要查询的 URL 或域名'
-            : '请输入要查询的域名、应用名或 IP',
+            : mode === 'nginx'
+              ? '请输入要查找的 Nginx location URI（如 /tc-fostay）'
+              : '请输入要查询的域名、应用名或 IP',
       );
       return;
     }
@@ -292,6 +328,19 @@ export default function TopologyPathPage() {
         setRequestData(body);
         return;
       }
+      if (mode === 'nginx') {
+        const params = new URLSearchParams({ q: query.trim() });
+        // 环境只影响后端应用匹配；留空表示全部环境
+        if (environment) params.set('env', environment);
+        const response = await fetch('/api/topology/nginx-location?' + params.toString(), { cache: 'no-store' });
+        const body = (await response.json()) as NginxLocationPayload & { error?: string };
+        if (!response.ok) throw new Error(body.error || '查询失败');
+        setData(null);
+        setChainData(null);
+        setRequestData(null);
+        setNginxData(body);
+        return;
+      }
       const params = new URLSearchParams({ kind, q: query.trim(), maxDepth });
       if (target) params.set('to', target);
       if (environment) params.set('env', environment);
@@ -300,11 +349,13 @@ export default function TopologyPathPage() {
       if (!response.ok) throw new Error(body.error || '查询失败');
       setChainData(null);
       setRequestData(null);
+      setNginxData(null);
       setData(body);
     } catch (e) {
       setData(null);
       setChainData(null);
       setRequestData(null);
+      setNginxData(null);
       setError(e instanceof Error ? e.message : '查询失败');
     } finally {
       setLoading(false);
@@ -314,6 +365,7 @@ export default function TopologyPathPage() {
   const result = data?.result;
   const chain = chainData?.result;
   const request = requestData?.result;
+  const nginx = nginxData?.result;
 
   return (
     <Shell active="topology">
@@ -357,8 +409,8 @@ export default function TopologyPathPage() {
             </select>
             <Input
               type="search"
-              aria-label={mode === 'chain' ? '域名' : mode === 'request' ? 'URL 或域名' : '域名、应用名或 IP'}
-              placeholder={mode === 'chain' ? 'apis.folidaymall.com' : mode === 'request' ? 'https://api.example.com/order/123' : PLACEHOLDERS[kind]}
+              aria-label={mode === 'chain' ? '域名' : mode === 'request' ? 'URL 或域名' : mode === 'nginx' ? 'Nginx location URI' : '域名、应用名或 IP'}
+              placeholder={mode === 'chain' ? 'apis.folidaymall.com' : mode === 'request' ? 'https://api.example.com/order/123' : mode === 'nginx' ? '/tc-fostay' : PLACEHOLDERS[kind]}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
@@ -402,7 +454,7 @@ export default function TopologyPathPage() {
             )}
             <Button type="submit" disabled={loading}>
               <Search />
-              {loading ? '查询中…' : mode === 'chain' ? '查询链路' : mode === 'request' ? '解析请求' : '查询路径'}
+              {loading ? '查询中…' : mode === 'chain' ? '查询链路' : mode === 'request' ? '解析请求' : mode === 'nginx' ? '查找 Nginx' : '查询路径'}
             </Button>
           </form>
           <p className="settings-hint">
@@ -410,7 +462,9 @@ export default function TopologyPathPage() {
               ? '域名落点链路按 5 层展开：DNS → EIP（NAT/ECS/CLB）→ Nginx → Upstream 后端 IP+端口 → DevOps 应用；后端严格按 IP+端口匹配，同机其他端口只作为排查提示，不构成匹配。'
               : mode === 'request'
                 ? '请求链路按完整 URL 端到端解析，按 5 层落点展示：DNS 解析 → 入口绑定 (NAT) → CLB 端口转发 → Nginx 转发规则 → 后端落点 (IP+端口) 与应用。必须选择环境（默认 PRODUCT），否则跨环境遍历会命中路径上限；仅输入域名时无法匹配 location 路由。'
-                : '未指定目标类型时按默认方向查询：域名 → 应用、应用 → 主机、主机 → 应用。GLOBAL 连边在任何环境过滤下都会保留，环境过滤只排除 TEST / PRODUCT / SIMULATION 专属连边。'}
+                : mode === 'nginx'
+                  ? '输入 URI 关键字（如 /tc-fostay）反查 Nginx 配置：列出 location 包含该关键字的全部路由（server_name / listen / 来源配置文件），并沿 upstream 定位后端 IP+端口与 DevOps 应用。匹配为不区分大小写的子串包含，精确命中排在最前；环境仅影响应用匹配。配置文件路径需在加入该字段后重新生成拓扑才有。'
+                  : '未指定目标类型时按默认方向查询：域名 → 应用、应用 → 主机、主机 → 应用。GLOBAL 连边在任何环境过滤下都会保留，环境过滤只排除 TEST / PRODUCT / SIMULATION 专属连边。'}
           </p>
           {error && (
             <p role="alert" className="settings-error">
@@ -421,6 +475,10 @@ export default function TopologyPathPage() {
 
         {request && requestData && (
           <RequestView request={request} topology={requestData.topology} />
+        )}
+
+        {nginx && nginxData && (
+          <NginxLocationView result={nginx} topology={nginxData.topology} />
         )}
 
         {chain && chainData && (
@@ -536,6 +594,112 @@ export default function TopologyPathPage() {
         )}
       </main>
     </Shell>
+  );
+}
+
+function NginxLocationView({ result, topology }: { result: NginxLocationPayload['result']; topology: NginxLocationPayload['topology'] }) {
+  const s = result.stats;
+  return (
+    <>
+      <section className="panel" aria-live="polite">
+        <div className="panel-title">
+          <div>
+            <h2>
+              <Route size={17} /> Nginx Location 查询结果 <span className="count-pill">{s.routeCount} 条路由</span>
+            </h2>
+            <p>
+              「{result.query.uri}」· {result.query.environment ? `环境 ${result.query.environment}` : '全部环境（仅影响应用匹配）'} ·{' '}
+              {s.upstreamCount} 组 upstream · {s.backendCount} 个后端（精确 {s.exactBackendCount} / 待确认{' '}
+              {s.ambiguousBackendCount} / 未匹配 {s.unresolvedBackendCount}） · {s.applicationIds.length} 个应用
+            </p>
+          </div>
+          <span className="subtle-tag">{result.status === 'found' ? '已命中' : '未命中'}</span>
+        </div>
+        <p className="settings-version">
+          Topology 版本：{topology.id} · 生成时间：
+          {new Date(topology.generatedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}
+        </p>
+        {result.warnings.length > 0 && (
+          <div className="rounded-lg border p-3">
+            <p className="flex items-center gap-2 text-sm font-medium">
+              <AlertTriangle size={16} />
+              提示
+            </p>
+            <ul className="mt-2 list-disc pl-5 text-sm">
+              {result.warnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </section>
+
+      {result.matches.map((match) => (
+        <section className="panel" key={match.route.id}>
+          <div className="panel-title">
+            <div>
+              <h2>
+                <Route size={17} /> location {match.uri}
+              </h2>
+              <p>
+                server_name {match.domains.join('、') || '（无）'} · listen {match.listen.join(', ') || '?'}
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-col gap-1 text-sm">
+            {match.target && (
+              <p>
+                指令：<code>{match.directive} {match.target}</code>
+              </p>
+            )}
+            <p>
+              配置文件：{match.file ? <code>{match.file}</code> : <span className="subtle-tag">未记录（需重新生成拓扑）</span>}
+            </p>
+            <p>
+              主机：{match.host ? (
+                <>
+                  <code>{match.host.id}</code> {chainHostLabel(match.host)}
+                </>
+              ) : (
+                `资产 ${match.assetId} 不在主机清单`
+              )}
+            </p>
+          </div>
+          {match.upstreams.map(({ upstream, backends }) => (
+            <div key={upstream.id} className="mt-3 rounded-lg border p-3">
+              <p className="text-sm font-medium">
+                upstream <code>{String(upstream.identity?.name ?? upstream.id)}</code>
+              </p>
+              {backends.length === 0 && <p className="mt-2 text-sm">（无具体 IP 后端：主机名/动态目标或静态指令）</p>}
+              <ul className="mt-2 flex flex-col gap-1 text-sm">
+                {backends.map((backend) =>
+                  backend.status === 'unresolved' ? (
+                    <li key={backend.endpoint.id}>
+                      <code>{String(backend.endpoint.identity?.ip)}:{String(backend.endpoint.identity?.port)}</code>{' '}
+                      未匹配到 DevOps 部署
+                      {backend.sameHostCandidates.length > 0 && (
+                        <span className="subtle-tag">
+                          {' '}同机其他端口（仅供排查）：{backend.sameHostCandidates.map((c) => `${c.port}=${c.application.label}(${String(c.application.identity?.devopsAppId ?? '?')})[${c.environment}]`).join('、')}
+                        </span>
+                      )}
+                    </li>
+                  ) : (
+                    backend.matches.map((m) => (
+                      <li key={`${backend.endpoint.id}-${m.deployment.id}`}>
+                        <code>{String(backend.endpoint.identity?.ip)}:{String(backend.endpoint.identity?.port)}</code>{' '}
+                        <span className="subtle-tag">{backend.status === 'exact' ? '✓' : '?'}</span>{' '}
+                        {m.application.label}（应用 {String(m.application.identity?.devopsAppId ?? '?')}）· {m.environment} ·{' '}
+                        {confidenceLabel(m.confidence)}
+                      </li>
+                    ))
+                  ),
+                )}
+              </ul>
+            </div>
+          ))}
+        </section>
+      ))}
+    </>
   );
 }
 

@@ -14,15 +14,19 @@ const lib=evaluate('lib/server-processes.ts');
 const now=Date.parse('2026-09-18T12:00:00Z');
 function render(assets,options={}) {
  let index=0;
- const state=[options.login||'can_login',options.query||'',options.type||'全部进程',options.duration||'all',options.page||1,options.size||25,options.selected||'',now];
+ // ServerInspections 的状态顺序：login, query, duration, page, size, sort, expanded, selected, procSort, inspect, pwTarget, pwBusy, pwError, now；
+ // 之后是 ServerDetails：routeQuery, webappQuery, routeIndex, files, filesBusy, filesError；最后是密码弹窗的 password 输入。
+ const state=[options.login||'can_login',options.query||'',options.duration||'all',options.page||1,options.size||25,options.sort||{field:'ip',dir:'asc'},options.expanded||{},options.selected||'',options.procSort||{},options.inspect||{},options.pwTarget||null,options.pwBusy||false,options.pwError||'',now,
+  options.routeQuery||'',options.webappQuery||'',typeof options.routeIndex==='number'?options.routeIndex:-1,options.files||null,false,'',''];
  const ui=evaluate('components/server-inspections.tsx',id=>{
   if(id==='react')return {...React,useEffect:()=>{},useMemo:f=>f(),useState:initial=>[index<state.length?state[index++]:typeof initial==='function'?initial():initial,()=>{}]};
   if(id==='react/jsx-runtime')return require(id);
   if(id==='@/lib/jumpserver')return {jumpserver:{assets,collectedAt:'2026-09-17T12:00:00Z'}};
   if(id==='@/lib/server-processes')return lib;
+  if(id==='@/lib/process-comparison')return {ipSpecSummary:ip=>ip==='10.0.0.2'?'2C 4G':''};
   if(id==='@/components/ui/input')return {Input:()=>null};
   if(id==='@/components/ui/button')return {Button:(props)=>React.createElement('button',props)};
-  if(id==='lucide-react')return {Download:()=>null};
+  if(id==='lucide-react')return {Download:()=>null,ChevronRight:props=>React.createElement('svg',props)};
   throw new Error(id);
  });
  return renderToStaticMarkup(React.createElement(ui.ServerInspections));
@@ -34,10 +38,13 @@ test('old snapshots remain unchecked and never become failed logins',()=>{
  const html=render([{id:'a',ip:'10.0.0.1',hostname:'legacy'}]);
  assert.match(html,/未检查（1 台）/);assert.match(html,/不可登录（0 台）/);assert.match(html,/没有服务器采集结果/);
 });
-test('command search locates the process and its IP across all types',()=>{
- const html=render([asset],{query:'app-api.jar'});
+test('command search locates the matching ip and the process appears after expanding',()=>{
+ const collapsed=render([asset],{query:'app-api.jar'});
+ assert.ok(collapsed.includes('10.0.0.2'));
+ assert.match(collapsed,/匹配 1 条进程，涉及 1 个 IP/);
+ assert.ok(!collapsed.includes('app-api.jar'),'进程详细在展开前不展示');
+ const html=render([asset],{query:'app-api.jar',expanded:{a:{type:'全部进程',page:1}}});
  for(const text of ['10.0.0.2','app-api.jar','366天','进程ID','详细命令','非 CPU 时间','未超过2星期'])assert.ok(html.includes(text),text);
- assert.match(html,/匹配 1 条进程/);
  assert.match(render([asset],{query:'missing.jar'}),/匹配 0 条进程/);
 });
 test('failed tab preserves reasons and excludes running processes',()=>{
@@ -49,10 +56,103 @@ test('server details retain nginx route and raw file access',()=>{
  const html=render([{...asset,inspection:{...inspection,configurationCount:2}}],{selected:'a'});
  for(const text of ['权限不足','example.com','/api','8080','查看原始配置文件'])assert.ok(html.includes(text),text);
 });
-test('process list paginates and clamps stale pages',()=>{
+test('nginx route table explains the location uri and shows the static directory',()=>{
+ const routes=[{domains:['hotels.folidaymall.com'],listen:['443 ssl'],uri:'^~ /tc-fostay',directive:'static/other',target:'/var/www/webapps/tc-fostay',upstream:'',backends:[]}];
+ const html=render([{...asset,inspection:{...inspection,nginxRoutes:routes}}],{selected:'a'});
+ for(const text of ['URI 说明','匹配所有以 /tc-fostay 开头的请求','/var/www/webapps/tc-fostay'])assert.ok(html.includes(text),text);
+ assert.ok(!html.includes('无代理目标'),'静态目录已解析，不应再显示无代理目标');
+});
+test('server details list webapps applications with update time',()=>{
+ const html=render([{...asset,inspection:{...inspection,webapps:{status:'complete',apps:[{name:'tc-fostay',mtime:'2026-09-30T03:24:05+00:00'},{name:'portal',mtime:null}]}}}],{selected:'a'});
+ for(const text of ['Webapps 应用目录（2）','tc-fostay','portal','2026/9/30 11:24:05','—','已忽略 __ 开头'])assert.ok(html.includes(text),text);
+});
+test('webapps absent directory explains itself without an app table',()=>{
+ const html=render([{...asset,inspection:{...inspection,webapps:{status:'absent',apps:[]}}}],{selected:'a'});
+ assert.match(html,/Webapps 应用目录（0）/);assert.match(html,/该服务器没有 \/var\/www\/webapps 目录/);
+});
+test('snapshots without webapps data keep rendering details',()=>{
+ const html=render([{...asset,inspection:{...inspection,configurationCount:1}}],{selected:'a'});
+ assert.ok(!html.includes('Webapps 应用目录（'));assert.ok(html.includes('与 Webapps 应用目录'));
+});
+test('collapsed ip rows summarize spec, usage, listening ports and process categories',()=>{
+ const nginx={pid:9,ppid:1,user:'root',name:'nginx',kind:'Nginx',elapsedSeconds:100,startedAt:'2026-09-17T11:58:20Z',command:'nginx: master process /usr/sbin/nginx',ports:[80,443]};
+ const insp={...inspection,processes:[process,{...process,pid:3,command:'java -jar /srv/other.jar'},nginx],
+  appPorts:[{app:'app-api',kind:'Java',port:8080,addresses:['0.0.0.0'],pids:[2]},{app:'nginx',kind:'Nginx',port:443,addresses:['0.0.0.0'],pids:[9]}],
+  serverUsage:{cpuPercent:45,memPercent:72,memTotalMB:4096,memUsedMB:2949}};
+ const html=render([{...asset,inspection:insp}]);
+ for(const text of ['2C 4G','45%','72%','Java Jar 2','Nginx 1','监听端口数'])assert.ok(html.includes(text),text);
+ assert.ok(html.includes('title="443, 8080">2<'),'监听端口数取 appPorts 数量并在提示中列出端口');
+ assert.ok(!html.includes('详细命令'),'未展开时不展示进程明细');
+});
+test('summary row has a reinspect button that shows busy state without expanding',()=>{
+ const html=render([asset],{inspect:{a:{busy:true,message:'',error:''}}});
+ assert.ok(html.includes('>采集中…</button>'),'busy 时按钮文案为"采集中…"');
+ assert.ok(!html.includes('ip-detail-box'),'按钮点击不会触发展开');
+ const ok=render([asset],{inspect:{a:{busy:false,message:'采集任务已启动',error:''}}});
+ assert.ok(ok.includes('单独采集'),'非 busy 时按钮文案为"单独采集"');
+ assert.ok(ok.includes('采集任务已启动'),'成功消息显示在按钮下方');
+ const err=render([asset],{inspect:{a:{busy:false,message:'',error:'连接超时'}}});
+ assert.ok(err.includes('连接超时'),'错误消息显示在按钮下方');
+});
+test('elevation-failed servers are summarized as bare ips, one per line',()=>{
+ const failed={...inspection,warnings:['提权失败，root 密码登录错误','sudo 不可用，仅采集当前账号可见进程，完整性未确认'],sudoStatus:'password_error'};
+ const other={...inspection,warnings:['1 行进程无法解析'],sudoStatus:'password'};
+ const html=render([{...asset,id:'f1',ip:'10.58.6.172',hostname:'10.58.6.172',inspection:failed},{...asset,id:'f2',ip:'10.58.6.173',inspection:other}]);
+ assert.match(html,/1 台可登录服务器提权失败，进程采集不完整/);
+ assert.ok(html.includes('>10.58.6.172</button>'),'仅列出提权失败的 IP');
+ assert.ok(!html.includes('root 密码登录错误'),'提权失败详情不再展示');
+ assert.ok(!html.includes('1 行进程无法解析'),'非提权失败的服务器不进入该列表');
+});
+test('elevation-failed server shows the root password dialog for single inspect',()=>{
+ const failed={...inspection,warnings:['提权失败，root 密码登录错误'],sudoStatus:'password_error'};
+ const html=render([{...asset,inspection:failed}],{pwTarget:{id:'a',ip:'10.0.0.2',hostname:'server',inspection:failed}});
+ for(const text of ['确认并采集','直接采集','取消','新的 root 密码','更新密码映射表'])assert.ok(html.includes(text),text);
+});
+test('expanded ip shows a tab per present process category and filters rows by tab',()=>{
+ const nginx={pid:9,ppid:1,user:'root',name:'nginx',kind:'Nginx',elapsedSeconds:100,startedAt:'2026-09-17T11:58:20Z',command:'nginx: master process /usr/sbin/nginx'};
+ const insp={...inspection,processes:[process,nginx]};
+ const all=render([{...asset,inspection:insp}],{expanded:{a:{type:'全部进程',page:1}}});
+ for(const text of ['全部进程（2）','普通 Java Jar（1）','Nginx（1）'])assert.ok(all.includes(text),text);
+ assert.ok(!all.includes('Kafka（'),'没有进程的类别不生成标签');
+ assert.ok(all.includes('app-api.jar'));assert.ok(all.includes('nginx: master process'));
+ const nginxOnly=render([{...asset,inspection:insp}],{expanded:{a:{type:'Nginx',page:1}}});
+ assert.ok(nginxOnly.includes('nginx: master process'));assert.ok(!nginxOnly.includes('app-api.jar'));
+});
+test('expanded process list paginates per server and clamps stale pages',()=>{
  const processes=Array.from({length:26},(_,i)=>({...process,pid:i+1,command:`java -jar app-${i+1}.jar`}));
- const html=render([{...asset,inspection:{...inspection,processes}}],{page:9});
- assert.match(html,/第 2 \/ 2 页/);assert.match(html,/app-26.jar/);assert.ok(!html.includes('app-1.jar'));
+ const html=render([{...asset,inspection:{...inspection,processes}}],{expanded:{a:{type:'全部进程',page:9}}});
+ assert.match(html,/第 3 \/ 3 页/);assert.match(html,/app-26.jar/);assert.ok(!html.includes('app-1.jar'));
+});
+test('ip summary rows paginate by server',()=>{
+ const assets=Array.from({length:26},(_,i)=>({id:'a'+i,ip:`10.0.0.${i+1}`,hostname:'h'+(i+1),inspection:{...inspection,processes:[{...process,pid:2,command:`java -jar app-${i+1}.jar`}]}}));
+ const html=render(assets,{page:2});
+ assert.match(html,/第 2 \/ 2 页/);assert.ok(html.includes('10.0.0.26'));assert.ok(!html.includes('>10.0.0.1<'));
+});
+test('sorting by cpu desc puts high-cpu servers first and shows arrow',()=>{
+ const base={...inspection,processStatus:'complete',warnings:[]};
+ const a1={...asset,id:'a1',ip:'10.0.0.1',inspection:{...base,serverUsage:{cpuPercent:30,memPercent:50,memTotalMB:2048,memUsedMB:1024}}};
+ const a2={...asset,id:'a2',ip:'10.0.0.2',inspection:{...base,serverUsage:{cpuPercent:85,memPercent:60,memTotalMB:4096,memUsedMB:2458}}};
+ const a3={...asset,id:'a3',ip:'10.0.0.3',inspection:{...base,serverUsage:{cpuPercent:50,memPercent:40,memTotalMB:8192,memUsedMB:3277}}};
+ const html=render([a1,a2,a3],{sort:{field:'cpu',dir:'desc'}});
+ const i1=html.indexOf('<code>10.0.0.1</code>');const i2=html.indexOf('<code>10.0.0.2</code>');const i3=html.indexOf('<code>10.0.0.3</code>');
+ assert.ok(i2<i3&&i3<i1,'CPU desc: 85% before 50% before 30%');
+ assert.ok(html.includes('CPU% \u2193'),'header shows down arrow for active desc sort');
+});
+test('sorting by spec asc orders by cpu cores then memory',()=>{
+ const base={...inspection,processStatus:'complete',warnings:[]};
+ const a1={...asset,id:'a1',ip:'10.0.0.1',inspection:{...base,serverUsage:{cpuPercent:10,memPercent:10,memTotalMB:2048,memUsedMB:200}}};
+ const a2={...asset,id:'a2',ip:'10.0.0.2',inspection:{...base,serverUsage:{cpuPercent:10,memPercent:10,memTotalMB:2048,memUsedMB:200}}};
+ const html=render([a2,a1],{sort:{field:'spec',dir:'asc'}});
+ const i1=html.indexOf('<code>10.0.0.1</code>');const i2=html.indexOf('<code>10.0.0.2</code>');
+ assert.ok(i1<i2,'both 2C 4G, stable order by IP asc');
+});
+test('sorting by mem desc puts high-memory servers first',()=>{
+ const base={...inspection,processStatus:'complete',warnings:[]};
+ const a1={...asset,id:'a1',ip:'10.0.0.1',inspection:{...base,serverUsage:{cpuPercent:10,memPercent:30,memTotalMB:2048,memUsedMB:600}}};
+ const a2={...asset,id:'a2',ip:'10.0.0.2',inspection:{...base,serverUsage:{cpuPercent:10,memPercent:90,memTotalMB:4096,memUsedMB:3686}}};
+ const html=render([a1,a2],{sort:{field:'mem',dir:'desc'}});
+ const i1=html.indexOf('<code>10.0.0.1</code>');const i2=html.indexOf('<code>10.0.0.2</code>');
+ assert.ok(i2<i1,'mem desc: 90% before 30%');
 });
 test('classifies tomcat, jar, kafka and node without classifying argument substrings',()=>{
  const classify=(command,name='java',kind='Java')=>lib.processType({...process,command,name,kind});
@@ -63,6 +163,107 @@ test('classifies tomcat, jar, kafka and node without classifying argument substr
  assert.equal(classify('/usr/bin/node /srv/nginx-helper.js','node','Nginx'),'Node');
  assert.equal(classify('nginx: master process /usr/sbin/nginx','nginx','Nginx'),'Nginx');
  assert.equal(lib.jarName({...process,command:`java -jar '/srv/application api.jar'`}), 'application api.jar');
+});
+test('listening ports show in summary count and expanded rows, with an em dash when none',()=>{
+ const open={a:{type:'全部进程',page:1}};
+ const html=render([{...asset,inspection:{...inspection,processes:[{...process,ports:[8080,8081]}]}}],{expanded:open});
+ assert.match(html,/监听端口/);assert.ok(html.includes('8080, 8081'));
+ const none=render([{...asset,inspection:{...inspection,processes:[{...process,command:'java -jar /srv/app-api.jar'}]}}],{expanded:open});
+ assert.match(none,/监听端口/);assert.ok(!none.includes('8080'));
+});
+test('system processes are hidden when CPU gap is small',()=>{
+ const sysProc={pid:3,ppid:2,user:'root',name:'kworker/0:1',kind:'未分类',elapsedSeconds:86400,startedAt:'2026-09-17T12:00:00Z',command:'[kworker/0:1]',cpuPercent:3,system:true};
+ const appProc={...process,cpuPercent:12};
+ const html=render([{...asset,inspection:{...inspection,processes:[appProc,sysProc],serverUsage:{cpuPercent:15,memPercent:40,memTotalMB:2048,memUsedMB:819}}}],{expanded:{a:{type:'全部进程',page:1}}});
+ assert.ok(!html.includes('系统进程'),'gap 15-12=3 <= 5, no system chip');
+ assert.ok(!html.includes('kworker'),'system process not in 全部进程');
+ assert.match(html,/全部进程（1）/,'only non-system process counted');
+});
+test('system processes show when CPU gap exceeds 5%',()=>{
+ const sysProc={pid:3,ppid:2,user:'root',name:'kworker/0:1',kind:'未分类',elapsedSeconds:86400,startedAt:'2026-09-17T12:00:00Z',command:'[kworker/0:1]',cpuPercent:80,memPercent:2,system:true};
+ const sysProc2={pid:4,ppid:2,user:'root',name:'ksoftirqd/0',kind:'未分类',elapsedSeconds:86400,startedAt:'2026-09-17T12:00:00Z',command:'[ksoftirqd/0]',cpuPercent:5,memPercent:8,system:true};
+ const html=render([{...asset,inspection:{...inspection,processes:[process,sysProc,sysProc2],serverUsage:{cpuPercent:100,memPercent:40,memTotalMB:2048,memUsedMB:819}}}],{expanded:{a:{type:'全部进程',page:1}}});
+ assert.ok(html.includes('proc-chip-warn'),'warning chip shown for system processes');
+ assert.ok(html.includes('系统进程 2'),'system chip with count');
+ assert.ok(html.includes('系统进程（2）'),'system tab in expanded view');
+ // System tab default sort: memory% desc
+ const sysTab=render([{...asset,inspection:{...inspection,processes:[process,sysProc,sysProc2],serverUsage:{cpuPercent:100,memPercent:40,memTotalMB:2048,memUsedMB:819}}}],{expanded:{a:{type:'系统进程',page:1}}});
+ const i1=sysTab.indexOf('kworker/0:1');const i2=sysTab.indexOf('ksoftirqd/0');
+ assert.ok(i2<i1&&i2>0,'default mem desc: ksoftirqd (8%) before kworker (2%)');
+ assert.ok(!sysTab.includes('app-api.jar'),'non-system process not in system tab');
+});
+test('process detail defaults to memory desc sort on all tabs',()=>{
+ const p1={...process,pid:1,cpuPercent:30,memPercent:5};
+ const p2={...process,pid:2,cpuPercent:10,memPercent:20};
+ const html=render([{...asset,inspection:{...inspection,processes:[p1,p2]}}],{expanded:{a:{type:'全部进程',page:1}}});
+ const i1=html.indexOf('app-api.jar');
+ // Both processes have same command, so check PID order instead
+ // p2 (mem 20%) should come before p1 (mem 5%)
+ const idx1=html.indexOf('>1<');const idx2=html.indexOf('>2<');
+ // The PID appears in the first column; p2 (higher mem) should appear first
+ assert.ok(idx2>=0&&idx1>=0,'both PIDs present');
+ // Check the down arrow on 内存%
+ assert.ok(html.includes('内存%\u2193'),'mem header shows down arrow for default sort');
+ // CPU desc
+ const cpuHtml=render([{...asset,inspection:{...inspection,processes:[p1,p2]}}],{expanded:{a:{type:'全部进程',page:1}},procSort:{a:{field:'cpu',dir:'desc'}}});
+ assert.ok(cpuHtml.includes('CPU%\u2193'),'CPU header shows down arrow');
+});
+test('only nginx processes expose the Nginx button that opens server details',()=>{
+ const java=render([asset],{expanded:{a:{type:'全部进程',page:1}}});
+ assert.ok(!java.includes('>Nginx</button>'));
+ const nginxProc={...process,pid:9,name:'nginx',kind:'Nginx',command:'nginx: master process /usr/sbin/nginx -c /etc/nginx/nginx.conf'};
+ const html=render([{...asset,inspection:{...inspection,processes:[nginxProc]}}],{expanded:{a:{type:'全部进程',page:1}}});
+ assert.ok(html.includes('>Nginx</button>'));
+});
+test('server details nginx routes can be filtered by domain or URI',()=>{
+ const routes=[
+  {domains:['example.com'],listen:['443 ssl'],uri:'/api',directive:'proxy_pass',target:'http://up',upstream:'up',backends:[{host:'10.0.0.1',port:'8080',resolution:'ip'}]},
+  {domains:['other.test'],listen:['80'],uri:'/',directive:'static/other',target:'',upstream:'',backends:[]}];
+ const base={...inspection,nginxRoutes:routes};
+ assert.ok(!render([{...asset,inspection:base}],{selected:'a',routeQuery:'example'}).includes('other.test'));
+ const byUri=render([{...asset,inspection:base}],{selected:'a',routeQuery:'/API'});
+ assert.ok(byUri.includes('example.com'));assert.ok(!byUri.includes('other.test'));
+});
+test('server details webapps can be searched by name',()=>{
+ const web={...inspection,webapps:{status:'complete',apps:[{name:'tc-fostay',mtime:null},{name:'portal',mtime:null}]}};
+ assert.ok(!render([{...asset,inspection:web}],{selected:'a',webappQuery:'portal'}).includes('tc-fostay'));
+ assert.match(render([{...asset,inspection:web}],{selected:'a',webappQuery:'FOSTAY'}),/tc-fostay/);
+});
+test('clicking a route expands the raw config file recorded for it',()=>{
+ const routes=[{domains:['example.com'],listen:['443 ssl'],uri:'/api',directive:'proxy_pass',target:'http://up',upstream:'up',file:'/etc/nginx/conf.d/app.conf',backends:[{host:'10.0.0.1',port:'8080',resolution:'ip'}]}];
+ const files=[{path:'/etc/nginx/conf.d/app.conf',instance:'/usr/sbin/nginx',content:'server { listen 443; }',base64:'',bytes:22}];
+ const html=render([{...asset,inspection:{...inspection,nginxRoutes:routes,configurationCount:1}}],{selected:'a',routeIndex:0,files});
+ for(const text of ['来源配置文件','/etc/nginx/conf.d/app.conf','server { listen 443; }'])assert.ok(html.includes(text),text);
+});
+test('snapshots without route source fall back to the only collected config, never guess among many',()=>{
+ const routes=[{domains:['example.com'],listen:['443 ssl'],uri:'/api',directive:'proxy_pass',target:'http://up',upstream:'up',backends:[]}];
+ const files=[{path:'/etc/nginx/conf.d/only.conf',instance:'folidev',content:'http {}',base64:'',bytes:7}];
+ const html=render([{...asset,inspection:{...inspection,nginxRoutes:routes,configurationCount:1}}],{selected:'a',routeIndex:0,files});
+ assert.ok(html.includes('/etc/nginx/conf.d/only.conf'));
+ const multi=render([{...asset,inspection:{...inspection,nginxRoutes:routes,configurationCount:2}}],{selected:'a',routeIndex:0,files:[...files,{path:'/etc/nginx/conf.d/other.conf',instance:'folidev',content:'',base64:'',bytes:0}]});
+ assert.match(multi,/重新采集后可自动关联/);
+});
+test('clicking a route locates and highlights its location block in the raw config',()=>{
+ const content=['server {','  listen 443;','  location /fotour {','    proxy_pass http://up;','  }','  location /other {','    return 404;','  }','}'].join('\n');
+ const routes=[{domains:['example.com'],listen:['443 ssl'],uri:'/fotour',directive:'proxy_pass',target:'http://up',upstream:'up',file:'/etc/nginx/conf.d/app.conf',backends:[{host:'10.0.0.1',port:'8080',resolution:'ip'}]}];
+ const files=[{path:'/etc/nginx/conf.d/app.conf',instance:'/usr/sbin/nginx',content,base64:'',bytes:content.length}];
+ const html=render([{...asset,inspection:{...inspection,nginxRoutes:routes,configurationCount:1}}],{selected:'a',routeIndex:0,files});
+ assert.match(html,/已定位到该 URI 的配置块：第 3–5 行/);
+ assert.equal((html.match(/nginx-location-line/g)||[]).length,3,'仅 /fotour 块的三行被高亮');
+ assert.ok(html.includes('location /other'),'未命中的块仍完整展示');
+});
+test('findLocationBlock anchors the location block by uri with modifiers and nesting',()=>{
+ const content=['server {','  location   ^~   /api {','    proxy_pass http://up;','    if ($arg_x) {','      return 403;','    }','  }','  location /api-extra {','    return 404;','  }','}'].join('\n');
+ const block=lib.findLocationBlock(content,'^~ /api');
+ assert.ok(block&&block.start===1&&block.end===6,'嵌套 if 的花括号计入块边界');
+ assert.equal(lib.findLocationBlock(content,'/api'),null,'更长的路径不应被前缀误匹配');
+ assert.equal(lib.findLocationBlock(content,'(TCP/UDP)'),null,'stream 转发没有 location 块');
+ const exact=['  location = /login {','    return 200;','  }'].join('\n');
+ const eq=lib.findLocationBlock(exact,'= /login');
+ assert.ok(eq&&eq.start===0&&eq.end===2,'精确匹配修饰符按原文定位');
+ const php=['location ~ \\.php$ {','  fastcgi_pass x;','}'].join('\n');
+ const re=lib.findLocationBlock(php,'~ \\.php$');
+ assert.ok(re&&re.start===0&&re.end===2,'正则 location 按原文定位');
 });
 test('duration bounds are cumulative for first four and exclusive lower/inclusive upper thereafter',()=>{
  const d=86400;
@@ -85,4 +286,20 @@ test('search combines IP, command and type with duration; failed assets never co
  assert.equal(lib.filterProcesses(rows,'10.0.0.2 APP-API.jar','over_year','Java Jar').length,1);
  assert.equal(lib.filterProcesses(rows,'app-api.jar','week','Java Jar').length,0);
  assert.equal(lib.filterProcesses(rows,'app-api.jar','all','Kafka').length,0);
+});
+test('nginx worker processes are grouped into one row with a worker count',()=>{
+ const master={pid:1,ppid:0,user:'root',name:'nginx',kind:'Nginx',elapsedSeconds:100,startedAt:'2026-09-17T11:58:20Z',command:'nginx: master process /usr/sbin/nginx -c /etc/nginx/nginx.conf'};
+ const w1={pid:10,ppid:1,user:'nginx',name:'nginx',kind:'Nginx',elapsedSeconds:90,startedAt:'2026-09-17T11:58:30Z',command:'nginx: worker process',ports:[80,443]};
+ const w2={pid:11,ppid:1,user:'nginx',name:'nginx',kind:'Nginx',elapsedSeconds:88,startedAt:'2026-09-17T11:58:32Z',command:'nginx: worker process',ports:[443]};
+ const w3={pid:12,ppid:1,user:'nginx',name:'nginx',kind:'Nginx',elapsedSeconds:87,startedAt:'2026-09-17T11:58:33Z',command:'nginx: worker process'};
+ const insp={...inspection,processes:[master,w1,w2,w3]};
+ const rows=lib.processRows([{...asset,inspection:insp}],now);
+ const workers=rows.filter(r=>r.workerCount);
+ assert.equal(workers.length,1);
+ assert.equal(workers[0].workerCount,3);
+ assert.equal(workers[0].process.pid,10);
+ assert.equal(workers[0].process.ports?.length,2);
+ assert.equal(workers[0].process.ports?.[0],80);
+ assert.equal(workers[0].process.ports?.[1],443);
+ assert.equal(rows.filter(r=>r.process.command.includes('master process')).length,1);
 });
