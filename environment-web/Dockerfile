@@ -52,6 +52,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         python3 \
         python3-websocket \
+        python3-pymysql \
+        python3-cryptography \
         ca-certificates \
         tzdata \
     && rm -rf /var/lib/apt/lists/* \
@@ -87,7 +89,11 @@ COPY --from=collectors --chown=node:node \
     export_nat.py \
     export_dms.py \
     fetch_ecs_inventory.py \
+    aliyun_openapi.py \
     ./runtime/
+
+# Fresh volumes launch the prebuilt app directly and create runtime.log in /app.
+RUN chown node:node /app
 
 USER node
 

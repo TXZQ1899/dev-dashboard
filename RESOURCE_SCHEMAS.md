@@ -1371,6 +1371,44 @@ STALE
 - `GET /api/settings/application-check/logs/download?id=<task-id>` 下载 gzip tar 压缩包。包内目录相对 `/` 保存，无绝对路径，不跟随目录内符号链接；共享目录仅打包 `logScopes` 指定的文件，列表与打包共用文件名及目录排除规则（进程目录深度最多 6 层，按文件名限定的共享目录仅当前层），文件列表去重；最多 10000 个文件、512 MiB 原始文件，超限失败，不生成不完整下载。
 - 元数据持久化为 `checks/<task-id>/files.json`、`archive.json`；最终压缩包为 `logs.tar.gz`，均在数据卷中，权限 `0600`。临时分块文件 `logs.part` 在失败/重启时清理。远端私有临时目录在传输结束后清理。下载任务与检测、采集、版本切换互斥。
 
+## 部署管理目录（MySQL，独立于采集快照）
+
+入口为应用页「部署单元」Tab。数据来自当前已完成版本 `versions/<id>/snapshot.json`，不改变该文件的任何定义。MySQL 8.4 库默认 `envscope`；迁移文件为 `environment-web/runtime/migrations/001_deployment_catalog.sql`，使用 `catalog_schema_migration` 记录迁移校验和。MySQL 数据保存在独立的 `envscope-mysql` 卷。
+
+| 表 | 语义与身份 |
+|---|---|
+| `business_domain` | 业务领域，平台 UUID，唯一 code；本期空表 |
+| `business_system` | 业务系统，平台 UUID，唯一 code，`domain_id` 外键；本期空表 |
+| `deployment_unit` | 部署单元，平台 UUID 与唯一 code；`system_id` 可空；单元类型 APPLICATION / DATABASE / MIDDLEWARE / OTHER，无必填应用 ID |
+| `deployment_unit_environment` | 唯一 `unit_id + environment`，仅 TEST / SIMULATION / PRODUCT；配置状态与本次观察完整性分开 |
+| `deployment_instance` | 分环境部署成员，平台 UUID；IP、声明端口、身份质量、来源可见性及最近观察引用；同 IP 可有多实例 |
+| `deployment_unit_source` | 唯一来源实例 + 对象种类 + 原生键哈希；应用 ID 在 JSON 原生键中；本期一个单元只允许一个 DevOps 应用主绑定 |
+| `deployment_instance_source` | 单元环境内的部署成员来源别名；不把 deploy 或 IP 当作全局身份，保留匹配依据与证据 |
+| `catalog_import_run` | 来源版本路径、原始内容 SHA-256、规则版本、范围、完整性、采集/导入时间；来源内只允许一个当前批次 |
+| `catalog_observation` | 不可变的应用、环境、实例或待解析观察，来源定位、原始字段、采集时间及置信度 |
+| `catalog_change` | 创建、来源更新、未再观察到等管理变更；关联导入批次，保留前后内容 |
+
+所有业务记录在一个事务中导入成功后才切换当前批次。同一来源、快照内容哈希及映射规则版本幂等；更旧或无法排序的旧快照不会覆盖已有可确定时间的新目录。迁移是单独的可重试建表过程，不属于导入事务。失败任务状态保存在 `envscope-data` 的 `catalog-job.json`，不会留下半成品业务批次。
+
+### 创建与更新约定
+
+- 应用 ID 在来源命名空间内绑定部署单元 UUID；后续没有应用 ID 的中间件可使用其他来源种类。
+- 实例在单元 + 环境内按已绑定 deploy/IP/端口匹配；唯一 deploy/IP 可延续端口变化；新旧均为唯一成员的 deploy 可延续 IP 变化。多旧成员无法唯一定位时保留 `AMBIGUOUS`。实例连续性为 `INFERRED`，直接应用绑定为 `EXACT`。
+- 无环境配置、无部署实例只生成环境记录。空数组、缺环境字段为 `UNKNOWN`；缺 IP、非法 IP、冲突成员只保留待解析观察。未知协议、规格、主机归属保持空。
+- 部署记录的显式端口（含空值）优先；仅字段缺失时取应用默认端口，观察中保存 `portBasis`。端口是声明值，不是实测监听。
+- 完整且 `scope=all` 的快照才能标记缺失应用；完整且无冲突的环境才能标记缺失实例。`NOT_OBSERVED` 只表示未再观察到，不是删除、停机或真实发布事件。不完整环境保留旧记录，结合 lastSeenAt 和 coverageState 判断陈旧程度。
+- 配置状态为 UNCONFIGURED / CONFIGURED_EMPTY / HAS_DEPLOYMENTS / UNKNOWN；覆盖状态为 COMPLETE / PARTIAL / UNKNOWN。管理启停状态独立于来源可见性。
+- 名称默认 FOLLOW_SOURCE，可预留 MANUAL 策略；领域/系统、说明、管理状态不随采集覆盖。原始部署、配置 ID、分支、发布时间、发布状态等来源属性保存在观察 JSON。
+- 当前目录不随应用历史快照切换而回滚。来源时间不一致时页面明确说明；本期无人工编辑、进程识别或完整历史目录回放 API。
+
+### 查询与触发 API
+
+- `GET /api/catalog/deployment-units`：`q` 搜索名称/编码/应用 ID，`page`、`pageSize`（1–100），`presence=present|all`。返回 `source`、`units`、`summary`、`pagination`、`activeSnapshot`、`job`。
+- 同接口传 `unitId`、可选 `environment`，返回 `source`、`instances`、`activeSnapshot`、`job`；实例当前属性、最近时间和来源可见性分开返回。
+- `source` 含原始快照版本、哈希、采集/导入时间；`activeSnapshot.matchesCatalog` 表示当前页面快照是否与该目录来源相同。
+- `POST /api/catalog/deployment-units/import`：同源 JSON 空对象，返回 202 和任务状态；异步读取当前完整快照，无客户端文件路径参数。
+- 配置 MySQL 后容器独立线程每 30 秒检查。数据库故障只影响目录功能，不改变采集任务或快照激活状态。
+
 ## 阿里云 DMS 数据库实例（`dms-snapshot.json`）
 
 数据源：阿里云 DMS 控制台内部接口 `POST https://dms.aliyun.com/dms/metastore/instances/list`（复用统一阿里云 Cookie，无 OpenAPI AK）。采集器 `export_dms.py`，容器内随全量同步或「单独同步 DMS」写入版本目录，经 `OPTIONAL_FILES` 激活后由 `/aliyun/dms` 页面展示。

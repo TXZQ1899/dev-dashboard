@@ -6,7 +6,7 @@ import { jumpserver } from '@/lib/jumpserver';
 import { processBusinessName } from '@/lib/process-comparison';
 import type { Asset } from '@/lib/server-processes';
 
-export const metadata = { title: '应用上下游检测 · EnvScope' };
+export const metadata = { title: '应用上下游检测 · AppAtlas' };
 
 export default async function ApplicationCheckPage({ params }: { params: Promise<{ asset: string; pid: string }> }) {
   const { asset: assetId, pid: value } = await params;

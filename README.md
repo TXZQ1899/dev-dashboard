@@ -159,7 +159,11 @@ envscope-data
 
 容器应被视为可替换的运行实例；需要持久化的数据不得只写入容器临时文件系统。
 
-### 3.2 单应用上下游核验
+### 3.2 部署单元目录
+
+应用列表现提供「部署单元」Tab（`/applications?tab=deployment-units`），使用已有应用快照自动建立部署单元与分环境实例。Compose 增加 MySQL 8.4 服务及独立持久卷 `envscope-mysql`；领域、系统先建空表，归属待维护。采集仍写原有 JSON 快照，数据库作为独立管理目录，不改变 snapshot 定义。启动、配置、更新及备份方式见 [`environment-web/SETTINGS.md`](environment-web/SETTINGS.md#部署单元与-mysql)，本期规则见 [`Analysis/06-deployment-catalog-implementation.md`](Analysis/06-deployment-catalog-implementation.md)。
+
+### 3.3 单应用上下游核验
 
 在 `/jumpserver` 按 IP 查询后，Tomcat / Java 进程行可点击 **检测上下游**，在新标签页打开独立检测页面，设置 10–300 秒观察时间。部署环境根据目标进程、监听端口和部署记录自动识别；无法唯一识别时保留未确认，不跨环境关联应用。后台复用 JumpServer 授权会话，在目标进程及全部已发现、能唯一匹配资产的对端服务器上并行检查 TCP socket，上游、下游均不设对端台数上限；同机连接独立核验。每次仍最多观察 100 条连接，超限明确警告。输出对端 IP、端口、PID、进程名以及 DevOps 应用 ID / 名称。应用多候选和不可登录的对端保留为未解析结果。
 
@@ -598,3 +602,5 @@ Architecture Renderer          后续
 目标是让 Env-Scope 从“资源采集工具”逐步演进为：
 
 > **Application Infrastructure Topology & Architecture Governance Platform**
+
+现有采集数据的数据库落库、同步和版本管理草案见 [DATA_PERSISTENCE_DESIGN.md](DATA_PERSISTENCE_DESIGN.md)。该文档为规划方案，尚未改变当前 JSON 快照运行方式。

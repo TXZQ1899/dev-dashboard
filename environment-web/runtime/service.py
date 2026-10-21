@@ -16,6 +16,11 @@ from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 from zoneinfo import ZoneInfo
 
+try:
+    from deployment_catalog import Catalog, CatalogError, CatalogInputError, ENVIRONMENTS as ENVIRONMENTS_CATALOG
+except ModuleNotFoundError:
+    from runtime.deployment_catalog import Catalog, CatalogError, CatalogInputError, ENVIRONMENTS as ENVIRONMENTS_CATALOG
+
 DATA = Path(os.environ.get('ENVSCOPE_DATA', '/data'))
 APP = Path(os.environ.get('ENVSCOPE_APP', '/app'))
 ALLOWED_HOSTS = tuple(h for h in os.environ.get('ENVSCOPE_ALLOWED_HOSTS', '').replace(' ', '').split(',') if h)
@@ -62,6 +67,19 @@ def credentials():
         value['aliyun'] = value['codeup']
     value.pop('codeup', None)
     return value
+
+
+def aliyun_mode(saved):
+    mode = (saved.get('aliyun_auth_mode') or {}).get('value') or 'cookie'
+    return mode if mode in ('cookie', 'accesskey') else 'cookie'
+
+
+def aliyun_configured(saved):
+    """Cookie and AccessKey are two independent credential paths."""
+    if aliyun_mode(saved) == 'accesskey':
+        return bool((saved.get('aliyun_accesskey_id') or {}).get('value') and
+                    (saved.get('aliyun_accesskey_secret') or {}).get('value'))
+    return bool((saved.get('aliyun') or {}).get('value'))
 
 
 def bounded_int(params, key, default, minimum, maximum):
@@ -122,6 +140,12 @@ class Service:
         # Serialises the whole build/launch/swap in activate() so a concurrent
         # single-source retry cannot race the primary job for ports 3101/3102.
         self.activate_lock = threading.Lock()
+        self.catalog_store = Catalog.from_environment()
+        self.catalog_lock = threading.Lock()
+        self.catalog_job = read(DATA/'catalog-job.json', {'status': 'idle'})
+        if self.catalog_job.get('status') in ('queued', 'running'):
+            self.catalog_job = {'status': 'failed', 'finishedAt': now(), 'error': '容器重启，目录导入已中断；将重新读取当前快照'}
+            write(DATA/'catalog-job.json', self.catalog_job)
         self.backend = None
         self.retired = None
         self.check_cancel = threading.Event()
@@ -156,6 +180,9 @@ class Service:
         # Concurrent single-source retries run alongside the primary job and are
         # persisted separately so the primary job.json stays untouched.
         self.extra_jobs = read(DATA / 'extra-jobs.json', [])
+        # A restart may follow a retry that already recovered every failed source;
+        # clear the stale failed-sync banner before the UI reads it.
+        self._reconcile_recovered_failure()
         if self.extra_jobs:
             restored = False
             for job in self.extra_jobs:
@@ -178,6 +205,83 @@ class Service:
         if not read(DATA/'current.json'): write(DATA/'current.json', {'id':seed,'activatedAt':now()})
         if not read(DATA/'schedule.json'):
             write(DATA/'schedule.json', {'enabled':False,'time':'18:00','lastDate':None})
+
+    def catalog_context(self):
+        """Pin a completed active snapshot; never consume a collecting directory."""
+        with self.lock:
+            current = read(DATA/'current.json', {})
+            identifier = current.get('id')
+            if not isinstance(identifier, str) or not re.fullmatch(r'[A-Za-z0-9-]{1,80}', identifier):
+                raise CatalogInputError('当前应用版本无效')
+            folder = DATA/'versions'/identifier
+            report = read(folder/'version.json', {})
+            if report.get('status') != 'ready':
+                raise CatalogError('当前版本仍在完成激活，请稍后更新部署单元')
+            return identifier, (folder/'snapshot.json').read_bytes()
+
+    def catalog_sync_once(self):
+        if not self.catalog_lock.acquire(blocking=False):
+            return dict(self.catalog_job)
+        try:
+            self.catalog_job = {'status': 'running', 'startedAt': now()}
+            write(DATA/'catalog-job.json', self.catalog_job)
+            identifier, raw = self.catalog_context()
+            expected_hash = hashlib.sha256(raw).hexdigest()
+            def still_current():
+                try:
+                    return hashlib.sha256(self.catalog_context()[1]).hexdigest() == expected_hash
+                except (CatalogError, OSError):
+                    return False
+            result = self.catalog_store.import_snapshot(raw, identifier, f'versions/{identifier}/snapshot.json', can_apply=still_current)
+            self.catalog_job = {'status': 'ready', 'finishedAt': now(), 'result': result}
+        except CatalogError as exc:
+            self.catalog_job = {'status': 'failed', 'finishedAt': now(), 'error': str(exc)}
+        except Exception:
+            self.catalog_job = {'status': 'failed', 'finishedAt': now(),
+                                'error': '部署单元导入未完成，请检查 MySQL 配置和当前快照后重试'}
+        finally:
+            try:
+                write(DATA/'catalog-job.json', self.catalog_job)
+            except OSError:
+                pass  # Database transaction and the original collection remain independent.
+            self.catalog_lock.release()
+        return dict(self.catalog_job)
+
+    def start_catalog_sync(self):
+        if not self.catalog_store.configured:
+            raise CatalogError('部署单元数据库未配置，请通过 Compose 启动 MySQL 或配置 ENVSCOPE_DB_HOST')
+        if not self.catalog_lock.locked():
+            self.catalog_job = {'status': 'queued'}
+            threading.Thread(target=self.catalog_sync_once, daemon=True, name='catalog-import').start()
+        return {'job': dict(self.catalog_job)}
+
+    def catalog_loop(self):
+        # Independent post-collection consumer: database failure cannot fail a sync.
+        while True:
+            self.catalog_sync_once()
+            time.sleep(30)
+
+    def catalog_query(self, params):
+        query = params.get('q', [''])[0].strip()
+        if len(query) > 200:
+            raise CatalogInputError('搜索内容不能超过 200 个字符')
+        presence = params.get('presence', ['present'])[0]
+        environment = params.get('environment', [None])[0]
+        unit_id = params.get('unitId', [None])[0]
+        if presence not in ('present', 'all') or environment not in (None, *ENVIRONMENTS_CATALOG):
+            raise CatalogInputError('部署单元筛选条件无效')
+        if unit_id and not re.fullmatch(r'[0-9a-f-]{36}', unit_id):
+            raise CatalogInputError('部署单元 ID 无效')
+        result = self.catalog_store.read(query=query, page=bounded_int(params, 'page', 1, 1, 1000000),
+            page_size=bounded_int(params, 'pageSize', 20, 1, 100), presence=presence,
+            unit_id=unit_id, environment=environment)
+        identifier, raw = self.catalog_context()
+        current_snapshot = json.loads(raw)
+        current_hash = hashlib.sha256(raw).hexdigest()
+        result['activeSnapshot'] = {'version': identifier, 'collectedAt': current_snapshot.get('collectedAt'),
+                                    'matchesCatalog': bool(result['source'] and result['source']['snapshotSha256'] == current_hash)}
+        result['job'] = dict(self.catalog_job)
+        return result
 
     def version(self, identifier):
         if not isinstance(identifier, str) or not re.fullmatch(r'[A-Za-z0-9-]{1,80}', identifier):
@@ -669,9 +773,21 @@ class Service:
             saved = credentials()
             versions = [read(p) for p in (DATA/'versions').glob('*/version.json')]
             job = self._job_view(dict(self.job)) if self.job else None
+            alerts = read(DATA/'cookie-alerts.json', {})
+            access_key_id = (saved.get('aliyun_accesskey_id') or {}).get('value') or ''
+            secret = (saved.get('aliyun_accesskey_secret') or {}).get('value') or ''
+            masked = (access_key_id[:6] + '****' + access_key_id[-4:]) if len(access_key_id) > 12 else access_key_id
+            access_key_updated = max(filter(None, [
+                (saved.get('aliyun_accesskey_id') or {}).get('updatedAt'),
+                (saved.get('aliyun_accesskey_secret') or {}).get('updatedAt')]), default=None)
             return {'cookies':{key:{'configured':bool(saved.get(key,{}).get('value')),
                     'updatedAt':saved.get(key,{}).get('updatedAt'),
-                    'alert':read(DATA/'cookie-alerts.json',{}).get(key)} for key in ('devops','aliyun','jumpserver','local_gitlab')},
+                    'alert':alerts.get(key)} for key in ('devops','aliyun','jumpserver','local_gitlab')},
+                    'aliyunAccessKey':{'configured':bool(access_key_id and secret),
+                    'mode':aliyun_mode(saved), 'accessKeyId':masked,
+                    'updatedAt':access_key_updated,
+                    'organizationId':(saved.get('codeup_organization_id') or {}).get('value') or '',
+                    'alert':alerts.get('aliyun_accesskey_id')},
                     'folidev':{'configured':bool(saved.get('folidev',{}).get('value')), 'updatedAt':saved.get('folidev',{}).get('updatedAt')},
                     'rootAlt1':{'configured':bool(saved.get('rootAlt1',{}).get('value')), 'updatedAt':saved.get('rootAlt1',{}).get('updatedAt')},
                     'rootAlt2':{'configured':bool(saved.get('rootAlt2',{}).get('value')), 'updatedAt':saved.get('rootAlt2',{}).get('updatedAt')},
@@ -693,6 +809,42 @@ class Service:
                 if not value or len(value)>20000 or any(ord(c)<32 or ord(c)>255 for c in value):
                     raise ValueError('Cookie 必须是非空单行请求头内容')
                 saved[key] = {'value':value,'updatedAt':now()}
+            access = payload.get('aliyunAccessKey')
+            if access is not None:
+                if not isinstance(access, dict): raise ValueError('无效的阿里云 AccessKey 设置')
+                mode = access.get('mode')
+                if mode is not None:
+                    if mode not in ('cookie','accesskey'): raise ValueError('无效的阿里云采集方式')
+                    if aliyun_mode(saved) != mode:
+                        saved['aliyun_auth_mode'] = {'value':mode,'updatedAt':now()}
+                key_id = access.get('accessKeyId')
+                if key_id is not None:
+                    if not isinstance(key_id, str): raise ValueError('AccessKey ID 格式无效')
+                    key_id = key_id.strip()
+                    if key_id:
+                        if len(key_id) > 128 or any(ord(c) < 33 or ord(c) > 126 for c in key_id):
+                            raise ValueError('AccessKey ID 格式无效')
+                        saved['aliyun_accesskey_id'] = {'value':key_id,'updatedAt':now()}
+                secret = access.get('accessKeySecret')
+                if secret is not None:
+                    if not isinstance(secret, str): raise ValueError('AccessKey Secret 格式无效')
+                    secret = secret.strip()
+                    if secret:
+                        if len(secret) > 256 or any(c in secret for c in ('\r','\n','\x00')):
+                            raise ValueError('AccessKey Secret 格式无效')
+                        saved['aliyun_accesskey_secret'] = {'value':secret,'updatedAt':now()}
+                organization = access.get('organizationId')
+                if organization is not None:
+                    if not isinstance(organization, str): raise ValueError('Codeup 企业 ID 格式无效')
+                    organization = organization.strip()
+                    if len(organization) > 128 or any(ord(c) < 32 or ord(c) > 126 for c in organization):
+                        raise ValueError('Codeup 企业 ID 格式无效')
+                    if organization:
+                        saved['codeup_organization_id'] = {'value':organization,'updatedAt':now()}
+                    else:
+                        saved.pop('codeup_organization_id', None)
+                if aliyun_mode(saved) == 'accesskey' and not aliyun_configured(saved):
+                    raise ValueError('选择 AccessKey 采集方式前，请填写 AccessKey ID 和 Secret')
             password = payload.get('folidevPassword', '')
             if not isinstance(password, str) or len(password) > 4096 or any(c in password for c in ('\r','\n','\x00')):
                 raise ValueError('folidev 密码格式无效')
@@ -714,12 +866,15 @@ class Service:
             if schedule is not None:
                 if not isinstance(schedule.get('enabled'),bool) or not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d',schedule.get('time','')):
                     raise ValueError('无效定时设置')
-                if schedule['enabled'] and any(not saved.get(k,{}).get('value') for k in ('devops','aliyun','jumpserver','local_gitlab')):
-                    raise ValueError('启用每日同步前，请配置四个平台的 Cookie')
+                if schedule['enabled'] and (not aliyun_configured(saved) or
+                        any(not saved.get(k,{}).get('value') for k in ('devops','jumpserver','local_gitlab'))):
+                    raise ValueError('启用每日同步前，请配置四个平台所需的 Cookie / AccessKey')
             write(DATA/'secrets/cookies.json',saved)
             alerts=read(DATA/'cookie-alerts.json',{})
             for key,value in payload.get('cookies',{}).items():
                 if isinstance(value,str) and value.strip(): alerts.pop('aliyun' if key=='codeup' else key,None)
+            if isinstance(access, dict) and isinstance(access.get('accessKeyId'), str) and access['accessKeyId'].strip():
+                alerts.pop('aliyun_accesskey_id', None)
             write(DATA/'cookie-alerts.json',alerts)
             if schedule is not None:
                 previous = read(DATA/'schedule.json',{})
@@ -732,7 +887,7 @@ class Service:
             saved=credentials()
             for failure in error.get('failures',[]):
                 key=failure.get('credential')
-                if (failure.get('type')=='cookie_expired' and key in saved and
+                if (failure.get('type') in ('cookie_expired','accesskey_invalid') and key in saved and
                         failure.get('credentialUpdatedAt')==saved[key].get('updatedAt')):
                     alerts[key]={'message':failure['message'],'detectedAt':now()}
             write(DATA/'cookie-alerts.json',alerts)
@@ -750,6 +905,29 @@ class Service:
         # Route updates to the primary job.json or the concurrent extra-jobs.json.
         if job is self.job: self.set_job(**changes)
         else: self.set_extra_job(job, **changes)
+
+    def _reconcile_recovered_failure(self):
+        """Drop a failed full sync once every failed source has a successful retry.
+
+        A concurrent retry builds and activates its own version, so leaving the
+        primary failure in job.json keeps advertising a problem the user has
+        already resolved. Version history still retains the failed record.
+        """
+        with self.lock:
+            primary = self.job
+            if not primary or primary.get('kind') != 'sync' or primary.get('status') != 'failed': return
+            folder = DATA/'versions'/str(primary.get('id') or '')
+            try: error = read(folder/'collection-error.json', {})
+            except (json.JSONDecodeError, OSError): error = {}
+            failed = {str(item.get('source')) for item in (error or {}).get('failures') or [] if item.get('source')}
+            if not failed: return
+            succeeded = {SOURCE_LABELS.get(job.get('kind')) for job in self.extra_jobs
+                         if job.get('status') == 'succeeded'}
+            if not failed.issubset(succeeded): return
+            self.job = None
+            write(DATA/'job.json', {})
+            self.extra_jobs = [job for job in self.extra_jobs if job.get('status') != 'succeeded']
+            write(DATA/'extra-jobs.json', self.extra_jobs)
 
     def _active_jobs(self):
         jobs = []
@@ -865,11 +1043,21 @@ class Service:
                                      else '已有同步或切换任务正在进行')
             if kind in ('sync', *source_modes):
                 saved = credentials()
-                required = ('devops','aliyun','jumpserver','local_gitlab') if kind == 'sync' else \
-                    ('aliyun',) if kind in ('ecs','clb','nat','dms','codeup') else ('jumpserver',) if kind == 'jumpserver_asset' else (kind,)
-                if any(not saved.get(k,{}).get('value') for k in required):
-                    raise ValueError('请先保存 Local GitLab Cookie' if kind == 'local_gitlab' else
-                                     '请先保存 JumpServer Cookie' if kind == 'jumpserver_asset' else '请先保存四个平台的 Cookie')
+                aliyun_ok = aliyun_configured(saved)
+                aliyun_hint = ('请先保存阿里云 AccessKey ID 和 Secret' if aliyun_mode(saved) == 'accesskey'
+                               else '请先保存阿里云 Cookie')
+                if kind == 'sync':
+                    missing_other = any(not saved.get(k,{}).get('value') for k in ('devops','jumpserver','local_gitlab'))
+                    if missing_other or not aliyun_ok:
+                        raise ValueError('请先保存四个平台的 Cookie' if missing_other else aliyun_hint)
+                elif kind in ('ecs','clb','nat','dms','codeup'):
+                    if not aliyun_ok: raise ValueError(aliyun_hint)
+                elif kind == 'jumpserver_asset':
+                    if not saved.get('jumpserver',{}).get('value'):
+                        raise ValueError('请先保存 JumpServer Cookie')
+                elif not saved.get(kind,{}).get('value'):
+                    raise ValueError('请先保存 Local GitLab Cookie' if kind == 'local_gitlab'
+                                     else '请先保存对应平台的 Cookie')
                 if kind == 'jumpserver_asset':
                     if not isinstance(asset_id, str) or not re.fullmatch(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}', asset_id):
                         raise ValueError('无效的资产 ID')
@@ -976,12 +1164,14 @@ class Service:
                 report=read(folder/'version.json');report.update(status='ready',finishedAt=now(),counts=counts)
                 write(folder/'version.json',report)
             self._set_job(job, status='succeeded',phase='已切换到指定数据版本' if kind=='switch' else '同步完成，已启用新版本',finishedAt=now())
+            self._reconcile_recovered_failure()
         except Exception as exc:
             message=str(exc) if isinstance(exc,ValueError) else '任务失败或超时，当前版本保持不变；请检查连接后重试'
             report=read(folder/'version.json')
             if report and report['status']=='collecting':
                 report.update(status='failed',error=message,finishedAt=now());write(folder/'version.json',report)
             self._set_job(job, status='failed',phase=message,finishedAt=now())
+            self._reconcile_recovered_failure()
 
     def launch(self,root,port):
         log=(root/'runtime.log').open('a')
@@ -1060,6 +1250,8 @@ class Service:
             self.backend=self.launch(APP,3101)
         else:self.activate(folder.name)
         threading.Thread(target=self.scheduler,daemon=True).start()
+        if self.catalog_store.configured:
+            threading.Thread(target=self.catalog_loop, daemon=True, name='catalog-worker').start()
 
     def scheduler(self):
         while True:
@@ -1124,6 +1316,12 @@ class Handler(BaseHTTPRequestHandler):
         return host in ALLOWED_HOSTS
     def do_GET(self):
         if not self.allowed_host():return self.json(403,{'error':'仅允许本机访问'})
+        if urlsplit(self.path).path == '/api/catalog/deployment-units':
+            try:
+                return self.json(200, self.server.service.catalog_query(parse_qs(urlsplit(self.path).query)))
+            except (CatalogInputError, ValueError) as exc: return self.json(400, {'error': str(exc)})
+            except CatalogError as exc: return self.json(503, {'error': str(exc)})
+            except Exception: return self.json(503, {'error': '部署单元暂不可用，请稍后重试'})
         if urlsplit(self.path).path in ('/api/settings/application-check/logs', '/api/settings/application-check/logs/download'):
             identifier = parse_qs(urlsplit(self.path).query).get('id', [''])[0]
             try:
@@ -1180,7 +1378,9 @@ class Handler(BaseHTTPRequestHandler):
             payload=json.loads(self.rfile.read(length))
             if not isinstance(payload,dict):raise ValueError('请求格式无效')
             service=self.server.service
-            if self.path=='/api/settings/config':service.save_settings(payload)
+            if self.path=='/api/catalog/deployment-units/import':
+                return self.json(202, service.start_catalog_sync())
+            elif self.path=='/api/settings/config':service.save_settings(payload)
             elif self.path=='/api/settings/application-check':
                 return self.json(202,service.start_application_check(payload))
             elif self.path=='/api/settings/application-check/cancel':
@@ -1207,6 +1407,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.json(200,service.status())
         except json.JSONDecodeError:return self.json(400,{'error':'请求 JSON 格式无效'})
         except ValueError as exc:return self.json(400,{'error':str(exc)})
+        except CatalogError as exc:return self.json(503,{'error':str(exc)})
         except (TypeError,AttributeError):return self.json(400,{'error':'请求格式无效'})
         except Exception:return self.json(500,{'error':'操作失败，请稍后重试'})
     def proxy(self):

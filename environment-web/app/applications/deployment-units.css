@@ -1,0 +1,24 @@
+.deployment-catalog { display: grid; gap: 16px; }
+.catalog-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.catalog-heading h2 { display: flex; align-items: center; gap: 8px; font-size: 18px; font-weight: 650; color: #254d39; }
+.catalog-heading p { color: #7b8f81; font-size: 12px; margin-top: 6px; }
+.catalog-summary { display: flex; flex-wrap: wrap; gap: 16px 28px; padding: 16px 20px; border: 1px solid var(--border); border-radius: 9px; background: white; color: #789080; font-size: 12px; }
+.catalog-summary b { margin-left: 6px; color: #315d43; font-size: 18px; }
+.catalog-notice { margin: 0; }
+.catalog-message { padding: 15px 20px; color: #6c806f; background: #f7faf8; border: 1px solid var(--border); border-radius: 7px; font-size: 12px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.catalog-error { color: #9e3f34; background: #fff7f5; border-color: #f0d5ce; }
+.catalog-history { display: flex; align-items: center; gap: 7px; color: #6a8073; font-size: 12px; }
+.catalog-table small, .catalog-instance-table small { display: block; font-size: 10px; color: #889a8d; margin-top: 5px; }
+.catalog-table .catalog-code { font-family: monospace; overflow-wrap: anywhere; max-width: 250px; }
+.catalog-table th { white-space: nowrap; }
+.catalog-table .catalog-warning { color: #a77528; }
+.catalog-app-link { color: #397458; text-decoration: underline; text-underline-offset: 3px; }
+.catalog-instance-scroll { max-width: 100%; overflow-x: auto; }
+.catalog-instance-table { min-width: 900px; }
+.catalog-instance-table th { font-size: 11px; white-space: nowrap; }
+.catalog-instance-table td { font-size: 11px; vertical-align: top; }
+.catalog-instance-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 18px; padding: 10px 15px 15px; font-weight: 600; color: #3a664b; }
+.catalog-instance-heading small { font-size: 11px; font-weight: normal; color: #879b8e; }
+.catalog-spinning { animation: catalog-spin 1.5s linear infinite; }
+@keyframes catalog-spin { to { transform: rotate(360deg); } }
+@media (max-width: 800px) { .catalog-heading { align-items: flex-start; flex-direction: column; } .catalog-summary { gap: 12px 20px; } }

@@ -54,6 +54,40 @@ class SettingsTests(unittest.TestCase):
         self.service.collection_error(folder)
         self.assertIsNone(self.service.status()['cookies']['aliyun']['alert'])
 
+    def test_accesskey_is_independent_of_cookie_and_masked(self):
+        with self.assertRaises(ValueError): self.service.save_settings({'aliyunAccessKey':{'mode':'accesskey'}})
+        self.service.save_settings({'cookies':{'aliyun':'secret=cookie'}})
+        self.service.save_settings({'aliyunAccessKey':{'mode':'cookie','accessKeyId':'LTAI1234567890abcd',
+                                                       'accessKeySecret':'private-secret','organizationId':'61a9'}})
+        status=self.service.status()['aliyunAccessKey']
+        self.assertEqual(status['mode'],'cookie')
+        self.assertTrue(status['configured'])
+        self.assertEqual(status['accessKeyId'],'LTAI12****abcd')
+        self.assertEqual(status['organizationId'],'61a9')
+        self.assertNotIn('private-secret',json.dumps(status))
+        self.assertTrue(s.aliyun_configured(s.credentials()))
+        self.service.save_settings({'aliyunAccessKey':{'mode':'accesskey'}})
+        self.assertEqual(self.service.status()['aliyunAccessKey']['mode'],'accesskey')
+        self.assertTrue(s.aliyun_configured(s.credentials()))
+        saved=s.credentials()
+        saved['aliyun_accesskey_id']['value']=''
+        self.assertFalse(s.aliyun_configured(saved))
+
+    def test_accesskey_alert_clears_only_after_id_updated(self):
+        self.service.save_settings({'aliyunAccessKey':{'mode':'accesskey','accessKeyId':'LTAI1234567890abcd',
+                                                       'accessKeySecret':'private-secret'}})
+        folder=self.data/'versions'/'failure'
+        stamp=s.credentials()['aliyun_accesskey_id']['updatedAt']
+        report={'message':'AccessKey 失效','failures':[{'type':'accesskey_invalid','credential':'aliyun_accesskey_id',
+                'credentialUpdatedAt':stamp,'message':'阿里云 AccessKey 无效或权限不足'}]}
+        s.write(folder/'collection-error.json',report)
+        self.service.collection_error(folder)
+        self.assertIn('AccessKey 无效',self.service.status()['aliyunAccessKey']['alert']['message'])
+        self.service.save_settings({'aliyunAccessKey':{'mode':'accesskey','accessKeySecret':'new-secret'}})
+        self.assertIsNotNone(self.service.status()['aliyunAccessKey']['alert'])
+        self.service.save_settings({'aliyunAccessKey':{'mode':'accesskey','accessKeyId':'LTAI1234567890abcd'}})
+        self.assertIsNone(self.service.status()['aliyunAccessKey']['alert'])
+
     def test_nginx_original_files_are_version_scoped(self):
         identifier = self.service.status()['current']['id']
         folder = self.service.version(identifier)
@@ -427,6 +461,38 @@ class SettingsTests(unittest.TestCase):
         self.service.backend={'port':3101}
         with self.assertRaises(ValueError):self.service.start('sync')
         with self.assertRaises(ValueError):self.service.save_settings({'schedule':{'enabled':True,'time':'18:00'}})
+
+    def _failed_sync_with_retries(self, failures, retries):
+        identifier='20261021-133619-271076'
+        folder=self.data/'versions'/identifier;folder.mkdir(parents=True,exist_ok=True)
+        s.write(folder/'collection-error.json',{'failures':[{'source':name} for name in failures]})
+        self.service.job={'id':identifier,'kind':'sync','status':'failed','phase':'采集失败：'+'、'.join(failures)}
+        s.write(self.data/'job.json',self.service.job)
+        self.service.extra_jobs=retries
+        s.write(self.data/'extra-jobs.json',self.service.extra_jobs)
+
+    def test_recovered_retry_clears_failed_sync_notice(self):
+        self._failed_sync_with_retries(['Codeup'],[{'id':'retry','kind':'codeup','status':'succeeded','phase':'同步完成，已启用新版本'}])
+        self.service._reconcile_recovered_failure()
+        self.assertIsNone(self.service.job)
+        self.assertEqual(s.read(self.data/'job.json',{}),{})
+        self.assertEqual(self.service.extra_jobs,[])
+        self.assertEqual(s.read(self.data/'extra-jobs.json',[]),[])
+
+    def test_failed_sync_kept_until_every_failed_source_recovers(self):
+        self._failed_sync_with_retries(['Codeup','DMS'],[{'id':'retry','kind':'codeup','status':'succeeded'}])
+        self.service._reconcile_recovered_failure()
+        self.assertEqual(self.service.job['status'],'failed')
+        self.assertEqual(len(self.service.extra_jobs),1)
+        self.service.extra_jobs.append({'id':'retry-dms','kind':'dms','status':'succeeded'})
+        self.service._reconcile_recovered_failure()
+        self.assertIsNone(self.service.job)
+
+    def test_failed_retry_keeps_failed_sync_notice(self):
+        self._failed_sync_with_retries(['Codeup'],[{'id':'retry','kind':'codeup','status':'failed'}])
+        self.service._reconcile_recovered_failure()
+        self.assertEqual(self.service.job['status'],'failed')
+        self.assertEqual(len(self.service.extra_jobs),1)
 
     def test_jumpserver_asset_inspect_validates_input(self):
         self.service.backend={'port':3101}

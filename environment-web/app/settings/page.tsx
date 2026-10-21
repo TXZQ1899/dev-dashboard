@@ -60,8 +60,17 @@ type Job = {
   failures?: { source: string; type: string; credential?: string; message: string; credentialUpdatedAt?: string }[];
 };
 type SourceState = { busy: boolean; retryable: boolean; reason?: string };
+type AliyunAccessKey = {
+  configured: boolean;
+  mode: 'cookie' | 'accesskey';
+  accessKeyId?: string;
+  updatedAt?: string;
+  organizationId?: string;
+  alert?: { message: string; detectedAt: string };
+};
 type State = {
   topology?: Topology | null;
+  aliyunAccessKey?: AliyunAccessKey;
   folidev?: { configured: boolean; updatedAt?: string };
   rootAlt1?: { configured: boolean; updatedAt?: string };
   rootAlt2?: { configured: boolean; updatedAt?: string };
@@ -96,6 +105,10 @@ export default function SettingsPage() {
   const [rootPasswordAlt1, setRootPasswordAlt1] = useState('');
   const [rootPasswordAlt2, setRootPasswordAlt2] = useState('');
   const [schedule, setSchedule] = useState({ enabled: false, time: '18:00' });
+  const [aliyunAuthMode, setAliyunAuthMode] = useState<'cookie' | 'accesskey'>('cookie');
+  const [aliyunAccessKeyId, setAliyunAccessKeyId] = useState('');
+  const [aliyunAccessKeySecret, setAliyunAccessKeySecret] = useState('');
+  const [codeupOrganizationId, setCodeupOrganizationId] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -113,6 +126,8 @@ export default function SettingsPage() {
         setState(data);
         if (first) {
           setSchedule(data.schedule);
+          setAliyunAuthMode(data.aliyunAccessKey?.mode === 'accesskey' ? 'accesskey' : 'cookie');
+          setCodeupOrganizationId(data.aliyunAccessKey?.organizationId ?? '');
           first = false;
         }
       } catch (e) {
@@ -137,15 +152,31 @@ export default function SettingsPage() {
     setState(data);
     return data;
   }
+  function configBody() {
+    return {
+      cookies,
+      schedule,
+      folidevPassword,
+      rootPasswordAlt1,
+      rootPasswordAlt2,
+      aliyunAccessKey: {
+        mode: aliyunAuthMode,
+        accessKeyId: aliyunAccessKeyId,
+        accessKeySecret: aliyunAccessKeySecret,
+        organizationId: codeupOrganizationId,
+      },
+    };
+  }
   async function syncSource(source: 'local-gitlab' | 'codeup' | 'devops' | 'ecs' | 'clb' | 'nat' | 'dms' | 'jumpserver') {
     setBusy(true);
     setError('');
     try {
-      await post('config', { cookies, schedule, folidevPassword, rootPasswordAlt1, rootPasswordAlt2 });
+      await post('config', configBody());
       setFolidevPassword('');
       setRootPasswordAlt1('');
       setRootPasswordAlt2('');
       setCookies({ devops: '', aliyun: '', jumpserver: '', local_gitlab: '' });
+      setAliyunAccessKeySecret('');
       const data = await post(`sync/${source}`, {});
       setMessage(`${source} 独立同步任务已启动`);
       setState(data);
@@ -174,11 +205,12 @@ export default function SettingsPage() {
     setMessage('');
     try {
       if (kind !== 'switch') {
-        await post('config', { cookies, schedule, folidevPassword, rootPasswordAlt1, rootPasswordAlt2 });
+        await post('config', configBody());
         setFolidevPassword('');
         setRootPasswordAlt1('');
         setRootPasswordAlt2('');
         setCookies({ devops: '', aliyun: '', jumpserver: '', local_gitlab: '' });
+        setAliyunAccessKeySecret('');
       }
       if (kind === 'sync' || kind === 'local_gitlab') await post(kind === 'local_gitlab' ? 'sync/local-gitlab' : 'sync', {});
       if (kind === 'switch') await post('switch', { id });
@@ -240,9 +272,9 @@ export default function SettingsPage() {
         ) : (
           <>
             <section id="cookie-settings" className="panel settings-panel">
-              <h2>Cookie 与每日同步</h2>
+              <h2>凭据与每日同步</h2>
               <p className="settings-hint">
-                Cookie 仅保存到本机 Docker
+                Cookie / AccessKey 仅保存到本机 Docker
                 数据卷，不回显。留空表示保留已保存内容。
               </p>
               {sources.map(([key, label]) => (
@@ -268,6 +300,74 @@ export default function SettingsPage() {
                   <small>最后保存：{date(state.cookies[key].updatedAt)}</small>
                 </div>
               ))}
+              <div className="settings-field">
+                <label htmlFor="aliyun-auth-mode">
+                  阿里云采集方式 ·{' '}
+                  <span>{aliyunAuthMode === 'accesskey' ? 'AccessKey（OpenAPI）' : 'Cookie（原有方式）'}</span>
+                </label>
+                <select
+                  id="aliyun-auth-mode"
+                  value={aliyunAuthMode}
+                  onChange={(e) => setAliyunAuthMode(e.target.value as 'cookie' | 'accesskey')}
+                >
+                  <option value="cookie">Cookie（原有方式）</option>
+                  <option value="accesskey">AccessKey（OpenAPI）</option>
+                </select>
+                <small>
+                  只影响下一次 ECS / CLB / NAT / DMS / 云效采集；Cookie 与 AccessKey 相互独立，可随时切回。
+                </small>
+              </div>
+              {state.aliyunAccessKey?.alert && (
+                <p role="alert" className="settings-error">{state.aliyunAccessKey.alert.message}</p>
+              )}
+              <div className="settings-field">
+                <label htmlFor="aliyun-access-key-id">
+                  AccessKey ID ·{' '}
+                  <span>
+                    {state.aliyunAccessKey?.configured
+                      ? `已配置${state.aliyunAccessKey.accessKeyId ? `（${state.aliyunAccessKey.accessKeyId}）` : ''}`
+                      : '未配置'}
+                  </span>
+                </label>
+                <Input
+                  id="aliyun-access-key-id"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={aliyunAccessKeyId}
+                  onChange={(e) => setAliyunAccessKeyId(e.target.value)}
+                  placeholder="LTAI...；留空保留已保存内容"
+                />
+                <small>
+                  建议使用只读权限的 RAM 用户 AccessKey；最后保存：{date(state.aliyunAccessKey?.updatedAt)}
+                </small>
+              </div>
+              <div className="settings-field">
+                <label htmlFor="aliyun-access-key-secret">AccessKey Secret · {state.aliyunAccessKey?.configured ? '已配置' : '未配置'}</label>
+                <Input
+                  id="aliyun-access-key-secret"
+                  type="password"
+                  autoComplete="new-password"
+                  spellCheck={false}
+                  value={aliyunAccessKeySecret}
+                  onChange={(e) => setAliyunAccessKeySecret(e.target.value)}
+                  placeholder="留空保留已保存内容"
+                />
+                <small>仅保存到 Docker 数据卷，不回显。</small>
+              </div>
+              <div className="settings-field">
+                <label htmlFor="codeup-organization-id">云效 Codeup 企业 ID</label>
+                <Input
+                  id="codeup-organization-id"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={codeupOrganizationId}
+                  onChange={(e) => setCodeupOrganizationId(e.target.value)}
+                  placeholder="留空则从历史仓库快照自动识别"
+                />
+                <small>
+                  取自 https://devops.aliyun.com/organization/【OrganizationId】；已存在历史快照时可留空。
+                </small>
+              </div>
               <div className="settings-field">
                 <label htmlFor="folidev-password">folidev 用户密码 · {state.folidev?.configured ? '已配置' : '未配置'}</label>
                 <Input id="folidev-password" type="password" autoComplete="new-password" value={folidevPassword} onChange={(e) => setFolidevPassword(e.target.value)} placeholder="留空保留已保存密码" />

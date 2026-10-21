@@ -2,7 +2,7 @@
 
 当前数据更新入口是 `http://localhost:3001/settings`：Cookie 配置、一键同步、北京时间每日定时、同步历史和版本切换。数据保存在命名卷 `envscope-data`，详见 [SETTINGS.md](SETTINGS.md)。现有页面仍使用同样的快照模型；同步及切换由本地服务构建并验证后原子启用，无需 Docker socket 或宿主机脚本。
 
-# EnvScope 应用环境管理
+# AppAtlas 应用架构图谱
 
 基于本地采集快照的只读环境资产工作台。每日更新入口为 `http://localhost:3001/settings`，详见 [SETTINGS.md](SETTINGS.md)。
 

@@ -21,6 +21,8 @@ from server_inventory import collect_servers, is_10_58
 from aliyun import collect_clb, collect_ecs, normalize_clb, ecs_snapshot
 from export_nat import collect as collect_nat, normalize_nat
 from export_dms import collect as collect_dms
+from aliyun_openapi import (codeup_reference_status, collect_clb_ak, collect_codeup_ak,
+                            collect_dms_ak, collect_ecs_ak, collect_nat_ak)
 
 # Readers must never observe half-written progress or snapshot JSON.
 daily.save_json = write
@@ -261,6 +263,20 @@ COOKIE_SOURCES = {'ecs':'aliyun', 'clb':'aliyun', 'nat':'aliyun', 'codeup':'aliy
 COOKIE_LABELS = {'aliyun':'阿里云（ECS / Codeup / CLB / NAT 共用）',
                  'local_gitlab':'Local GitLab', 'devops':'DevOps', 'jumpserver':'JumpServer'}
 
+# 由 main() 根据本次运行的凭据设置，供异常归因使用（默认保持原有 Cookie 行为）。
+ALIYUN_MODE = 'cookie'
+
+
+def aliyun_credentials(credentials):
+    def value(key):
+        item = credentials.get(key) or {}
+        return item.get('value', '') if isinstance(item, dict) else ''
+    mode = value('aliyun_auth_mode') or 'cookie'
+    return {'mode': mode if mode in ('cookie', 'accesskey') else 'cookie',
+            'accessKeyId': value('aliyun_accesskey_id'),
+            'accessKeySecret': value('aliyun_accesskey_secret'),
+            'organizationId': value('codeup_organization_id')}
+
 
 def collection_failure(exc, source):
     key = COOKIE_SOURCES.get(source.lower())
@@ -271,10 +287,17 @@ def collection_failure(exc, source):
                      '更新统一阿里云 Cookie')
     auth = auth or any(marker in str(exc) for marker in known_session)
     if auth and key:
+        if key == 'aliyun' and ALIYUN_MODE == 'accesskey':
+            message = '阿里云 AccessKey 无效或权限不足，请更新 AccessKey 后重新同步'
+            return {'source':source, 'type':'accesskey_invalid',
+                    'credential':'aliyun_accesskey_id', 'message':message}
         message = COOKIE_LABELS[key] + ' Cookie 已失效或登录态不可用，请更新 Cookie 后重新同步'
         return {'source':source, 'type':'cookie_expired', 'credential':key, 'message':message}
     if status == 403:
-        return {'source':source, 'type':'permission_denied', 'message':source+' 访问被拒绝，请检查账号读取权限或登录态'}
+        hint = 'AccessKey 读取权限' if ALIYUN_MODE == 'accesskey' else '账号读取权限或登录态'
+        return {'source':source, 'type':'permission_denied', 'message':source+' 访问被拒绝，请检查'+hint}
+    if ALIYUN_MODE == 'accesskey' and key == 'aliyun' and not isinstance(exc, CollectionError):
+        return {'source':source, 'type':type(exc).__name__, 'message':source+'（AccessKey）：'+str(exc)[:200]}
     return {'source':source, 'type':type(exc).__name__,
             'message':exc.safe_message if isinstance(exc, CollectionError) else source+'：'+type(exc).__name__}
 
@@ -343,10 +366,38 @@ def parallel_collect(tasks, progress_path, workers=3):
 
 
 def main():
+    global ALIYUN_MODE
     folder = Path(sys.argv[1])
     credentials = json.loads(Path(sys.argv[2]).read_text())
-    # Cookies are temporary inputs, never stored in a historical snapshot.
+    # Cookies / AccessKey are temporary inputs, never stored in a historical snapshot.
     mode = sys.argv[3] if len(sys.argv) > 3 else 'full'
+    auth = aliyun_credentials(credentials)
+    ALIYUN_MODE = auth['mode']
+    use_accesskey = ALIYUN_MODE == 'accesskey'
+    if use_accesskey and not (auth['accessKeyId'] and auth['accessKeySecret']):
+        raise ExportError('AccessKey 采集方式缺少 AccessKey ID 或 Secret')
+
+    def aliyun_ecs(out):
+        return (collect_ecs_ak(auth['accessKeyId'], auth['accessKeySecret'], out)
+                if use_accesskey else collect_ecs(credentials['aliyun']['value'], out))
+
+    def aliyun_clb(out):
+        return (collect_clb_ak(auth['accessKeyId'], auth['accessKeySecret'], out)
+                if use_accesskey else collect_clb(credentials['aliyun']['value'], out))
+
+    def aliyun_nat(out):
+        return (collect_nat_ak(auth['accessKeyId'], auth['accessKeySecret'], out)
+                if use_accesskey else collect_nat(credentials['aliyun']['value'], out))
+
+    def aliyun_dms(out):
+        return (collect_dms_ak(auth['accessKeyId'], auth['accessKeySecret'], out)
+                if use_accesskey else collect_dms(credentials['aliyun']['value'], out))
+
+    def aliyun_codeup(out):
+        return (collect_codeup_ak(out, auth['accessKeyId'], auth['accessKeySecret'],
+                                  auth['organizationId'])
+                if use_accesskey else daily.collect_codeup(out))
+
     install_slot_logs(folder / 'slots')
     # A single-source run has no worker pool; expose it as slot 1 for the same UI.
     if mode != 'full':
@@ -360,18 +411,18 @@ def main():
         if mode in ('ecs', 'clb', 'nat', 'dms', 'jumpserver', 'devops', 'jumpserver_asset'):
             if mode == 'ecs':
                 daily.save_json(folder / 'progress.json', {'phase': '正在独立采集阿里云 ECS 实例'})
-                raw = collect_ecs(credentials['aliyun']['value'], folder/'ecs')
+                raw = aliyun_ecs(folder/'ecs')
                 previous = json.loads((folder/'ecs-snapshot.json').read_text())
                 daily.save_json(folder/'ecs-snapshot.json', ecs_snapshot(raw, previous.get('projects', [])))
             elif mode == 'clb':
                 daily.save_json(folder / 'progress.json', {'phase': '正在独立采集阿里云 CLB 实例、监听器和后端'})
-                daily.save_json(folder/'clb-snapshot.json', normalize_clb(collect_clb(credentials['aliyun']['value'], folder/'clb')))
+                daily.save_json(folder/'clb-snapshot.json', normalize_clb(aliyun_clb(folder/'clb')))
             elif mode == 'nat':
                 daily.save_json(folder / 'progress.json', {'phase': '正在独立采集阿里云 NAT 网关与 DNAT IP / 端口映射'})
-                daily.save_json(folder/'nat-snapshot.json', normalize_nat(collect_nat(credentials['aliyun']['value'], folder/'nat')))
+                daily.save_json(folder/'nat-snapshot.json', normalize_nat(aliyun_nat(folder/'nat')))
             elif mode == 'dms':
                 daily.save_json(folder / 'progress.json', {'phase': '正在独立采集阿里云 DMS 数据库实例'})
-                daily.save_json(folder/'dms-snapshot.json', collect_dms(credentials['aliyun']['value'], folder/'dms'))
+                daily.save_json(folder/'dms-snapshot.json', aliyun_dms(folder/'dms'))
             elif mode == 'jumpserver':
                 daily.save_json(folder / 'progress.json', {'phase': '正在独立采集 JumpServer 资产和分组'})
                 jumpserver(credentials['jumpserver']['value'], folder,
@@ -402,7 +453,7 @@ def main():
             return
         if mode == 'codeup':
             daily.save_json(folder / 'progress.json', {'phase': '正在独立采集 Codeup 代码组和仓库'})
-            codeup = daily.collect_codeup(folder)
+            codeup = aliyun_codeup(folder)
             current = json.loads((folder / 'repositories.json').read_text())
             groups = current.get('groups', []); repos = {}
             for repo in current.get('repos', []):
@@ -422,7 +473,10 @@ def main():
                 if repo.get('inDevops') and not repo.get('inCodeup') and repo.get('source') == 'codeup' and by_name.get(repo.get('name','').lower()):
                     repo['possibleCodeupMatches']=[{'id':hashlib.sha256(c['url'].encode()).hexdigest()[:20],'name':c['name'],'url':c['url'],'groupName':c['groupName'],'path':c['path']} for c in by_name[repo['name'].lower()]]
             inventory=json.loads((folder / 'snapshot.json').read_text())
-            statuses=daily.codeup_reference_status({'apps':inventory.get('apps',[])}, codeup)
+            statuses = (codeup_reference_status({'apps': inventory.get('apps', [])}, codeup,
+                                                 auth['accessKeyId'], auth['accessKeySecret'],
+                                                 auth['organizationId'])
+                        if use_accesskey else daily.codeup_reference_status({'apps':inventory.get('apps',[])}, codeup))
             for repo in repos.values():
                 if repo.get('url') in statuses and not repo.get('inCodeup'):
                     repo.update(statuses[repo['url']])
@@ -458,26 +512,28 @@ def main():
         codeup_folder = folder/'sources'/'codeup'
         codeup_folder.mkdir(parents=True, exist_ok=True)
         def ecs_job():
-            raw = collect_ecs(credentials['aliyun']['value'], folder/'ecs')
+            raw = aliyun_ecs(folder/'ecs')
             write(folder/'ecs-snapshot.json', ecs_snapshot(raw, projects['projects']))
         tasks = {
             'ECS': ecs_job,
-            'CLB': lambda: write(folder/'clb-snapshot.json', normalize_clb(collect_clb(credentials['aliyun']['value'], folder/'clb'))),
-            'NAT': lambda: write(folder/'nat-snapshot.json', normalize_nat(collect_nat(credentials['aliyun']['value'], folder/'nat'))),
-            'DMS': lambda: write(folder/'dms-snapshot.json', collect_dms(credentials['aliyun']['value'], folder/'dms')),
+            'CLB': lambda: write(folder/'clb-snapshot.json', normalize_clb(aliyun_clb(folder/'clb'))),
+            'NAT': lambda: write(folder/'nat-snapshot.json', normalize_nat(aliyun_nat(folder/'nat'))),
+            'DMS': lambda: write(folder/'dms-snapshot.json', aliyun_dms(folder/'dms')),
             'JumpServer': lambda: jumpserver(credentials['jumpserver']['value'], folder,
                            credentials.get('folidev',{}).get('value',''),
                            credentials.get('rootAlt1',{}).get('value',''),
                            credentials.get('rootAlt2',{}).get('value',''),
                            credentials.get('_ipPasswordMap',{})),
-            'Codeup': lambda: daily.collect_codeup(codeup_folder),
+            'Codeup': lambda: aliyun_codeup(codeup_folder),
             'Local GitLab': lambda: daily.collect_local_gitlab(credentials['local_gitlab']['value'], folder/'gitlab-progress.json'),
             'DevOps': lambda: daily.collect_devops(folder, 4),
         }
         results = parallel_collect(tasks, folder/'progress.json')
         codeup, local_gitlab, devops = (results[name] for name in ('Codeup', 'Local GitLab', 'DevOps'))
         daily.save_json(folder / 'progress.json', {'phase': '正在核对 DevOps 仓库的 Codeup 地址状态', 'completed': 0, 'total': 0})
-        codeup_status = daily.codeup_reference_status(devops, codeup)
+        codeup_status = (codeup_reference_status(devops, codeup, auth['accessKeyId'],
+                                                 auth['accessKeySecret'], auth['organizationId'])
+                         if use_accesskey else daily.codeup_reference_status(devops, codeup))
         daily.save_json(folder / 'repositories.json', daily.reconcile(devops, codeup, local_gitlab, codeup_status))
         inventory = {k: v for k,v in devops.items() if k != 'apps'}
         inventory['apps'] = [{k:v for k,v in a.items() if k not in ('csvRows','complete','errors')} for a in devops['apps']]

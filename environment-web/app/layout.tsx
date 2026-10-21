@@ -1,17 +1,17 @@
 import type { Metadata } from 'next';
 import './globals.css';
 export const metadata: Metadata = {
-  title: 'EnvScope · 应用环境管理',
-  description: '应用环境总览、服务器清单与生产单点分析',
+  title: 'AppAtlas · 应用架构图谱',
+  description: '业务领域、系统、部署单元、部署实例与请求链路的应用架构图谱',
   openGraph: {
-    title: 'EnvScope · 应用环境管理',
-    description: '应用环境总览、服务器清单与生产单点分析',
+    title: 'AppAtlas · 应用架构图谱',
+    description: '业务领域、系统、部署单元、部署实例与请求链路的应用架构图谱',
     images: ['/og.png'],
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'EnvScope · 应用环境管理',
-    description: '应用环境总览、服务器清单与生产单点分析',
+    title: 'AppAtlas · 应用架构图谱',
+    description: '业务领域、系统、部署单元、部署实例与请求链路的应用架构图谱',
     images: ['/og.png'],
   },
 };

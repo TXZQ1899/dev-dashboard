@@ -20,8 +20,21 @@ Compose 使用命名卷 `envscope-data`，挂载到 `/data`。Cookie、运行记
 - `/data/schedule.json`：每日同步设置。
 - `/data/job.json`：最近任务状态；容器重启后中断任务标为失败。
 - `/data/extra-jobs.json`：与主任务并发运行的单独数据源重试任务；容器重启后中断任务标为失败。
+- `/data/catalog-job.json`：最近一次部署目录导入结果；不包含数据库密码。
 
 `docker compose up -d --build`、`docker compose restart` 和普通 `docker compose down` 不删除数据卷。`docker compose down -v` 会删除全部历史和 Cookie，不应用于日常更新。备份时备份整个数据卷，并将其作为包含凭据的私密备份保存。
+
+## 部署单元与 MySQL
+
+`/applications?tab=deployment-units` 展示部署单元。一个应用创建一个部署单元，三个环境分别保存关联；真实部署记录生成实例。点击环境可查看 IP、声明端口、分支、部署/配置 ID、发布时间和发布状态。实例 ID、来源观察及最后观察时间保留在数据库与 API 中，不在展开表格展示。支持搜索、分页及包含未再观察到的来源。业务领域、业务系统表已建立，暂不自动填充归属。
+
+在 `environment-web` 中执行 `docker compose up -d --build`，会同时启动 MySQL 8.4，健康后启动应用。首次启动自动迁移、读取当前已完成应用快照；随后独立线程每 30 秒检查当前版本，也可使用 Tab 中的「从当前快照创建 / 更新」。数据库失败不会使原采集或版本激活失败；Tab 显示最近任务错误，并保留上次成功目录。
+
+MySQL 持久数据独立保存于 `envscope-mysql:/var/lib/mysql`，不发布宿主机端口。首次初始化前可在 Compose `.env` 设置 `ENVSCOPE_DB_PASSWORD`、`ENVSCOPE_DB_ROOT_PASSWORD`；内置默认值只供本地启动。修改已有数据库密码需同步修改数据库账号，修改环境变量不会重置已初始化卷内账号。外部 MySQL 部署可直接配置应用环境变量 `ENVSCOPE_DB_HOST`、`ENVSCOPE_DB_PORT`、`ENVSCOPE_DB_NAME`、`ENVSCOPE_DB_USER`、`ENVSCOPE_DB_PASSWORD`，可选 `ENVSCOPE_DB_SSL_CA`（容器内 CA 文件路径）。账号需要目标库的建表、索引及读写权限。
+
+`ENVSCOPE_DEVOPS_SOURCE` 默认 `devops-default`，是稳定的来源命名空间；日常更新不要更换，否则会被当作另一套来源创建对象。相同快照内容重复导入不会重复生成单元或实例。完整清单缺失仅标记未再观察到，不物理删除；采集不完整保留旧观察。快照版本切换为更早采集时间时，应用页使用历史数据，部署目录保留较新的管理状态并给出说明。
+
+备份需同时考虑 `envscope-data`（来源快照、凭据）与 MySQL 管理数据（领域、系统、单元、实例、观察及变更）。MySQL 使用 `mysqldump --single-transaction` 等一致性备份方式；不把运行中数据库目录的普通文件复制视为一致性备份。执行 `down -v` 也会删除 MySQL 管理数据。当前不提供领域/系统或单元的人工编辑页面、进程识别、历史目录回放。
 
 ## 激活机制
 

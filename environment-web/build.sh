@@ -36,6 +36,7 @@ COLLECTORS=(
   export_nat.py
   export_dms.py
   fetch_ecs_inventory.py
+  aliyun_openapi.py
 )
 ROOT_DIR="$(cd .. && pwd)"
 echo "Syncing collectors from $ROOT_DIR -> runtime/"

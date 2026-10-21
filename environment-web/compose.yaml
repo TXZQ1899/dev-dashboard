@@ -11,11 +11,38 @@ services:
     init: true
     environment:
       ENVSCOPE_ALLOWED_HOSTS: ${ENVSCOPE_ALLOWED_HOSTS:-*}
+      ENVSCOPE_DB_HOST: mysql
+      ENVSCOPE_DB_PORT: 3306
+      ENVSCOPE_DB_NAME: envscope
+      ENVSCOPE_DB_USER: envscope
+      ENVSCOPE_DB_PASSWORD: ${ENVSCOPE_DB_PASSWORD:-envscope-local-password}
+      ENVSCOPE_DEVOPS_SOURCE: ${ENVSCOPE_DEVOPS_SOURCE:-devops-default}
+    depends_on:
+      mysql:
+        condition: service_healthy
     ports:
       - "${ENVSCOPE_PORT:-3001}:3000"
     restart: unless-stopped
     volumes:
       - envscope-data:/data
+  mysql:
+    image: ${MYSQL_IMAGE:-mysql:8.4}
+    environment:
+      MYSQL_DATABASE: envscope
+      MYSQL_USER: envscope
+      MYSQL_PASSWORD: ${ENVSCOPE_DB_PASSWORD:-envscope-local-password}
+      MYSQL_ROOT_PASSWORD: ${ENVSCOPE_DB_ROOT_PASSWORD:-envscope-local-root-password}
+    restart: unless-stopped
+    volumes:
+      - envscope-mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
 volumes:
   envscope-data:
     name: envscope-data
+  envscope-mysql:
+    name: envscope-mysql

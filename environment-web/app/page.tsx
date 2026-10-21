@@ -82,7 +82,7 @@ export function Shell({
             <Boxes size={23} />
           </span>
           <span>
-            EnvScope<small>应用环境管理</small>
+            AppAtlas<small>应用架构图谱</small>
           </span>
         </a>
         <div className="nav-label">工作空间</div>
