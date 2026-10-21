@@ -47,7 +47,8 @@ import {
   type Env,
   type App,
 } from '@/lib/inventory';
-import { appHasProcessOnIp, appProcessStatusSummary, appMatchesDeploymentPeriod, appOverYearUndeployed, appMatchOnIp, envServerVerdicts, formatBeijingTime, ipServerState, ipSpecSummary, latestAppDeploymentTime, type ServerVerdicts } from '@/lib/process-comparison';
+import { appHasProcessOnIp, appProcessStatusSummary, appMatchesDeploymentPeriod, appOverYearUndeployed, appMatchOnIp, envServerVerdicts, ipServerState, ipSpecSummary, latestAppDeploymentTime, type ServerVerdicts } from '@/lib/process-comparison';
+import { formatBeijingTime } from '@/lib/datetime';
 import { appRepositoryNameMatches } from '@/lib/repositories';
 type Filter = 'all' | 'single' | 'unknown';
 
@@ -812,7 +813,7 @@ function AppList() {
               应用按应用 ID 聚合 · 同名不同 ID 分开展示
             </span>
             <span>
-              快照时间：{inventoryDate.replace('T', ' ').slice(0, 19)}
+              快照时间：{formatBeijingTime(inventoryDate)}
             </span>
           </footer>
         </main>

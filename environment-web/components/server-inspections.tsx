@@ -4,13 +4,18 @@ import { ChevronRight, Download } from 'lucide-react';
 import { jumpserver } from '@/lib/jumpserver';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { ApplicationCheckLink } from '@/components/application-check-link';
+import { IpMetaCell } from '@/components/ip-meta-cell';
 
-import { processTypes, durations, processRows, filterProcesses, formatDuration, paginate, locationHint, findLocationBlock, type Asset, type Inspection, type ProcessRow, type ProcessType, type Duration } from '@/lib/server-processes';
-import { ipSpecSummary } from '@/lib/process-comparison';
+import { processTypes, durations, processRows, filterProcesses, matchesProcessQuery, formatDuration, paginate, locationHint, findLocationBlock, isMiddlewareProcess, type Asset, type Inspection, type ProcessRow, type ProcessType, type Duration } from '@/lib/server-processes';
+import { ipSpecSummary, tomcatInstanceName, tomcatProcessApp, jarBusinessName, jarProcessApp, ipDeployEnvironments, appDeployEnvironments } from '@/lib/process-comparison';
+import { envs, shortLabels, labels, type Env } from '@/lib/inventory';
+import { formatBeijingTime } from '@/lib/datetime';
 type ConfigFile = { path: string; instance: string; content: string; base64: string; bytes: number };
 const statuses: Record<string,string> = {complete:'采集完整',partial:'采集不完整',failed:'采集失败',not_collected:'未采集',not_running:'未发现运行中的 Nginx',unknown:'无法确认',sudo_password_error:'sudo 密码错误，Nginx 未采集',sudo_unavailable:'sudo 不可用，Nginx 未采集'};
 const webappStatuses: Record<string,string> = {complete:'采集完整',partial:'采集不完整',failed:'采集失败',not_collected:'未采集',absent:'目录不存在'};
-function date(value: string) { return new Date(value).toLocaleString('zh-CN', {timeZone:'Asia/Shanghai',hour12:false}); }
+// 采集时间统一按北京时间展示。
+function date(value: string) { return formatBeijingTime(value, '—'); }
 function csvCell(value: string): string {
   return /[",\n]/.test(value) ? '"' + value.replace(/"/g, '""') + '"' : value;
 }
@@ -195,6 +200,7 @@ export function ServerInspections() {
   const [login,setLogin]=useState('can_login');
   const [query,setQuery]=useState('');
   const [duration,setDuration]=useState<Duration>('all');
+  const [env,setEnv]=useState<Env|'all'|'unknown'>('all');
   const [page,setPage]=useState(1);
   const [size,setSize]=useState(25);
   const [sort,setSort]=useState<{field:'ip'|'spec'|'cpu'|'mem';dir:'asc'|'desc'}>({field:'ip',dir:'asc'});
@@ -203,6 +209,8 @@ export function ServerInspections() {
   const [selected,setSelected]=useState('');
   // 进程详情表排序：按 asset.id 隔离，默认内存%降序。
   const [procSort,setProcSort]=useState<Record<string,{field:'cpu'|'mem';dir:'asc'|'desc'}>>({});
+  // 展开详情框内的进程搜索：按 asset.id 隔离，匹配 PID / 进程名 / 监听端口 / 详细命令。
+  const [procQuery,setProcQuery]=useState<Record<string,string>>({});
   // 摘要行单机采集按钮状态（按 asset.id 隔离）。
   const [inspect,setInspect]=useState<Record<string,{busy:boolean;message:string;error:string}>>({});
   // 提权失败弹窗：目标资产、提交忙态与错误消息。
@@ -215,7 +223,14 @@ export function ServerInspections() {
   useEffect(()=>{if(selected)document.getElementById('selected-server-details')?.scrollIntoView({behavior:'smooth',block:'start'});},[selected]);
   const assets=jumpserver.assets as Asset[];
   const rows=useMemo(()=>processRows(assets,now),[assets,now]);
-  const searched=useMemo(()=>filterProcesses(rows,query,duration),[rows,query,duration]);
+  const searched=useMemo(()=>{
+    const filtered=filterProcesses(rows,query,duration);
+    if(env==='all')return filtered;
+    return filtered.filter(r=>{
+      const deployed=ipDeployEnvironments(r.asset.ip);
+      return env==='unknown'?deployed.length===0:deployed.includes(env);
+    });
+  },[rows,query,duration,env]);
   // 筛选后的进程按服务器分组，每个 IP 一行；按当前排序字段排列。
   const ipGroups=useMemo(()=>{
     const byId=new Map<string,ProcessRow[]>();
@@ -250,6 +265,8 @@ export function ServerInspections() {
   }
   function toggleAsset(id: string) {setExpanded(prev=>{const next={...prev};if(next[id])delete next[id];else next[id]={type:'全部进程',page:1};return next;});}
   function setAssetView(id: string,type: ProcessType,viewPage: number) {setExpanded(prev=>({...prev,[id]:{type,page:viewPage}}));}
+  // 更新某台服务器详情的进程搜索词，并把分页回到第 1 页（保留当前类别）。
+  function setProcSearch(id: string,value: string) {setProcQuery(prev=>({...prev,[id]:value}));setAssetView(id,expanded[id]?.type||'全部进程',1);}
   // 单独采集入口：提权失败的服务器先弹出 root 密码填写框，其余走原有流程。
   function requestInspect(asset: Asset) {
     if (asset.inspection?.sudoStatus==='password_error') {setPwError('');setPwTarget(asset);return;}
@@ -274,7 +291,34 @@ export function ServerInspections() {
   const tabClass=(active: boolean)=>`rounded-md px-4 py-2 text-sm border ${active?'bg-foreground text-background font-medium':'bg-background hover:bg-muted'}`;
   // 单条进程行（IP 详情框内复用原进程表的列，去掉 IP 列）。
   function processDetailRow(r: ProcessRow) {
-    return <tr className="border-t align-top" key={r.asset.id+':'+(r.workerCount?'workers':r.process.pid)}><td className="p-3">{r.workerCount?<span title={`${r.workerCount} 个 Nginx worker 进程`}>×{r.workerCount}</span>:r.process.pid}</td><td className="p-3 break-all">{r.workerCount?<span>Nginx worker<small className="block text-muted-foreground">{r.type} · {r.process.user} · 共 {r.workerCount} 个进程</small></span>:<>{r.name}<small className="block text-muted-foreground">{r.type} · {r.process.user}</small></>}</td><td className="p-3 whitespace-nowrap text-right" title={r.process.cpuPercent!=null?`CPU ${r.process.cpuPercent}%`:'旧快照无 CPU 数据'}>{r.process.cpuPercent!=null?<span className={r.process.cpuPercent>=80?'text-red-600 font-medium':r.process.cpuPercent>=50?'text-amber-600':''}>{r.process.cpuPercent}%</span>:'—'}</td><td className="p-3 whitespace-nowrap text-right" title={r.process.memPercent!=null?`内存 ${r.process.memPercent}%${r.process.rssKB!=null?` · RSS ${(r.process.rssKB/1024).toFixed(0)}M`:''}`:'旧快照无内存数据'}>{r.process.memPercent!=null?<span className={r.process.memPercent>=80?'text-red-600 font-medium':r.process.memPercent>=50?'text-amber-600':''}>{r.process.memPercent}%</span>:'—'}</td><td className="p-3">{r.process.ports?.length?<code>{r.process.ports.join(', ')}</code>:'—'}</td><td className="p-3 whitespace-nowrap">{r.workerCount?'—':date(r.process.startedAt)}</td><td className="p-3 whitespace-nowrap" title={r.workerCount?'worker 进程启动时间各异，已合并展示':`采集时：${formatDuration(r.process.elapsedSeconds)}；采集时间：${date(r.asset.inspection!.checkedAt)}`}>{r.workerCount?'—':formatDuration(r.seconds)}</td><td className="p-3 min-w-80 max-w-2xl"><pre className="text-xs whitespace-pre-wrap break-all font-mono">{r.workerCount?`nginx: worker process（共 ${r.workerCount} 个）`:r.process.command}</pre></td><td className="p-3">{r.type==='Nginx'&&<button className="border rounded p-2 whitespace-nowrap" title="查看该服务器的 Nginx 转发与原始配置" onClick={()=>setSelected(selected===r.asset.id?'':r.asset.id)}>Nginx</button>}</td></tr>;
+    // 业务应用（Tomcat/Java）与中间件（MySQL/Redis/Kafka/MongoDB 等）都需要上下游检测入口。
+    const checkButton = !r.workerCount && (['Tomcat','Java Jar','其他 Java'].includes(r.type) || isMiddlewareProcess(r.process))
+      ? <ApplicationCheckLink asset={r.asset.id} pid={r.process.pid} disabled={inspect[r.asset.id]?.busy} /> : null;
+    // 进程名增强：Tomcat 取 catalina 实例目录业务名（如
+    // /opt/apache-tomcat_dolphin-webhook → dolphin-webhook），Java Jar 取 -jar 的
+    // jar 文件名去 .jar/.war 后缀；能关联到在本机有部署记录的 DevOps 应用时，
+    // 展示「业务名（应用ID）」并跳转应用列表；否则纯文本（无业务名回退原进程名）。
+    const businessName=!r.workerCount&&r.type==='Tomcat'?tomcatInstanceName(r.process.command)
+      :!r.workerCount&&r.type==='Java Jar'?jarBusinessName(r.process.command)
+      :undefined;
+    const linkedApp=businessName
+      ?(r.type==='Tomcat'?tomcatProcessApp(r.asset.ip,r.process):jarProcessApp(r.asset.ip,r.process))
+      :undefined;
+    // 多环境主机：为每条进程标注其 DevOps 部署环境，避免同机测试/仿真进程混淆。
+    // 仅 IP 存在多个部署环境时追加标签；关联到应用的取该应用在此 IP 的环境，
+    // 关联不到（中间件/系统进程等）标「环境待识别」；Nginx worker 合并行不标注。
+    let envLabel: string|undefined;
+    if(!r.workerCount && ipDeployEnvironments(r.asset.ip).length>1) {
+      const appEnvs=linkedApp?appDeployEnvironments(linkedApp,r.asset.ip):[];
+      envLabel=appEnvs.length===1?labels[appEnvs[0]]:appEnvs.length>1?appEnvs.map(e=>labels[e]).join('、'):'环境待识别';
+    }
+    const namePart=linkedApp
+      ? <a className="ip-app-link" href={`/applications?appId=${encodeURIComponent(linkedApp.id)}#app-${encodeURIComponent(linkedApp.id)}`} title="跳转到应用列表中该应用">{businessName}（{linkedApp.id}）</a>
+      : (businessName||r.name);
+    const processNameNode=envLabel
+      ? <>{namePart}<span className="inline-block rounded bg-muted px-1 text-xs text-muted-foreground">{envLabel}</span></>
+      : <>{namePart}</>;
+    return <tr className="border-t align-top" key={r.asset.id+':'+(r.workerCount?'workers':r.process.pid)}><td className="p-3">{r.workerCount?<span title={`${r.workerCount} 个 Nginx worker 进程`}>×{r.workerCount}</span>:r.process.pid}</td><td className="p-3 break-all">{r.workerCount?<span>Nginx worker<small className="block text-muted-foreground">{r.type} · {r.process.user} · 共 {r.workerCount} 个进程</small></span>:<>{processNameNode}<small className="block text-muted-foreground">{r.type} · {r.process.user}</small></>}</td><td className="p-3 whitespace-nowrap text-right" title={r.process.cpuPercent!=null?`CPU ${r.process.cpuPercent}%`:'旧快照无 CPU 数据'}>{r.process.cpuPercent!=null?<span className={r.process.cpuPercent>=80?'text-red-600 font-medium':r.process.cpuPercent>=50?'text-amber-600':''}>{r.process.cpuPercent}%</span>:'—'}</td><td className="p-3 whitespace-nowrap text-right" title={r.process.memPercent!=null?`内存 ${r.process.memPercent}%${r.process.rssKB!=null?` · RSS ${(r.process.rssKB/1024).toFixed(0)}M`:''}`:'旧快照无内存数据'}>{r.process.memPercent!=null?<span className={r.process.memPercent>=80?'text-red-600 font-medium':r.process.memPercent>=50?'text-amber-600':''}>{r.process.memPercent}%</span>:'—'}</td><td className="p-3">{r.process.ports?.length?<code>{r.process.ports.join(', ')}</code>:'—'}</td><td className="p-3 whitespace-nowrap">{r.workerCount?'—':date(r.process.startedAt)}</td><td className="p-3 whitespace-nowrap" title={r.workerCount?'worker 进程启动时间各异，已合并展示':`采集时：${formatDuration(r.process.elapsedSeconds)}；采集时间：${date(r.asset.inspection!.checkedAt)}`}>{r.workerCount?'—':formatDuration(r.seconds)}</td><td className="p-3 min-w-80 max-w-2xl"><pre className="text-xs whitespace-pre-wrap break-all font-mono">{r.workerCount?`nginx: worker process（共 ${r.workerCount} 个）`:r.process.command}</pre></td><td className="p-3">{r.type==='Nginx'&&<button className="border rounded p-2 whitespace-nowrap" title="查看该服务器的 Nginx 转发与原始配置" onClick={()=>setSelected(selected===r.asset.id?'':r.asset.id)}>Nginx</button>}{checkButton}</td></tr>;
   }
   return <section className="panel p-6 space-y-5">
     <h2 className="text-lg font-semibold">服务器与进程</h2>
@@ -286,10 +330,11 @@ export function ServerInspections() {
       {login==='can_login'?<>
         <div className="flex flex-wrap items-center gap-3">
           <label htmlFor="process-duration">运行时间</label><select id="process-duration" className="border rounded p-2" value={duration} onChange={e=>{setDuration(e.target.value as Duration);reset();}}>{durations.map(([key,label])=><option key={key} value={key}>{label}</option>)}</select>
-          <button className="border rounded p-2 text-sm" onClick={()=>{setQuery('');setDuration('all');reset();}}>清空筛选</button>
+          <label htmlFor="process-env">环境</label><select id="process-env" className="border rounded p-2" value={env} onChange={e=>{setEnv(e.target.value as Env|'all'|'unknown');reset();}}><option value="all">全部环境</option>{envs.map(e=><option key={e} value={e}>{shortLabels[e]}</option>)}<option value="unknown">待识别</option></select>
+          <button className="border rounded p-2 text-sm" onClick={()=>{setQuery('');setDuration('all');setEnv('all');reset();}}>清空筛选</button>
         </div>
         <p className="text-sm text-muted-foreground">运行时间为实际经过时长，非 CPU 时间；按采集时已运行秒数推算至 {date(new Date(now).toISOString())}，每分钟更新。快照不能确认采集后是否退出或重启。1个月按30天、半年180天、一年365天；前四档为累计上限。</p>
-        <p role="status" className="text-sm">匹配 {searched.length} 条进程，涉及 {ipGroups.length} 个 IP。搜索和时长筛选作用于全部进程；点击 IP 行展开该服务器的进程列表，展开后可按进程类别切换并分页浏览。</p>
+        <p role="status" className="text-sm">匹配 {searched.length} 条进程，涉及 {ipGroups.length} 个 IP。搜索、时长与环境筛选作用于全部进程；环境按该 IP 在 DevOps 部署记录中出现的环境匹配。点击 IP 行展开该服务器的进程列表，展开后可按进程类别切换并分页浏览。</p>
         {!!elevationFailed.length&&<details className="text-sm text-amber-700"><summary className="cursor-pointer">{elevationFailed.length} 台可登录服务器提权失败，进程采集不完整</summary>{elevationFailed.map(a=><div key={a.id} className="py-1"><button className="underline" onClick={()=>setSelected(a.id)}>{a.ip}</button></div>)}</details>}
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm"><thead><tr>
@@ -322,14 +367,16 @@ export function ServerInspections() {
               return ps.dir==='asc'?av-bv:bv-av;
             };
             const baseRows=viewType==='全部进程'?nonSystemRows:viewType==='系统进程'?systemRows:nonSystemRows.filter(r=>r.type===viewType);
-            const viewRows=[...baseRows].sort(sortFn);
+            const search=procQuery[asset.id]||'';
+            // 详情框内的搜索按 PID / 进程名 / 监听端口 / 详细命令过滤当前类别下的行。
+            const viewRows=[...baseRows].filter(r=>matchesProcessQuery(r,search)).sort(sortFn);
             const detailPage=paginate(viewRows,requested.page,DETAIL_SIZE);
             const usage=asset.inspection!.serverUsage;
             const ports=listeningPorts(asset);
             return <Fragment key={asset.id}>
               <tr className={'border-t align-top ip-summary-row'+(open?' open':'')} aria-expanded={open} title="点击展开/收起该服务器的进程列表" onClick={()=>toggleAsset(asset.id)}>
                 <td className="p-3 w-8"><ChevronRight size={16} className="chevron"/></td>
-                <td className="p-3"><code>{asset.ip}</code><small className="block text-muted-foreground">{asset.hostname}</small></td>
+                <td className="p-3"><IpMetaCell ip={asset.ip} hostName={asset.hostname}/></td>
                 <td className="p-3 whitespace-nowrap">{ipSpecSummary(asset.ip)||'—'}</td>
                 <td className="p-3 whitespace-nowrap text-right" title="采集时刻的整机 CPU 使用率">{usage?<span className={usage.cpuPercent>=80?'text-red-600 font-medium':usage.cpuPercent>=50?'text-amber-600':''}>{usage.cpuPercent}%</span>:'—'}</td>
                 <td className="p-3 whitespace-nowrap text-right" title={usage?`整机内存 ${usage.memUsedMB>=1024?`${(usage.memUsedMB/1024).toFixed(1)}G`:`${usage.memUsedMB}M`} / ${usage.memTotalMB>=1024?`${(usage.memTotalMB/1024).toFixed(1)}G`:`${usage.memTotalMB}M`}`:'旧快照无整机用量数据'}>{usage?<span className={usage.memPercent>=80?'text-red-600 font-medium':usage.memPercent>=50?'text-amber-600':''}>{usage.memPercent}%</span>:'—'}</td>
@@ -347,6 +394,11 @@ export function ServerInspections() {
                     <button role="tab" aria-selected={viewType==='全部进程'} className={tabClass(viewType==='全部进程')} onClick={()=>setAssetView(asset.id,'全部进程',1)}>全部进程（{nonSystemRows.length}）</button>
                     {categories.map(([t,n])=><button key={t} role="tab" aria-selected={viewType===t} className={tabClass(viewType===t)} onClick={()=>setAssetView(asset.id,t,1)}>{t==='Java Jar'?'普通 Java Jar':t}（{n}）</button>)}
                     {showSystem&&<button role="tab" aria-selected={viewType==='系统进程'} className={tabClass(viewType==='系统进程')} onClick={()=>setAssetView(asset.id,'系统进程',1)} title={`整机 CPU ${serverCPU}% - 非系统进程 ${sumNonSystemCPU.toFixed(1)}% > 5%`}>系统进程（{systemRows.length}）</button>}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Input className="max-w-sm" type="search" aria-label={`${asset.ip} 的进程搜索`} placeholder="搜索进程ID / 进程名 / 监听端口" value={search} onChange={e=>setProcSearch(asset.id,e.target.value)}/>
+                    {search.trim()&&<span className="text-sm text-muted-foreground">匹配 {viewRows.length} 条进程</span>}
+                    {search.trim()&&!viewRows.length&&<span className="text-sm text-muted-foreground">没有匹配“{search.trim()}”的进程，可清空搜索后重试。</span>}
                   </div>
                   <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr>{(['进程ID','进程名','CPU%','内存%','监听端口','进程启动时间（北京时间）','运行时间（推算至当前）','详细命令','服务器详情'] as const).map(h=>{
                     const sortable=h==='CPU%'||h==='内存%';

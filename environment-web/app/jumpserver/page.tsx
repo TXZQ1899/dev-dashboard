@@ -2,6 +2,8 @@
 import { useRef, useState, useEffect } from 'react';
 import { ChevronRight, Search, Download, ListChecks } from 'lucide-react';
 import { ServerInspections } from '@/components/server-inspections';
+import { ApplicationCheckLink } from '@/components/application-check-link';
+import { IpMetaCell } from '@/components/ip-meta-cell';
 import { Shell } from '@/app/page';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -26,6 +28,7 @@ import {
   serverGroups,
 } from '@/lib/jumpserver';
 import { apps } from '@/lib/inventory';
+import { formatBeijingTime } from '@/lib/datetime';
 import { parseIpList } from '@/lib/process-comparison';
 import { type Asset } from '@/lib/server-processes';
 import {
@@ -357,7 +360,7 @@ function IpManagedQueryPanel() {
             <Table className="ip-set-table">
               <TableHeader>
                 <TableRow>
-                  <TableHead>IP</TableHead>
+                  <TableHead>IP / 名称 / 环境 / 归属</TableHead>
                   <TableHead>是否纳管</TableHead>
                   <TableHead>服务器规格</TableHead>
                   <TableHead>应用类型</TableHead>
@@ -370,6 +373,7 @@ function IpManagedQueryPanel() {
                   <TableHead>DevOps 应用ID</TableHead>
                   <TableHead>DevOps 应用名称</TableHead>
                   <TableHead>最新 Push In 时间</TableHead>
+                  <TableHead>应用核验</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -379,7 +383,12 @@ function IpManagedQueryPanel() {
                     className={row.source === 'unmanaged' ? 'ip-miss-row' : ''}
                   >
                     <TableCell>
-                      <code>{row.ip}</code>
+                      <IpMetaCell
+                        ip={row.ip}
+                        hostName={row.hostName}
+                        envList={row.appEnvs ?? []}
+                        envEmpty="blank"
+                      />
                     </TableCell>
                     <TableCell>{row.managed}</TableCell>
                     <TableCell className="whitespace-nowrap">{row.spec}</TableCell>
@@ -410,6 +419,12 @@ function IpManagedQueryPanel() {
                     <TableCell className="whitespace-nowrap">
                       {row.pushIn}
                     </TableCell>
+                    <TableCell>
+                      {row.source === 'process' && row.pid && ['Tomcat', 'Java'].includes(row.appType) && (() => {
+                        const assets = (jumpserver.assets as Asset[]).filter((a) => parseIpList(a.ip).includes(row.ip));
+                        return <ApplicationCheckLink asset={assets[0]?.id || ''} pid={row.pid!} disabled={assets.length !== 1 || !!collect?.running} />;
+                      })()}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -418,7 +433,7 @@ function IpManagedQueryPanel() {
             <Table className="ip-set-table">
               <TableHeader>
                 <TableRow>
-                  <TableHead>IP</TableHead>
+                  <TableHead>IP / 名称 / 环境 / 归属</TableHead>
                   <TableHead>是否纳管</TableHead>
                   <TableHead>服务器规格</TableHead>
                   <TableHead className="text-right">CPU%</TableHead>
@@ -434,7 +449,11 @@ function IpManagedQueryPanel() {
                     className={row.managed === '未纳管' ? 'ip-miss-row' : ''}
                   >
                     <TableCell>
-                      <code>{row.ip}</code>
+                      <IpMetaCell
+                        ip={row.ip}
+                        hostName={row.hostName}
+                        envList={row.deployEnvs}
+                      />
                     </TableCell>
                     <TableCell>{row.managed}</TableCell>
                     <TableCell className="whitespace-nowrap">{row.spec}</TableCell>
@@ -501,6 +520,7 @@ function IpManagedQueryPanel() {
               </TableBody>
             </Table>
           )}
+
         </div>
       )}
     </section>
@@ -565,11 +585,7 @@ export default function JumpServerPage() {
               {topGroups.length} 个一级分组
             </p>
             <p className="mt-3 text-sm text-muted-foreground">
-              采集时间：
-              {new Date(jumpserver.collectedAt).toLocaleString('zh-CN', {
-                timeZone: 'Asia/Shanghai',
-                hour12: false,
-              })}
+              采集时间：{formatBeijingTime(jumpserver.collectedAt)}
             </p>
           </div>
           <div

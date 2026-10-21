@@ -4,6 +4,7 @@ import { Shell } from '@/app/page';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { AlertTriangle, Network, Route, Search } from 'lucide-react';
+import { formatBeijingTime } from '@/lib/datetime';
 
 type Kind = 'domain' | 'application' | 'host';
 type Mode = 'chain' | 'paths' | 'request' | 'nginx';
@@ -511,11 +512,7 @@ export default function TopologyPathPage() {
                   : ' 未匹配到节点'}
               </p>
               <p className="settings-hint">
-                Topology 版本：{data.topology.id} · 生成时间：
-                {new Date(data.topology.generatedAt).toLocaleString('zh-CN', {
-                  timeZone: 'Asia/Shanghai',
-                  hour12: false,
-                })}
+                Topology 版本：{data.topology.id} · 生成时间：{formatBeijingTime(data.topology.generatedAt)}
               </p>
 
               {result.gaps.length > 0 && (
@@ -616,8 +613,7 @@ function NginxLocationView({ result, topology }: { result: NginxLocationPayload[
           <span className="subtle-tag">{result.status === 'found' ? '已命中' : '未命中'}</span>
         </div>
         <p className="settings-version">
-          Topology 版本：{topology.id} · 生成时间：
-          {new Date(topology.generatedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}
+          Topology 版本：{topology.id} · 生成时间：{formatBeijingTime(topology.generatedAt)}
         </p>
         {result.warnings.length > 0 && (
           <div className="rounded-lg border p-3">
@@ -781,8 +777,7 @@ function RequestView({ request, topology }: { request: RequestPayload['result'];
           <span className="subtle-tag">{statusLabel}</span>
         </div>
         <p className="settings-hint">
-          Topology 版本：{topology.id} · 生成时间：
-          {new Date(topology.generatedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}
+          Topology 版本：{topology.id} · 生成时间：{formatBeijingTime(topology.generatedAt)}
         </p>
         {stopNode && (
           <p className="settings-hint">
@@ -952,11 +947,7 @@ function ChainView({ chain, topology }: { chain: DomainChain; topology: ChainPay
           {s.ambiguousBackendCount} / 未匹配 {s.unresolvedBackendCount}
         </p>
         <p className="settings-hint">
-          Topology 版本：{topology.id} · 生成时间：
-          {new Date(topology.generatedAt).toLocaleString('zh-CN', {
-            timeZone: 'Asia/Shanghai',
-            hour12: false,
-          })}
+          Topology 版本：{topology.id} · 生成时间：{formatBeijingTime(topology.generatedAt)}
         </p>
         {!chain.connected && (
           <p role="alert" className="settings-error">

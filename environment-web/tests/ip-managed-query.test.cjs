@@ -24,6 +24,11 @@ const serverProcesses = evaluateTs(
   path.join(__dirname, '../lib/server-processes.ts'),
 );
 
+// 真实的 datacenter-networks（无外部依赖），保证归属判定与生产一致。
+const datacenterNetworks = evaluateTs(
+  path.join(__dirname, '../lib/datacenter-networks.ts'),
+);
+
 function formatBeijingTime(value) {
   if (!value) return '';
   const ts0 = Date.parse(
@@ -43,8 +48,13 @@ function loadModule(jumpserverStub) {
     (id) => {
       if (id === '@/lib/jumpserver') return jumpserverStub || { jumpserver: { assets: [] } };
       if (id === '@/lib/server-processes') return serverProcesses;
+      if (id === '@/lib/datacenter-networks') return datacenterNetworks;
       if (id === '@/lib/inventory')
-        return { envs: ['TEST', 'SIMULATION', 'PRODUCT'], latestSuccessfulPushIn: () => '' };
+        return {
+          envs: ['TEST', 'SIMULATION', 'PRODUCT'],
+          shortLabels: { TEST: '测试', SIMULATION: '仿真', PRODUCT: '生产' },
+          latestSuccessfulPushIn: () => '',
+        };
       if (id === '@/lib/process-comparison')
         return {
           ipServerState: () => 'can_login',
@@ -53,6 +63,11 @@ function loadModule(jumpserverStub) {
           webappsForIp: () => [],
           matchAppToProcess: () => undefined,
           matchAppToWebapp: () => undefined,
+          ipDeployEnvironments: () => [],
+          appDeployEnvironments: (app, ip) =>
+            ['TEST', 'SIMULATION', 'PRODUCT'].filter((e) =>
+              (app.envs[e] || []).some((r) => (r.ip || '').trim() === ip),
+            ),
           formatBeijingTime,
         };
       throw new Error(id);
@@ -81,11 +96,12 @@ function proc(partial) {
 // 注入式依赖：匹配规则刻意简单（命令行包含应用名 / 目录名等于应用名），
 // 让测试聚焦于行构建、中间件裁剪与时间合并逻辑。
 function deps(
-  { states = {}, specsByIp = {}, procsByIp = {}, webappsByIp = {}, pushByApp = {} } = {},
+  { states = {}, specsByIp = {}, hostNamesByIp = {}, procsByIp = {}, webappsByIp = {}, pushByApp = {} } = {},
 ) {
   return {
     state: (ip) => states[ip] || 'can_login',
     spec: (ip) => specsByIp[ip] || '',
+    hostName: (ip) => hostNamesByIp[ip] || ip,
     processes: (ip) => procsByIp[ip] || [],
     webapps: (ip) => webappsByIp[ip] || [],
     matchProcess: (app, ps) => ps.find((p) => p.command.includes(app.name)),
@@ -439,6 +455,46 @@ test('服务器规格在同一 IP 的所有行上一致，无规格数据回退 
   assert.equal(unmanagedRow.spec, DASH);
 });
 
+test('每行携带服务器名称、DevOps 环境与资源归属，名称缺省回退 IP', () => {
+  const localIp = '10.58.9.217';
+  const cloudIp = '10.179.1.224';
+  const deployedApp = app({
+    envs: {
+      TEST: [{ ip: localIp }],
+      SIMULATION: [],
+      PRODUCT: [{ ip: localIp }],
+    },
+  });
+  const rows = lib.buildIpManagedRows(
+    [localIp, cloudIp],
+    [deployedApp],
+    undefined,
+    deps({
+      states: { [cloudIp]: 'not_collected' },
+      hostNamesByIp: { [localIp]: 'pay-host-01' },
+      procsByIp: {
+        [localIp]: [proc({ name: 'java', command: 'java -jar user-center.jar' })],
+      },
+    }),
+  );
+  assert.equal(rows[0].hostName, 'pay-host-01');
+  assert.deepEqual(rows[0].deployEnvs, ['TEST', 'PRODUCT']);
+  // 映射到 DevOps 应用的进程：appEnvs 为该应用在此 IP 的环境。
+  assert.deepEqual(rows[0].appEnvs, ['TEST', 'PRODUCT']);
+  assert.equal(rows[0].owner, '本地机房');
+  // 未纳管 IP：名称回退 IP、无环境、非本地网段归属阿里云ECS。
+  assert.equal(rows[1].hostName, cloudIp);
+  assert.deepEqual(rows[1].deployEnvs, []);
+  assert.equal(rows[1].owner, '阿里云ECS');
+});
+
+test('formatDeployEnvs 用顿号连接短环境名，无环境为 -', () => {
+  assert.equal(lib.formatDeployEnvs(['TEST', 'PRODUCT']), '测试、生产');
+  assert.equal(lib.formatDeployEnvs(['SIMULATION']), '仿真');
+  assert.equal(lib.formatDeployEnvs([]), '-');
+  assert.equal(lib.formatDeployEnvs(undefined), '-');
+});
+
 test('latestFormattedTime 按北京时间格式化并取最新候选', () => {
   assert.equal(
     lib.latestFormattedTime(['2026-09-30T03:24:05+00:00', '2026-09-29 10:00:00']),
@@ -494,11 +550,11 @@ test('CSV 表头含内存两列，非进程行内存为 -', () => {
   const csv = lib.managedRowsCsv(rows).split('\r\n');
   assert.equal(
     csv[0],
-    'IP,是否纳管,服务器规格,应用类型,进程ID,进程/应用详细,进程命令,监听端口,内存占用率,实际内存,DevOps应用ID,DevOps应用名称,最新Push In时间',
+    'IP,服务器名称,环境,资源归属,是否纳管,服务器规格,应用类型,进程ID,进程/应用详细,进程命令,监听端口,内存占用率,实际内存,DevOps应用ID,DevOps应用名称,最新Push In时间',
   );
   assert.equal(
     csv[1],
-    '10.58.0.10,已纳管,-,Nginx,-,"/etc/nginx/conf.d/a,b.conf",-,-,-,-,-,-,-',
+    '10.58.0.10,10.58.0.10,,阿里云ECS,已纳管,-,Nginx,-,"/etc/nginx/conf.d/a,b.conf",-,-,-,-,-,-,-',
   );
 });
 
@@ -523,7 +579,7 @@ test('CSV 进程行输出内存占用率与实际内存', () => {
   const csv = lib.managedRowsCsv(rows).split('\r\n');
   assert.equal(
     csv[1],
-    '10.58.0.10,已纳管,4C 64G,Java,384,user-center-exec.jar,java -jar /opt/user-center-exec.jar --server.port=7084,7084,12.3%,1.00 GB,-,-,-',
+    '10.58.0.10,10.58.0.10,,阿里云ECS,已纳管,4C 64G,Java,384,user-center-exec.jar,java -jar /opt/user-center-exec.jar --server.port=7084,7084,12.3%,1.00 GB,-,-,-',
   );
 });
 
@@ -549,9 +605,43 @@ test('进程行携带监听端口，非进程行与旧快照展示 -', () => {
   const csv = lib.managedRowsCsv(rows).split('\r\n');
   assert.equal(
     csv[1],
-    '10.58.0.10,已纳管,-,Java,384,a.jar,java -jar /opt/a.jar,"8080, 7084",-,-,-,-,-',
+    '10.58.0.10,10.58.0.10,,阿里云ECS,已纳管,-,Java,384,a.jar,java -jar /opt/a.jar,"8080, 7084",-,-,-,-,-',
   );
-  assert.equal(csv[2], '10.58.0.10,已纳管,-,Redis,385,redis-server (PID 385),redis-server,-,-,-,-,-,-');
+  assert.equal(csv[2], '10.58.0.10,10.58.0.10,,阿里云ECS,已纳管,-,Redis,385,redis-server (PID 385),redis-server,-,-,-,-,-,-');
+});
+
+test('进程环境取自其映射的 DevOps 应用，未映射进程环境为空', () => {
+  const mappedApp = app({
+    id: '1656',
+    name: 'phoenix-mappingtool',
+    envs: { TEST: [{ ip: '10.179.1.224' }], SIMULATION: [], PRODUCT: [] },
+  });
+  const redis = proc({ pid: 1, name: 'redis-server', command: 'redis-server' });
+  const java = proc({
+    pid: 2,
+    name: 'java',
+    command: 'java -jar phoenix-mappingtool.jar --server.port=37863',
+  });
+  const rows = lib.buildIpManagedRows(
+    ['10.179.1.224'],
+    [mappedApp],
+    undefined,
+    deps({ procsByIp: { '10.179.1.224': [redis, java] } }),
+  );
+  // PID 升序：redis(1) 在前、java(2) 在后。
+  assert.equal(rows[0].appId, DASH);
+  assert.equal(rows[0].appEnvs, undefined);
+  assert.equal(rows[1].appId, '1656');
+  assert.deepEqual(rows[1].appEnvs, ['TEST']);
+  const csv = lib.managedRowsCsv(rows).split('\r\n');
+  assert.equal(
+    csv[1],
+    '10.179.1.224,10.179.1.224,,阿里云ECS,已纳管,-,Redis,1,redis-server (PID 1),redis-server,-,-,-,-,-,-',
+  );
+  assert.equal(
+    csv[2],
+    '10.179.1.224,10.179.1.224,测试,阿里云ECS,已纳管,-,Java,2,phoenix-mappingtool.jar,java -jar phoenix-mappingtool.jar --server.port=37863,-,-,-,1656,phoenix-mappingtool,-',
+  );
 });
 
 test('nginxConfigRequest 仅对可登录且已采集配置的资产返回版本参数', () => {
@@ -597,6 +687,8 @@ test('nginxConfigRequest 仅对可登录且已采集配置的资产返回版本�
 function summaryDeps({
   states = {},
   specsByIp = {},
+  hostNamesByIp = {},
+  envsByIp = {},
   procsByIp = {},
   usageByIp = {},
   appPortsByIp = {},
@@ -604,6 +696,8 @@ function summaryDeps({
   return {
     state: (ip) => states[ip] || 'can_login',
     spec: (ip) => specsByIp[ip] || '',
+    hostName: (ip) => hostNamesByIp[ip] || ip,
+    deployEnvs: (ip) => envsByIp[ip] || [],
     processes: (ip) => procsByIp[ip] || [],
     serverUsage: (ip) => usageByIp[ip],
     appPorts: (ip) => appPortsByIp[ip],
@@ -683,6 +777,24 @@ test('汇总-可登录IP显示CPU内存端口数与进程分类', () => {
   assert.equal(types['Java Jar'], 2);
   assert.equal(types['Nginx'], 1);
   assert.equal(types['Tomcat'], undefined);
+});
+
+test('汇总-每行携带名称、环境与资源归属，名称缺省回退 IP', () => {
+  const rows = lib.buildIpSummaryRows(
+    ['10.58.10.5', '10.58.0.99'],
+    summaryDeps({
+      states: { '10.58.0.99': 'not_collected' },
+      hostNamesByIp: { '10.58.10.5': 'dc-core-05' },
+      envsByIp: { '10.58.10.5': ['TEST', 'SIMULATION', 'PRODUCT'] },
+    }),
+  );
+  assert.equal(rows[0].hostName, 'dc-core-05');
+  assert.deepEqual(rows[0].deployEnvs, ['TEST', 'SIMULATION', 'PRODUCT']);
+  assert.equal(rows[0].owner, '本地机房');
+  // 未纳管行同样携带名称（回退 IP）与归属。
+  assert.equal(rows[1].hostName, '10.58.0.99');
+  assert.deepEqual(rows[1].deployEnvs, []);
+  assert.equal(rows[1].owner, '阿里云ECS');
 });
 
 test('汇总-旧快照无appPorts时回退进程端口并集', () => {
@@ -772,9 +884,9 @@ test('汇总-CSV输出包含所有列且格式正确', () => {
     }),
   );
   const csv = lib.summaryRowsCsv(rows).split('\r\n');
-  assert.equal(csv[0], 'IP,是否纳管,服务器规格,CPU%,内存%,监听端口数,进程分类');
-  assert.equal(csv[1], '10.58.0.10,已纳管,8C 16G,55%,70%,3,"Java Jar 1, Nginx 1"');
-  assert.equal(csv[2], '10.58.0.99,未纳管,-,-,-,-,-');
+  assert.equal(csv[0], 'IP,服务器名称,环境,资源归属,是否纳管,服务器规格,CPU%,内存%,监听端口数,进程分类');
+  assert.equal(csv[1], '10.58.0.10,10.58.0.10,-,阿里云ECS,已纳管,8C 16G,55%,70%,3,"Java Jar 1, Nginx 1"');
+  assert.equal(csv[2], '10.58.0.99,10.58.0.99,-,阿里云ECS,未纳管,-,-,-,-,-');
 });
 
 test('汇总-formatUsagePercent与formatCategories工具函数', () => {

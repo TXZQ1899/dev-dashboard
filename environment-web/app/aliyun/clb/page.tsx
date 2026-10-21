@@ -10,6 +10,7 @@ import './clb.css';
 import { dns, integrateDns, type DnsView } from '@/lib/dns';
 import { eip, integrateEip, type Eip, type EipView } from '@/lib/eip';
 import { nat, portLabel, type DnatEntry, type NatGateway } from '@/lib/nat';
+import { formatBeijingTime } from '@/lib/datetime';
 
 const dnsIntegration = integrateDns(clb.instances, dns.records, eip.records, nat);
 const eipIntegration = integrateEip(clb.instances, dnsIntegration, eip.records, ecsInstances, nat);
@@ -34,14 +35,14 @@ function EipBackends({ record }: { record: Eip }) {
   const row = eipIntegration.find(row => row.record.key === record.key);
   if (!row) return null;
   if (record.bindingType === 'ECS实例') return <section><strong>绑定 ECS 的实例 IP</strong>
-    <small>按绑定实例 ID 精确匹配 · ECS 快照：{ecsFetchedAt || '未提供'}</small>
+    <small>按绑定实例 ID 精确匹配 · ECS 快照：{formatBeijingTime(ecsFetchedAt, '未提供')}</small>
     {row.ecsMatches.length ? row.ecsMatches.map(instance => <div key={instance.id}><p><a href={`/aliyun/instances?q=${encodeURIComponent(instance.id)}`}>{instance.name} · {instance.id}</a></p><p>内网 IP：{instance.privateIps.join('、') || '未提供'}；公网 IP：{instance.publicIps.join('、') || '未提供'}</p><small>ECS 绑定记录未提供端口转换规则。</small></div>) : <p className="clb-note">当前 ECS 快照中未找到绑定实例 ID：{record.bindingId}。</p>}
   </section>;
   if (record.bindingType !== 'NAT网关') return null;
   return <section><strong>DNAT 后端 IP / 端口映射（{row.mappings.length} 条）</strong>
     {!nat.available ? <p className="clb-note">该版本尚未采集 NAT。<a href="/settings">打开 Settings 同步 NAT</a></p>
       : !row.natGateway ? <p className="clb-note">当前 NAT 快照未包含网关 {record.bindingId}，无法判断其 DNAT 映射。</p>
-      : <><small>NAT 快照：{nat.collectedAt} · <a href={viewLink('nat', record.bindingId)}>{row.natGateway.name || record.bindingId}</a></small>{row.mappings.length ? row.mappings.map(({ entry }) => <DnatMapping key={entry.id} entry={entry} />) : <p className="clb-note">已采集该网关，但此 EIP 没有 DNAT 条目；SNAT 出站地址可能没有入站映射。</p>}</>}
+      : <><small>NAT 快照：{formatBeijingTime(nat.collectedAt, '未采集')} · <a href={viewLink('nat', record.bindingId)}>{row.natGateway.name || record.bindingId}</a></small>{row.mappings.length ? row.mappings.map(({ entry }) => <DnatMapping key={entry.id} entry={entry} />) : <p className="clb-note">已采集该网关，但此 EIP 没有 DNAT 条目；SNAT 出站地址可能没有入站映射。</p>}</>}
   </section>;
 }
 function InstanceEips({ instance }: { instance: Clb }) {
@@ -162,7 +163,7 @@ function filterNat(query: string) {
 function NatView({ rows, query, expanded, onQuery, onExpand, onCollapse, toggle }: { rows: NatGateway[]; query: string; expanded: Record<string, boolean>; onQuery: (value: string) => void; onExpand: () => void; onCollapse: () => void; toggle: (key: string, open: boolean) => void }) {
   const entries = rows.flatMap(gateway => gateway.entries);
   return <>
-    <p className="clb-note">上海区域当前账号可见的 NAT 网关与 DNAT 配置 · 采集时间：{nat.collectedAt || '未采集'}。按网关 ID 和公网 IP 精确关联静态 EIP；保留协议、端口范围、全部端口和规则状态。映射表示采集到的配置，不代表实际连通性。</p>
+    <p className="clb-note">上海区域当前账号可见的 NAT 网关与 DNAT 配置 · 采集时间：{formatBeijingTime(nat.collectedAt, '未采集')}。按网关 ID 和公网 IP 精确关联静态 EIP；保留协议、端口范围、全部端口和规则状态。映射表示采集到的配置，不代表实际连通性。</p>
     {!nat.available && <section className="panel clb-empty"><h2>该版本尚未采集 NAT</h2><p>在 Settings 使用统一阿里云 Cookie 单独同步 NAT，或执行全量同步。</p><a href="/settings">打开 Settings</a></section>}
     <div className="clb-stats">{[['筛选 NAT 网关', rows.length], ['DNAT 规则', entries.length], ['公网入口 IP', new Set(entries.map(entry => entry.externalIp)).size], ['后端 IP', new Set(entries.map(entry => entry.internalIp)).size], ['可用规则', entries.filter(entry => entry.status.toLowerCase() === 'available').length], ['其他状态规则', entries.filter(entry => entry.status.toLowerCase() !== 'available').length]].map(([label, count]) => <section className="panel" key={label}><small>{label}</small><strong>{count}</strong></section>)}</div>
     <Toolbar label="搜索 NAT 映射" placeholder="搜索网关、EIP、后端 IP、端口、协议、实例或域名" query={query} onQuery={onQuery} onExpand={onExpand} onCollapse={onCollapse} />

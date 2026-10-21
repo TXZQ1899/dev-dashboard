@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from copy import deepcopy
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -19,17 +20,23 @@ DATA = Path(os.environ.get('ENVSCOPE_DATA', '/data'))
 APP = Path(os.environ.get('ENVSCOPE_APP', '/app'))
 ALLOWED_HOSTS = tuple(h for h in os.environ.get('ENVSCOPE_ALLOWED_HOSTS', '').replace(' ', '').split(',') if h)
 FILES = ('snapshot.json', 'repositories.json', 'jumpserver-snapshot.json', 'ecs-snapshot.json')
-OPTIONAL_FILES = ('clb-snapshot.json', 'nat-snapshot.json', 'server-specs.json')
+OPTIONAL_FILES = ('clb-snapshot.json', 'nat-snapshot.json', 'server-specs.json', 'dms-snapshot.json')
 EMPTY_CLB = {'collectedAt': None, 'instances': [], 'available': False}
 EMPTY_NAT = {'collectedAt': None, 'gateways': [], 'available': False, 'region': 'cn-shanghai'}
 EMPTY_SPECS = {'collectedAt': None, 'specs': [], 'available': False}
-OPTIONAL_DEFAULTS = {'clb-snapshot.json': EMPTY_CLB, 'nat-snapshot.json': EMPTY_NAT, 'server-specs.json': EMPTY_SPECS}
+EMPTY_DMS = {'collectedAt': None, 'instances': [], 'available': False}
+OPTIONAL_DEFAULTS = {'clb-snapshot.json': EMPTY_CLB, 'nat-snapshot.json': EMPTY_NAT,
+                     'server-specs.json': EMPTY_SPECS, 'dms-snapshot.json': EMPTY_DMS}
 TOPOLOGY_DYNAMIC_FILES = FILES + OPTIONAL_FILES
 TOPOLOGY_STATIC_FILES = ('dns-snapshot.json', 'eip-snapshot.json')
 PATH_KINDS = ('domain', 'application', 'host')
 PATH_NODE_TYPES = ('DOMAIN','EIP','NAT_GATEWAY','DNAT_RULE','CLB','CLB_LISTENER','SERVER_GROUP','HOST','ENDPOINT','NGINX_ROUTE','UPSTREAM','APPLICATION','DEPLOYMENT','REPOSITORY')
 PATH_ENVIRONMENTS = ('PRODUCT','TEST','SIMULATION','GLOBAL','UNKNOWN')
 REQUEST_ENVIRONMENTS = ('PRODUCT','TEST','SIMULATION')
+# Single-source sync kinds that may run concurrently with a primary job, mapped
+# to the display names used by collect.py's parallel_collect() source states.
+SOURCE_LABELS = {'ecs':'ECS','clb':'CLB','nat':'NAT','dms':'DMS','jumpserver':'JumpServer',
+                 'codeup':'Codeup','local_gitlab':'Local GitLab','devops':'DevOps'}
 TZ = ZoneInfo('Asia/Shanghai')
 
 
@@ -93,8 +100,14 @@ def validate(folder):
                 raise ValueError('DNAT 清单缺失或 ID 重复')
             if any(not all(str(e.get(k, '')).strip() for k in ('id','tableId','externalIp','externalPort','internalIp','internalPort','protocol','status')) for e in entries):
                 raise ValueError('DNAT 条目字段不完整')
+    dms = read(folder/'dms-snapshot.json', EMPTY_DMS)
+    if dms.get('available'):
+        rows = dms['instances']
+        if len({(r.get('实例ID'), r.get('实例地址')) for r in rows}) != len(rows):
+            raise ValueError('DMS 实例存在重复的记录')
     return {'applications': len(inventory['apps']), 'repositories': len(repos['repos']), 'servers': len(ids),
             'ecs': len(data[FILES[3]].get('instances', [])), 'clb': len(clb['instances']) if clb.get('available') else None,
+            'dms': len(dms['instances']) if dms.get('available') else None,
             'nat': len(nat['gateways']) if nat.get('available') else None,
             'dnat': sum(len(g['entries']) for g in nat['gateways']) if nat.get('available') else None}
 
@@ -106,8 +119,31 @@ class Service:
         (DATA / 'versions').mkdir(exist_ok=True)
         if (DATA/'secrets/cookies.json').exists(): write(DATA/'secrets/cookies.json', credentials())
         self.lock = threading.RLock()
+        # Serialises the whole build/launch/swap in activate() so a concurrent
+        # single-source retry cannot race the primary job for ports 3101/3102.
+        self.activate_lock = threading.Lock()
         self.backend = None
         self.retired = None
+        self.check_cancel = threading.Event()
+        self.files_lock = threading.Lock()
+        self.archive_cancel = threading.Event()
+        self.archive_job = None
+        for archived in (DATA/'checks').glob('*/archive.json'):
+            job = read(archived, {})
+            if job.get('status') == 'running':
+                job.update(status='failed', phase='容器重启，日志下载已中断')
+                write(archived, job)
+            partial = archived.with_name('logs.part')
+            partial.unlink(missing_ok=True)
+        self.check_job = read(DATA/'checks/latest.json')
+        if self.check_job and self.check_job.get('status') == 'running':
+            self.update_application_check_progress(self.check_job['id'], '容器重启，核验任务已中断', stage='failed')
+            for activity in self.check_job.get('activities', []):
+                if activity['stage'] not in ('complete', 'partial', 'failed', 'cancelled'):
+                    activity.update(stage='failed', phase='容器重启，采集已中断', updatedAt=now())
+            self.check_job.update(status='failed', phase='容器重启，核验任务已中断', finishedAt=now())
+            write(DATA/'checks/latest.json', self.check_job)
+            write(DATA/'checks'/self.check_job['id']/'job.json', self.check_job)
         self.job = read(DATA / 'job.json')
         if self.job and self.job.get('status') == 'running':
             self.job.update(status='failed', phase='容器重启，任务已中断；当前版本保持不变', finishedAt=now())
@@ -117,6 +153,20 @@ class Service:
             if report and report.get('status') == 'collecting':
                 report.update(status='failed', error='容器重启，采集未完成')
                 write(folder / 'version.json', report)
+        # Concurrent single-source retries run alongside the primary job and are
+        # persisted separately so the primary job.json stays untouched.
+        self.extra_jobs = read(DATA / 'extra-jobs.json', [])
+        if self.extra_jobs:
+            restored = False
+            for job in self.extra_jobs:
+                if job.get('status') != 'running': continue
+                job.update(status='failed', phase='容器重启，任务已中断；当前版本保持不变', finishedAt=now())
+                report = read(DATA / 'versions' / job['id'] / 'version.json')
+                if report and report.get('status') == 'collecting':
+                    report.update(status='failed', error='容器重启，采集未完成')
+                    write(DATA / 'versions' / job['id'] / 'version.json', report)
+                restored = True
+            if restored: write(DATA / 'extra-jobs.json', self.extra_jobs)
         digest = hashlib.sha256(b''.join((APP/'lib'/f).read_bytes() for f in FILES)).hexdigest()[:16]
         seed = 'initial-' + digest
         if not (DATA/'versions'/seed).exists():
@@ -137,6 +187,242 @@ class Service:
         if not report or report['status'] != 'ready': raise ValueError('只能切换到完整版本')
         validate(folder)
         return folder
+
+    def application_check_state(self, identifier=None):
+        with self.lock:
+            if identifier is None:
+                job = self.check_job
+            else:
+                if not isinstance(identifier, str) or not re.fullmatch(r'[A-Za-z0-9-]{1,80}', identifier):
+                    raise ValueError('无效核验任务 ID')
+                job = read(DATA/'checks'/identifier/'job.json')
+                if not job: raise ValueError('核验任务不存在')
+            result = read(DATA/'checks'/job['id']/'report.json') if job else None
+            return {'job':deepcopy(job), 'report':result}
+
+    def start_application_check(self, payload):
+        with self.lock:
+            if self.archive_job and self.archive_job.get('status') == 'running':
+                raise ValueError('请等待日志下载完成后再开始检测')
+            if self.check_job and self.check_job.get('status') == 'running':
+                raise ValueError('已有应用核验任务正在运行')
+            if self.job and self.job.get('status') == 'running' or any(j.get('status') == 'running' for j in self.extra_jobs):
+                raise ValueError('请等待当前采集或版本切换完成后再核验')
+            saved = credentials()
+            if not saved.get('jumpserver', {}).get('value'):
+                raise ValueError('请先保存 JumpServer Cookie')
+            pid, duration, environment = payload.get('pid'), payload.get('duration', 30), payload.get('environment')
+            if type(pid) is not int or not 0 < pid <= 2**31-1: raise ValueError('无效进程 ID')
+            if type(duration) is not int or not 10 <= duration <= 300: raise ValueError('观察时间必须为 10–300 秒')
+            if environment is not None and environment not in REQUEST_ENVIRONMENTS: raise ValueError('无效部署环境')
+            source = read(DATA/'current.json')['id']
+            folder = self.version(source)
+            snapshot = read(folder/'jumpserver-snapshot.json', {})
+            matches = [a for a in snapshot.get('assets', []) if a.get('id') == payload.get('asset')]
+            if len(matches) != 1: raise ValueError('当前版本中不存在唯一的目标资产')
+            asset = matches[0]
+            processes = [p for p in (asset.get('inspection') or {}).get('processes', []) if p.get('pid') == pid]
+            if len(processes) != 1: raise ValueError('所选进程不在当前快照中，请重新采集')
+            identifier = datetime.now(TZ).strftime('%Y%m%d-%H%M%S-%f')
+            self.check_cancel = threading.Event()
+            self.check_job = {'id':identifier, 'status':'running', 'phase':'正在通过 JumpServer 登录目标服务器',
+                'startedAt':now(), 'sourceVersion':source, 'assetId':asset['id'], 'pid':pid,
+                'environment':environment, 'duration':duration, 'progress':{}, 'activities':[], 'events':[]}
+            self.update_application_check_progress(identifier, self.check_job['phase'],
+                stage='login', serverIp=asset.get('ip'))
+            threading.Thread(target=self.work_application_check,
+                args=(identifier, asset, processes[0], snapshot, read(folder/'snapshot.json', {}), saved,
+                      read(DATA/'secrets/ip-password-map.json', {}), environment, duration, self.check_cancel),
+                daemon=True, name='application-check').start()
+            return self.application_check_state(identifier)
+
+    def update_application_check_progress(self, identifier, phase, *, scope='target', assetId=None,
+                                          serverIp=None, stage=None, **stats):
+        """Persist bounded, locally authored activity; never capture terminal output."""
+        with self.lock:
+            job = self.check_job
+            if not job or job['id'] != identifier or job['status'] != 'running':
+                return
+            stamp = now()
+            key = 'target' if scope == 'target' else 'peer:'+assetId
+            activities = job.setdefault('activities', [])
+            current = next((item for item in activities if item['key'] == key), None)
+            if current is None:
+                current = {'key':key, 'scope':scope, 'serverIp':serverIp}
+                activities.append(current)
+            current.update(phase=phase, stage=stage, updatedAt=stamp)
+            if 'samples' in stats: current['samples'] = stats['samples']
+            if scope == 'target':
+                job['phase'] = phase
+                job.setdefault('progress', {}).update({k:v for k,v in stats.items() if k in (
+                    'samples', 'elapsedSeconds', 'samplingStartedAt', 'samplingFinishedAt',
+                    'lastObservedAt', 'upstream', 'downstream')})
+                if 'environment' in stats: job['environment'] = stats['environment']
+            job['updatedAt'] = stamp
+            events = job.setdefault('events', [])
+            if not events or (events[-1]['key'], events[-1]['message']) != (key, phase):
+                events.append({'at':stamp, 'key':key, 'scope':scope, 'serverIp':serverIp, 'message':phase})
+                del events[:-60]
+            write(DATA/'checks/latest.json', job)
+            write(DATA/'checks'/identifier/'job.json', job)
+
+    def work_application_check(self, identifier, asset, process, snapshot, inventory, saved, ip_map, environment, duration, cancel):
+        def progress(phase, **details):
+            if cancel.is_set() and details.get('scope', 'target') == 'target':
+                return
+            self.update_application_check_progress(identifier, phase, **details)
+        try:
+            from application_check import inspect_application
+            report = inspect_application(asset, process, inventory.get('apps', []), snapshot.get('assets', []),
+                saved, ip_map, environment, duration, cancel=cancel, progress=progress)
+            report.update(taskId=identifier, sourceVersion=self.check_job['sourceVersion'])
+            write(DATA/'checks'/identifier/'report.json', report)
+            status = report['status']
+            phase = {'complete':'核验完成', 'partial':'核验完成，部分信息未能确认',
+                     'failed':'核验失败，请查看结果中的原因', 'cancelled':'核验已取消，已保留观察证据'}[status]
+        except Exception as exc:
+            status, phase = 'failed', '应用核验执行异常，请查看报告中的错误代码'
+            error = {'stage':'worker', 'code':'CHECK_INTERNAL_ERROR', 'exitCode':None,
+                     'message':'内部核验异常：'+type(exc).__name__, 'diagnostics':[]}
+            write(DATA/'checks'/identifier/'report.json', {
+                'schemaVersion':1, 'taskId':identifier, 'sourceVersion':self.check_job['sourceVersion'],
+                'status':'failed', 'startedAt':self.check_job['startedAt'], 'finishedAt':now(),
+                'environment':environment, 'target':{'assetId':asset['id'],'serverIp':asset.get('ip'),'pid':process['pid']},
+                'upstream':[], 'downstream':[], 'warnings':[error['message']], 'error':error,
+                'coverage':{'method':'ss-polling','requestedSeconds':duration,'limitations':[]}})
+        with self.lock:
+            self.update_application_check_progress(identifier, phase, stage=status, serverIp=asset.get('ip'))
+            sampling = self.check_job.get('progress', {})
+            if sampling.get('samplingStartedAt'):
+                sampling.setdefault('samplingFinishedAt', now())
+            for activity in self.check_job.get('activities', []):
+                if activity['stage'] not in ('complete', 'partial', 'failed', 'cancelled'):
+                    activity.update(stage=status, phase='任务已结束', updatedAt=now())
+            self.check_job.update(status=status, phase=phase, finishedAt=now())
+            if 'report' in locals(): self.check_job['environment'] = report.get('environment')
+            write(DATA/'checks/latest.json', self.check_job)
+            write(DATA/'checks'/identifier/'job.json', self.check_job)
+
+    def cancel_application_check(self, identifier):
+        with self.lock:
+            if not self.check_job or self.check_job['id'] != identifier:
+                raise ValueError('核验任务不存在')
+            if self.check_job['status'] == 'running':
+                self.check_cancel.set()
+                self.update_application_check_progress(identifier, '正在结束检查并保存已观察证据', stage='cancelling')
+            return self.application_check_state(identifier)
+
+    def application_file_context(self, identifier):
+        if not isinstance(identifier, str) or not re.fullmatch(r'[A-Za-z0-9-]{1,80}', identifier):
+            raise ValueError('无效核验任务 ID')
+        state = self.application_check_state(identifier)
+        job, report = state['job'], state['report']
+        if job['status'] == 'running' or not report:
+            raise ValueError('请等待上下游检测完成后再读取应用文件')
+        folder = self.version(job['sourceVersion'])
+        snapshot = read(folder/'jumpserver-snapshot.json', {})
+        assets = [a for a in snapshot.get('assets', []) if a.get('id') == job['assetId']]
+        if len(assets) != 1: raise ValueError('原检测版本中目标资产不唯一')
+        processes = [p for p in (assets[0].get('inspection') or {}).get('processes', []) if p.get('pid') == job['pid']]
+        if len(processes) != 1: raise ValueError('原检测版本中目标进程不唯一')
+        return assets[0], processes[0], report
+
+    def open_application_files(self, identifier):
+        from application_check import open_terminal, probe
+        asset, selected, report = self.application_file_context(identifier)
+        terminal, _ = open_terminal(asset, credentials(), read(DATA/'secrets/ip-password-map.json', {}))
+        try:
+            process = probe(terminal, 'target', selected['pid'])['processes'].get(selected['pid'])
+            target = report.get('target', {})
+            if not process or (selected.get('startedAt') and process.get('startedAt') != selected['startedAt']) or (
+                target.get('startTicks') and target['startTicks'] != process['startTicks']):
+                raise ValueError('应用进程已变化，请重新检测')
+            return terminal, process, target.get('application')
+        except Exception:
+            terminal.close()
+            raise
+
+    def application_files(self, payload):
+        from application_files import catalogue, read_file
+        identifier, action = payload.get('id'), payload.get('action', 'list')
+        self.application_file_context(identifier)
+        if action == 'archive': return self.start_log_archive(identifier, payload.get('group', 'all'))
+        if action == 'cancel-archive':
+            with self.lock:
+                if self.archive_job and self.archive_job['id'] == identifier and self.archive_job['status'] == 'running':
+                    self.archive_cancel.set()
+            return self.log_archive_state(identifier)
+        if action not in ('list', 'read'): raise ValueError('无效文件操作')
+        if not self.files_lock.acquire(blocking=False): raise ValueError('正在读取或下载应用文件，请稍后重试')
+        terminal = None
+        try:
+            terminal, process, application = self.open_application_files(identifier)
+            path = DATA/'checks'/identifier/'files.json'
+            if action == 'list':
+                result = catalogue(terminal, process, application)
+                write(path, result)
+                return result
+            catalog = read(path)
+            if not catalog or catalog.get('startTicks') != process['startTicks']:
+                raise ValueError('请先刷新应用文件列表')
+            entries = [f for f in catalog['files'] if f['id'] == payload.get('file')]
+            if len(entries) != 1: raise ValueError('文件不在应用文件列表中')
+            return read_file(terminal, process, entries[0])
+        except ValueError: raise
+        except Exception: raise ValueError('通过 JumpServer 读取应用文件失败，请检查登录态和权限')
+        finally:
+            if terminal: terminal.close()
+            self.files_lock.release()
+
+    def log_archive_state(self, identifier):
+        self.application_check_state(identifier)
+        return read(DATA/'checks'/identifier/'archive.json', {'status':'idle'})
+
+    def start_log_archive(self, identifier, group='all'):
+        if group not in ('all', 'history'): raise ValueError('无效日志打包范围')
+        with self.lock:
+            if self.archive_job and self.archive_job.get('status') == 'running': raise ValueError('已有日志下载任务正在运行')
+            if self.check_job and self.check_job.get('status') == 'running': raise ValueError('请等待当前应用检测完成')
+            if self.job and self.job.get('status') == 'running' or any(j.get('status') == 'running' for j in self.extra_jobs): raise ValueError('请等待当前采集或版本切换完成')
+            if not read(DATA/'checks'/identifier/'files.json'): raise ValueError('请先读取应用文件列表')
+            if not self.files_lock.acquire(blocking=False): raise ValueError('正在读取应用文件，请稍后重试')
+            self.archive_cancel = threading.Event()
+            self.archive_job = {'id':identifier, 'logGroup':group, 'status':'running', 'phase':'正在登录并确认日志目录', 'startedAt':now(), 'transferred':0, 'total':None}
+            write(DATA/'checks'/identifier/'archive.json', self.archive_job)
+            threading.Thread(target=self.work_log_archive, args=(identifier,), daemon=True, name='application-logs').start()
+            return dict(self.archive_job)
+
+    def work_log_archive(self, identifier):
+        from application_files import archive_logs, catalogue
+        folder = DATA/'checks'/identifier
+        terminal = None
+        def progress(phase, transferred, total):
+            with self.lock:
+                self.archive_job.update(phase=phase, transferred=transferred, total=total)
+                write(folder/'archive.json', self.archive_job)
+        try:
+            terminal, process, application = self.open_application_files(identifier)
+            catalog = catalogue(terminal, process, application)
+            result = archive_logs(terminal, process, catalog.get('logScopes') or catalog['roots']['log'], folder/'logs.part', progress, self.archive_cancel.is_set,
+                                  group=self.archive_job.get('logGroup', 'all'))
+            os.replace(folder/'logs.part', folder/'logs.tar.gz')
+            self.archive_job.update(result, status='complete', phase='日志压缩包已就绪')
+        except Exception as exc:
+            message = str(exc) if type(exc) is ValueError else '日志打包或传输失败，请检查 JumpServer 登录态与服务器权限'
+            self.archive_job.update(status='cancelled' if self.archive_cancel.is_set() else 'failed', phase=message)
+            (folder/'logs.part').unlink(missing_ok=True)
+        finally:
+            if terminal: terminal.close()
+            self.archive_job['finishedAt'] = now()
+            write(folder/'archive.json', self.archive_job)
+            self.files_lock.release()
+
+    def log_archive_file(self, identifier):
+        state = self.log_archive_state(identifier)
+        if state.get('status') != 'complete': raise ValueError('日志压缩包尚未就绪')
+        path = DATA/'checks'/identifier/'logs.tar.gz'
+        if not path.is_file(): raise ValueError('日志压缩包不存在，请重新打包')
+        return path
 
     def nginx_configs(self, identifier, asset_id):
         folder = self.version(identifier)
@@ -382,53 +668,7 @@ class Service:
         with self.lock:
             saved = credentials()
             versions = [read(p) for p in (DATA/'versions').glob('*/version.json')]
-            job = dict(self.job) if self.job else None
-            # Every kind except 'switch' runs collect.py and writes collection.log
-            # / progress.json / slots; switch only swaps an already-ready version.
-            if job and job['status'] == 'running' and job['kind'] != 'switch':
-                folder = DATA/'versions'/job['id']
-                try: progress = read(DATA/'versions'/job['id']/'progress.json')
-                except json.JSONDecodeError: progress = None
-                if progress:
-                    # Keep the seven per-source states; JumpServer's own counter must
-                    # not replace them, or the UI can only ever show one source.
-                    job['phase'] = progress.get('phase', job['phase'])
-                    job['progress'] = progress
-                server_progress = read(folder/'server-progress.json')
-                if server_progress and server_progress.get('completed',0) < server_progress.get('total',0):
-                    # Attach the JumpServer detail to the progress, not over it.
-                    job['progress'] = {**(job.get('progress') or {}), 'jumpServer': server_progress}
-                    if not (job.get('progress') or {}).get('sources'):
-                        job['phase'] = server_progress.get('phase', job['phase'])
-                log = folder/'collection.log'
-                if log.exists():
-                    try: job['logTail'] = log.read_text(errors='replace')[-12000:]
-                    except OSError: pass
-                if progress and 'DevOps' in progress.get('phase','') and self.job.get('phase') == '正在采集数据':
-                    completed = len(list((folder/'applications').glob('*.json')))
-                    job['phase'] += f'（已采集 {completed} 个应用）'
-                # Per-slot logs power the three concurrent-slot tabs.
-                slot_dir = folder/'slots'
-                if slot_dir.is_dir():
-                    slot_logs = {}
-                    for path in sorted(slot_dir.glob('*.log')):
-                        try: slot_logs[path.stem] = path.read_text(errors='replace')[-12000:]
-                        except OSError: pass
-                    if slot_logs: job['slotLogs'] = slot_logs
-            # For failed (or still-finishing) jobs, surface the full collection
-            # log and structured failure details so the user can see exactly
-            # which source failed and why, not just a generic error string.
-            if job and job.get('id') and job.get('kind') != 'switch':
-                folder = DATA/'versions'/job['id']
-                if 'logTail' not in job:
-                    log = folder/'collection.log'
-                    if log.exists():
-                        try: job['logTail'] = log.read_text(errors='replace')[-12000:]
-                        except OSError: pass
-                try: error = read(folder/'collection-error.json', {})
-                except (json.JSONDecodeError, OSError): error = {}
-                if error.get('failures'):
-                    job['failures'] = error['failures']
+            job = self._job_view(dict(self.job)) if self.job else None
             return {'cookies':{key:{'configured':bool(saved.get(key,{}).get('value')),
                     'updatedAt':saved.get(key,{}).get('updatedAt'),
                     'alert':read(DATA/'cookie-alerts.json',{}).get(key)} for key in ('devops','aliyun','jumpserver','local_gitlab')},
@@ -437,6 +677,8 @@ class Service:
                     'rootAlt2':{'configured':bool(saved.get('rootAlt2',{}).get('value')), 'updatedAt':saved.get('rootAlt2',{}).get('updatedAt')},
                     'current':read(DATA/'current.json'), 'schedule':read(DATA/'schedule.json'),
                     'versions':sorted(versions,key=lambda v:v['createdAt'],reverse=True), 'job':job,
+                    'extraJobs':[self._job_view(dict(j)) for j in self.extra_jobs],
+                    'sourceStates':self._source_states(),
                     'storage':'Docker 数据卷 envscope-data；每次同步独立目录，重建容器后保留','topology':self.topology_status()}
 
     def save_settings(self, payload):
@@ -500,44 +742,178 @@ class Service:
         with self.lock:
             self.job.update(changes); write(DATA/'job.json',self.job)
 
+    def set_extra_job(self, job, **changes):
+        with self.lock:
+            job.update(changes); write(DATA/'extra-jobs.json',self.extra_jobs)
+
+    def _set_job(self, job, **changes):
+        # Route updates to the primary job.json or the concurrent extra-jobs.json.
+        if job is self.job: self.set_job(**changes)
+        else: self.set_extra_job(job, **changes)
+
+    def _active_jobs(self):
+        jobs = []
+        if self.job and self.job.get('status') == 'running': jobs.append(self.job)
+        jobs.extend(j for j in self.extra_jobs if j.get('status') == 'running')
+        return jobs
+
+    def _any_running(self):
+        return bool(self._active_jobs())
+
+    def _job_view(self, job):
+        """Return a job copy enriched with live progress, logs and failure detail."""
+        if not job: return job
+        # Every kind except 'switch' runs collect.py and writes collection.log
+        # / progress.json / slots; switch only swaps an already-ready version.
+        if job.get('status') == 'running' and job.get('kind') != 'switch':
+            folder = DATA/'versions'/job['id']
+            try: progress = read(folder/'progress.json')
+            except json.JSONDecodeError: progress = None
+            if progress:
+                # Keep the seven per-source states; JumpServer's own counter must
+                # not replace them, or the UI can only ever show one source.
+                job['phase'] = progress.get('phase', job['phase'])
+                job['progress'] = progress
+            server_progress = read(folder/'server-progress.json')
+            if server_progress and server_progress.get('completed',0) < server_progress.get('total',0):
+                # Attach the JumpServer detail to the progress, not over it.
+                job['progress'] = {**(job.get('progress') or {}), 'jumpServer': server_progress}
+                if not (job.get('progress') or {}).get('sources'):
+                    job['phase'] = server_progress.get('phase', job['phase'])
+            log = folder/'collection.log'
+            if log.exists():
+                try: job['logTail'] = log.read_text(errors='replace')[-12000:]
+                except OSError: pass
+            if progress and 'DevOps' in progress.get('phase','') and job.get('phase') == '正在采集数据':
+                completed = len(list((folder/'applications').glob('*.json')))
+                job['phase'] += f'（已采集 {completed} 个应用）'
+            # Per-slot logs power the three concurrent-slot tabs.
+            slot_dir = folder/'slots'
+            if slot_dir.is_dir():
+                slot_logs = {}
+                for path in sorted(slot_dir.glob('*.log')):
+                    try: slot_logs[path.stem] = path.read_text(errors='replace')[-12000:]
+                    except OSError: pass
+                if slot_logs: job['slotLogs'] = slot_logs
+        # For failed (or still-finishing) jobs, surface the full collection
+        # log and structured failure details so the user can see exactly
+        # which source failed and why, not just a generic error string.
+        if job.get('id') and job.get('kind') != 'switch':
+            folder = DATA/'versions'/job['id']
+            if 'logTail' not in job:
+                log = folder/'collection.log'
+                if log.exists():
+                    try: job['logTail'] = log.read_text(errors='replace')[-12000:]
+                    except OSError: pass
+            try: error = read(folder/'collection-error.json', {})
+            except (json.JSONDecodeError, OSError): error = {}
+            if error.get('failures'):
+                job['failures'] = error['failures']
+        return job
+
+    def _source_available(self, kind):
+        """Whether a single-source sync for `kind` may start right now."""
+        if kind not in SOURCE_LABELS: return False
+        if not self._any_running(): return True
+        if any(j.get('kind') == kind for j in self.extra_jobs if j.get('status') == 'running'):
+            return False
+        # Only one concurrent retry at a time; two would share the same base version.
+        if any(j.get('status') == 'running' for j in self.extra_jobs): return False
+        # Only a full sync whose source already failed may be retried concurrently:
+        # parallel_collect() raises as soon as one source fails, so that sync can
+        # never activate and cannot overwrite the retry's freshly built version.
+        if not (self.job and self.job.get('status') == 'running' and self.job.get('kind') == 'sync' and self.job.get('id')):
+            return False
+        progress = read(DATA/'versions'/self.job['id']/'progress.json', {})
+        return ((progress or {}).get('sources') or {}).get(SOURCE_LABELS[kind]) == '失败'
+
+    def _source_states(self):
+        """Per-source {busy, retryable, reason} the Settings page renders as button gates."""
+        active = self._any_running()
+        primary = self.job if (self.job and self.job.get('status') == 'running') else None
+        progress = read(DATA/'versions'/primary['id']/'progress.json', {}) if primary and primary.get('kind') == 'sync' and primary.get('id') else {}
+        sources = (progress or {}).get('sources') or {}
+        extra_running = any(j.get('status') == 'running' for j in self.extra_jobs)
+        busy_kinds = {j.get('kind') for j in self.extra_jobs if j.get('status') == 'running'}
+        states = {}
+        for kind, label in SOURCE_LABELS.items():
+            busy = kind in busy_kinds or sources.get(label) == '采集中'
+            retryable = self._source_available(kind)
+            if not active: reason = ''
+            elif retryable: reason = '本轮同步该来源已失败，可立即并发重试'
+            elif busy: reason = '该数据源正在采集中'
+            elif extra_running: reason = '已有并发重试任务进行中，请等待其结束'
+            else: reason = '需等待当前任务结束后再单独同步'
+            states[kind] = {'busy': busy, 'retryable': retryable, 'reason': reason}
+        return states
+
     def start(self, kind, identifier=None, asset_id=None):
         with self.lock:
+            if self.archive_job and self.archive_job.get('status') == 'running': raise ValueError('请等待日志下载结束后再采集或切换版本')
+            if self.check_job and self.check_job.get('status') == 'running': raise ValueError('请等待应用核验任务结束后再采集或切换版本')
             if self.backend is None: raise ValueError('应用正在恢复当前版本，请稍后重试')
-            if self.job and self.job['status']=='running': raise ValueError('已有同步或切换任务正在进行')
-            source_modes = ('local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'jumpserver', 'devops', 'jumpserver_asset')
+            source_modes = ('local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'jumpserver', 'devops', 'jumpserver_asset')
+            # While a job is running only a single-source retry whose source already
+            # failed in the running full sync may start, and it runs concurrently.
+            is_extra = False
+            if self._any_running():
+                if kind in SOURCE_LABELS and self._source_available(kind):
+                    is_extra = True
+                else:
+                    reason = self._source_states().get(kind, {}).get('reason')
+                    raise ValueError(f'{SOURCE_LABELS[kind]} 当前不可单独同步：{reason}' if reason
+                                     else '已有同步或切换任务正在进行')
             if kind in ('sync', *source_modes):
                 saved = credentials()
                 required = ('devops','aliyun','jumpserver','local_gitlab') if kind == 'sync' else \
-                    ('aliyun',) if kind in ('ecs','clb','nat','codeup') else ('jumpserver',) if kind == 'jumpserver_asset' else (kind,)
+                    ('aliyun',) if kind in ('ecs','clb','nat','dms','codeup') else ('jumpserver',) if kind == 'jumpserver_asset' else (kind,)
                 if any(not saved.get(k,{}).get('value') for k in required):
                     raise ValueError('请先保存 Local GitLab Cookie' if kind == 'local_gitlab' else
                                      '请先保存 JumpServer Cookie' if kind == 'jumpserver_asset' else '请先保存四个平台的 Cookie')
                 if kind == 'jumpserver_asset':
                     if not isinstance(asset_id, str) or not re.fullmatch(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}', asset_id):
                         raise ValueError('无效的资产 ID')
-                identifier = datetime.now(TZ).strftime('%Y%m%d-%H%M%S-%f')
-                folder=DATA/'versions'/identifier;folder.mkdir()
+                for _ in range(5):
+                    identifier = datetime.now(TZ).strftime('%Y%m%d-%H%M%S-%f')
+                    folder = DATA/'versions'/identifier
+                    try: folder.mkdir(); break
+                    except FileExistsError: continue
+                else: raise ValueError('无法创建版本目录，请重试')
                 note = '单独重新采集一台服务器的进程与 Nginx' if kind == 'jumpserver_asset' else \
                     f'单独同步 {kind}' if kind in source_modes else '同步 DevOps、Codeup、JumpServer、上海 ECS、CLB 和 NAT'
                 write(folder/'version.json',{'id':identifier,'createdAt':now(),'status':'collecting','kind':kind,
                       'note':note})
             else: self.version(identifier)
+            if is_extra:
+                record = {'id':identifier,'kind':kind,'status':'running','startedAt':now(),
+                          'phase':'任务准备中','assetId':asset_id,'concurrent':True}
+                self.extra_jobs.append(record)
+                if len(self.extra_jobs) > 6: self.extra_jobs = self.extra_jobs[-6:]
+                write(DATA/'extra-jobs.json', self.extra_jobs)
+                threading.Thread(target=self.work,args=(kind,identifier,asset_id,record),daemon=True,name='extra-sync').start()
+                return identifier
+            # No concurrent retry can be running here (they are handled above), so
+            # this clears finished extra records before a fresh primary job starts.
+            if self.extra_jobs:
+                self.extra_jobs = [j for j in self.extra_jobs if j.get('status') == 'running']
+                write(DATA/'extra-jobs.json', self.extra_jobs)
             self.job={'id':identifier,'kind':kind,'status':'running','startedAt':now(),'phase':'任务准备中','assetId':asset_id}
             write(DATA/'job.json',self.job)
             threading.Thread(target=self.work,args=(kind,identifier,asset_id),daemon=True).start()
             return identifier
 
-    def work(self,kind,identifier,asset_id=None):
+    def work(self,kind,identifier,asset_id=None,job=None):
         folder=DATA/'versions'/identifier
+        if job is None: job = self.job
         try:
-            if kind in ('sync', 'local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'jumpserver', 'devops', 'jumpserver_asset'):
-                self.set_job(phase='正在采集数据')
+            if kind in ('sync', 'local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'jumpserver', 'devops', 'jumpserver_asset'):
+                self._set_job(job, phase='正在采集数据')
                 current_folder = self.version(read(DATA/'current.json')['id'])
-                if kind in ('local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'jumpserver', 'devops', 'jumpserver_asset'):
+                if kind in ('local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'jumpserver', 'devops', 'jumpserver_asset'):
                     for name in FILES: shutil.copyfile(current_folder/name, folder/name)
                     for name in OPTIONAL_FILES: write(folder/name, read(current_folder/name, OPTIONAL_DEFAULTS[name]))
                     # A source sync must produce fresh data, not accidentally retain the copied snapshot.
-                    if kind in ('clb', 'nat'): (folder/f'{kind}-snapshot.json').unlink(missing_ok=True)
+                    if kind in ('clb', 'nat', 'dms'): (folder/f'{kind}-snapshot.json').unlink(missing_ok=True)
                     with tempfile.TemporaryDirectory(prefix='envscope-input-') as tmp:
                         creds=Path(tmp)/'credentials.json'
                         creds_data=credentials(); creds_data['_ipPasswordMap']=read(DATA/'secrets/ip-password-map.json',{})
@@ -558,13 +934,13 @@ class Service:
                     if p.returncode:
                         detail=self.collection_error(folder)
                         raise ValueError(f'{kind} 采集失败：{detail}；当前版本未改变')
-                    if kind in ('clb', 'nat') and not read(folder/f'{kind}-snapshot.json', {}).get('available'):
+                    if kind in ('clb', 'nat', 'dms') and not read(folder/f'{kind}-snapshot.json', {}).get('available'):
                         raise ValueError(f'缺少本次 {kind.upper()} 采集数据')
                     counts=validate(folder)
                     # Defer marking the version ready until activate() swaps in the
                     # new backend; otherwise Settings advertises CLB/NAT counts
                     # before the CLB panorama page can actually serve them.
-                    self.set_job(phase='数据采集完成，正在构建并切换到新版本')
+                    self._set_job(job, phase='数据采集完成，正在构建并切换到新版本')
                 else:
                     previous = read(current_folder/'ecs-snapshot.json')
                     write(folder/'ecs-projects.json', {'projects':previous['projects'],'note':'项目名称目录沿用前版；ECS 实例及项目 ID 本次实时采集'})
@@ -590,7 +966,7 @@ class Service:
                     if not read(folder/'clb-snapshot.json',{}).get('available'): raise ValueError('缺少本次 CLB 采集数据')
                     if not read(folder/'nat-snapshot.json',{}).get('available'): raise ValueError('缺少本次 NAT 采集数据')
                     counts=validate(folder)
-                    self.set_job(phase='数据采集完成，正在构建并切换到新版本')
+                    self._set_job(job, phase='数据采集完成，正在构建并切换到新版本')
             self.activate(identifier)
             # Only flip the version to ready after the new backend is live, so
             # the Settings version row and the CLB panorama page agree on what
@@ -599,13 +975,13 @@ class Service:
             if kind != 'switch':
                 report=read(folder/'version.json');report.update(status='ready',finishedAt=now(),counts=counts)
                 write(folder/'version.json',report)
-            self.set_job(status='succeeded',phase='已切换到指定数据版本' if kind=='switch' else '同步完成，已启用新版本',finishedAt=now())
+            self._set_job(job, status='succeeded',phase='已切换到指定数据版本' if kind=='switch' else '同步完成，已启用新版本',finishedAt=now())
         except Exception as exc:
             message=str(exc) if isinstance(exc,ValueError) else '任务失败或超时，当前版本保持不变；请检查连接后重试'
             report=read(folder/'version.json')
             if report and report['status']=='collecting':
                 report.update(status='failed',error=message,finishedAt=now());write(folder/'version.json',report)
-            self.set_job(status='failed',phase=message,finishedAt=now())
+            self._set_job(job, status='failed',phase=message,finishedAt=now())
 
     def launch(self,root,port):
         log=(root/'runtime.log').open('a')
@@ -647,27 +1023,32 @@ class Service:
             raise ValueError('无效版本')
         folder=DATA/'versions'/identifier
         if not (folder/'version.json').is_file(): raise ValueError('版本不存在')
-        root=Path(tempfile.mkdtemp(prefix='envscope-web-'))
-        candidate=None
-        try:
-            shutil.copytree(APP,root,dirs_exist_ok=True,ignore=shutil.ignore_patterns('node_modules','dist','.wrangler','.vinext','runtime','*.log','__pycache__'))
-            (root/'node_modules').symlink_to(APP/'node_modules',target_is_directory=True)
-            for name in FILES:shutil.copyfile(folder/name,root/'lib'/name)
-            for name in OPTIONAL_FILES:write(root/'lib'/name,read(folder/name,OPTIONAL_DEFAULTS[name]))
-            with (folder/'build.log').open('w') as log:
-                result=subprocess.run(['npm','run','build'],cwd=root,stdout=log,stderr=log,timeout=600)
-            if result.returncode:raise ValueError('数据已保留，但版本构建失败；当前版本未改变')
-            # Keep the preceding server for assets requested by already-open tabs.
-            if self.retired:self.stop(self.retired);self.retired=None
-            port=3102 if self.backend and self.backend['port']==3101 else 3101
-            candidate=self.launch(root,port)
-            with self.lock:
-                write(DATA/'current.json',{'id':identifier,'activatedAt':now()})
-                self.retired=self.backend;self.backend=candidate
-        except Exception:
-            if candidate:self.stop(candidate)
-            else:shutil.rmtree(root,ignore_errors=True)
-            raise
+        # Serialise the whole build/launch/swap so a concurrent single-source
+        # retry cannot race the primary job for ports 3101/3102 or clobber
+        # self.backend/self.retired. Acquired outside self.lock: status() polls
+        # self.lock every few seconds and must not block behind a long build.
+        with self.activate_lock:
+            root=Path(tempfile.mkdtemp(prefix='envscope-web-'))
+            candidate=None
+            try:
+                shutil.copytree(APP,root,dirs_exist_ok=True,ignore=shutil.ignore_patterns('node_modules','dist','.wrangler','.vinext','runtime','*.log','__pycache__'))
+                (root/'node_modules').symlink_to(APP/'node_modules',target_is_directory=True)
+                for name in FILES:shutil.copyfile(folder/name,root/'lib'/name)
+                for name in OPTIONAL_FILES:write(root/'lib'/name,read(folder/name,OPTIONAL_DEFAULTS[name]))
+                with (folder/'build.log').open('w') as log:
+                    result=subprocess.run(['npm','run','build'],cwd=root,stdout=log,stderr=log,timeout=600)
+                if result.returncode:raise ValueError('数据已保留，但版本构建失败；当前版本未改变')
+                # Keep the preceding server for assets requested by already-open tabs.
+                if self.retired:self.stop(self.retired);self.retired=None
+                port=3102 if self.backend and self.backend['port']==3101 else 3101
+                candidate=self.launch(root,port)
+                with self.lock:
+                    write(DATA/'current.json',{'id':identifier,'activatedAt':now()})
+                    self.retired=self.backend;self.backend=candidate
+            except Exception:
+                if candidate:self.stop(candidate)
+                else:shutil.rmtree(root,ignore_errors=True)
+                raise
 
     def boot(self):
         # A container restart terminates previous jobs but retains its /tmp layer.
@@ -685,7 +1066,7 @@ class Service:
             try:
                 with self.lock:
                     schedule=read(DATA/'schedule.json');stamp=datetime.now(TZ)
-                    if schedule['enabled'] and stamp.strftime('%H:%M')>=schedule['time'] and schedule.get('lastDate')!=stamp.date().isoformat() and not (self.job and self.job['status']=='running'):
+                    if schedule['enabled'] and stamp.strftime('%H:%M')>=schedule['time'] and schedule.get('lastDate')!=stamp.date().isoformat() and not self._any_running():
                         self.start('sync')
                         schedule['lastDate']=stamp.date().isoformat();write(DATA/'schedule.json',schedule)
             except Exception:pass
@@ -743,6 +1124,23 @@ class Handler(BaseHTTPRequestHandler):
         return host in ALLOWED_HOSTS
     def do_GET(self):
         if not self.allowed_host():return self.json(403,{'error':'仅允许本机访问'})
+        if urlsplit(self.path).path in ('/api/settings/application-check/logs', '/api/settings/application-check/logs/download'):
+            identifier = parse_qs(urlsplit(self.path).query).get('id', [''])[0]
+            try:
+                if urlsplit(self.path).path.endswith('/download'):
+                    path = self.server.service.log_archive_file(identifier)
+                    with path.open('rb') as source:
+                        self.send_response(200); self.send_header('Content-Type','application/gzip')
+                        self.send_header('Content-Disposition',f'attachment; filename="application-logs-{identifier}.tar.gz"')
+                        self.send_header('Cache-Control','no-store'); self.send_header('Content-Length',str(os.fstat(source.fileno()).st_size))
+                        self.end_headers(); shutil.copyfileobj(source, self.wfile, 262144)
+                    return
+                return self.json(200, self.server.service.log_archive_state(identifier))
+            except ValueError as exc: return self.json(404, {'error':str(exc)})
+        if urlsplit(self.path).path == '/api/settings/application-check':
+            params = parse_qs(urlsplit(self.path).query)
+            try: return self.json(200,self.server.service.application_check_state(params.get('id',[None])[0]))
+            except ValueError as exc: return self.json(404,{'error':str(exc)})
         if self.path=='/topology.json':return self.topology()
         if self.path.startswith('/topology/') and self.path.endswith('/download'):
             return self.topology_download(self.path[len('/topology/'):-len('/download')])
@@ -783,12 +1181,18 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(payload,dict):raise ValueError('请求格式无效')
             service=self.server.service
             if self.path=='/api/settings/config':service.save_settings(payload)
+            elif self.path=='/api/settings/application-check':
+                return self.json(202,service.start_application_check(payload))
+            elif self.path=='/api/settings/application-check/cancel':
+                return self.json(200,service.cancel_application_check(payload.get('id')))
+            elif self.path=='/api/settings/application-check/files':
+                return self.json(200,service.application_files(payload))
             elif self.path=='/api/settings/topology':service.generate_topology()
             elif self.path=='/api/settings/sync':service.start('sync')
             elif self.path=='/api/settings/sync/local-gitlab':service.start('local_gitlab')
             elif self.path.startswith('/api/settings/sync/'):
                 source = self.path.rsplit('/', 1)[-1]
-                if source not in ('ecs', 'clb', 'nat', 'jumpserver', 'devops', 'codeup'): return self.json(404,{'error':'不支持的数据源'})
+                if source not in ('ecs', 'clb', 'nat', 'dms', 'jumpserver', 'devops', 'codeup'): return self.json(404,{'error':'不支持的数据源'})
                 service.start(source)
                 return self.json(200, service.status())
             elif self.path=='/api/settings/jumpserver-inspect':

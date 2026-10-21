@@ -1,6 +1,6 @@
 import { jumpserver } from '@/lib/jumpserver';
 import { jarName, type Process, type Asset, type Webapp, type AppPort } from '@/lib/server-processes';
-import { envs, inventoryDate, type App, type Env } from '@/lib/inventory';
+import { apps, envs, inventoryDate, type App, type Env } from '@/lib/inventory';
 import { specs as serverSpecs, type ServerSpec } from '@/lib/server-specs';
 import { instances } from '@/lib/ecs';
 import { nominalMemoryGiB } from '@/lib/local-servers';
@@ -223,6 +223,72 @@ export function processBusinessName(process: Process): string {
   return jarName(process) || tomcatBase(process.command) || process.name;
 }
 
+// Tomcat 实例业务名：取实例目录（-Dcatalina.base/home 或命令行中的 apache-tomcat_*
+// 路径）的 basename 并去掉 tomcat_/apache-tomcat_ 前缀。
+// 如 /opt/apache-tomcat_dolphin-webhook → dolphin-webhook；
+// 目录名仅为通用 tomcat 名（无业务名段）或无法提取实例目录时返回 undefined。
+export function tomcatInstanceName(command: string): string | undefined {
+  const base = tomcatBase(command);
+  if (!base) return undefined;
+  const leaf = base.split('/').filter(Boolean).pop() || '';
+  // 必须带分隔符后再跟业务名段；apache-tomcat / tomcat 这类通用目录名返回 undefined。
+  const match = leaf.match(/^(?:apache-)?tomcat[_-](.+)$/i);
+  return match?.[1]?.trim() || undefined;
+}
+
+// Java -jar 进程的展示业务名：-jar 参数的 jar 文件名去掉 .jar/.war 后缀，
+// 保留原始大小写；非 `-jar` 启动的进程返回 undefined。
+export function jarBusinessName(command: string): string | undefined {
+  const tokens = tokenizeArgs(command);
+  const i = tokens.indexOf('-jar');
+  if (i < 0 || !tokens[i + 1]) return undefined;
+  const file = tokens[i + 1].split('/').pop() || '';
+  const stripped = file.replace(/\.(jar|war)$/i, '');
+  return stripped.trim() || undefined;
+}
+
+// 进程关联的 DevOps 应用：仅在该 IP 有部署记录（任一环境）的应用中按既有
+// 进程匹配规则（matchAppToProcess）查找；多个候选时优先与进程业务名规范化后
+// 完全相同的应用，否则取首个候选（与 IP 集查询的关联口径一致）；无候选返回 undefined。
+function resolveProcessApp(
+  ip: string,
+  process: Process,
+  businessName: string | undefined,
+  appList: App[],
+): App | undefined {
+  const target = ip.trim();
+  const candidates = appList.filter(
+    (a) =>
+      envs.some((e) => (a.envs[e] || []).some((r) => (r.ip || '').trim() === target)) &&
+      matchAppToProcess({ ...a, ports: [] }, [process]),
+  );
+  if (!candidates.length) return undefined;
+  if (businessName) {
+    const exact = candidates.find((a) => normalize(a.name) === normalize(businessName));
+    if (exact) return exact;
+  }
+  return candidates[0];
+}
+
+// Tomcat 进程关联的 DevOps 应用（业务名取 catalina 实例目录，含 tomcat_APP_NAME
+// 目录约定）。
+export function tomcatProcessApp(
+  ip: string,
+  process: Process,
+  appList: App[] = apps,
+): App | undefined {
+  return resolveProcessApp(ip, process, tomcatInstanceName(process.command), appList);
+}
+
+// Java Jar 进程关联的 DevOps 应用（业务名取 -jar 的 jar 文件名，去 .jar/.war 后缀）。
+export function jarProcessApp(
+  ip: string,
+  process: Process,
+  appList: App[] = apps,
+): App | undefined {
+  return resolveProcessApp(ip, process, jarBusinessName(process.command), appList);
+}
+
 export type AppMatchNote =
   | { kind: 'process'; pid: number; processName: string; port: string }
   | { kind: 'webapp'; webappName: string };
@@ -303,6 +369,23 @@ export function queryAppsByIpSet(
     }
     return { ip, matched: hits.length > 0, hits };
   });
+}
+
+// 该 IP 在 DevOps 部署记录中出现于哪些环境（按 TEST/SIMULATION/PRODUCT
+// 固定顺序返回）；任一应用在该环境有该 IP 的部署记录即计入。
+export function ipDeployEnvironments(ip: string, appList: App[] = apps): Env[] {
+  const target = ip.trim();
+  return envs.filter((e) =>
+    appList.some((a) => (a.envs[e] || []).some((r) => (r.ip || '').trim() === target)),
+  );
+}
+
+// 指定应用在指定 IP 上部署于哪些环境（按 TEST/SIMULATION/PRODUCT 顺序返回）。
+export function appDeployEnvironments(app: App, ip: string): Env[] {
+  const target = ip.trim();
+  return envs.filter((e) =>
+    (app.envs[e] || []).some((r) => (r.ip || '').trim() === target),
+  );
 }
 
 // 服务器 IP 是否被 JumpServer 收录（不论是否可登录/是否采集到进程）。
@@ -422,16 +505,8 @@ function deploymentTimestamp(value: string) {
   return Date.parse(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value) ? value.replace(' ', 'T') + '+08:00' : value);
 }
 
-// 格式化为中国北京时间（UTC+8）24 小时制 "YYYY-MM-DD HH:mm:ss"；
-// 空值或无法解析时返回空串。
-export function formatBeijingTime(value: string): string {
-  if (!value) return '';
-  const ts = deploymentTimestamp(value);
-  if (!Number.isFinite(ts)) return '';
-  const d = new Date(ts + 8 * 3600000);
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
-}
+// 统一复用 lib/datetime 的北京时间格式化（所有界面时间展示走同一实现）。
+export { formatBeijingTime } from './datetime';
 
 // 应用在指定环境（或全部环境）的最近部署时间：
 // 遍历该应用部署 IP，匹配 JumpServer 进程（startedAt）与 webapps 目录（mtime），

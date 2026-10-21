@@ -1,6 +1,7 @@
 import { jumpserver } from '@/lib/jumpserver';
 import { jarName, processType, processTypes, type Asset, type Process, type Webapp, type ServerUsage, type AppPort } from '@/lib/server-processes';
-import { envs, latestSuccessfulPushIn, type App } from '@/lib/inventory';
+import { envs, shortLabels, latestSuccessfulPushIn, type App, type Env } from '@/lib/inventory';
+import { resourceOwnerLabel } from '@/lib/datacenter-networks';
 import {
   ipServerState,
   ipSpecSummary,
@@ -8,6 +9,8 @@ import {
   webappsForIp,
   matchAppToProcess,
   matchAppToWebapp,
+  ipDeployEnvironments,
+  appDeployEnvironments,
   formatBeijingTime,
   type IpServerState,
 } from '@/lib/process-comparison';
@@ -28,6 +31,14 @@ export type ManagedRowSource =
 // 未纳管、无法登录或采集为空的 IP 也占一行。
 export type IpManagedRow = {
   ip: string;
+  // JumpServer 资产名称；未收录或无名称时回退为 IP。同一 IP 的所有行一致。
+  hostName: string;
+  // DevOps 部署记录中该 IP 出现的环境；无部署记录为空数组。
+  deployEnvs: Env[];
+  // 本行映射到的 DevOps 应用在该 IP 上的环境（未映射到应用的进程/目录行为 undefined）。
+  appEnvs?: Env[];
+  // 资源归属：本地机房 / 阿里云ECS。
+  owner: string;
   managed: string;
   // 服务器规格文本（如 "4C 64G"）；同一 IP 的所有行一致，无规格数据为 "-"。
   spec: string;
@@ -51,10 +62,21 @@ export type IpManagedRow = {
 export type NginxConfigRef = { path: string };
 export type NginxConfigResult = { files: NginxConfigRef[]; error?: string };
 
+// IP 级元信息：JumpServer 资产名称（无名称回退 IP）与资源归属。
+export type IpMeta = {
+  hostName: string;
+  owner: string;
+  deployEnvs: Env[];
+};
+
 export type ManagedQueryDeps = {
   state(ip: string): IpServerState;
   // 服务器规格摘要（如 "4C 64G"），无数据返回空串。
   spec(ip: string): string;
+  // JumpServer 资产主机名；无记录或空名称时回退为 IP。
+  hostName(ip: string): string;
+  // 资源归属标签（本地机房 / 阿里云ECS）。
+  owner(ip: string): string;
   processes(ip: string): Process[];
   webapps(ip: string): Webapp[];
   matchProcess(app: App, processes: Process[]): Process | undefined;
@@ -103,9 +125,22 @@ export function formatPorts(ports: number[] | undefined): string {
   return ports && ports.length ? ports.join(', ') : DASH;
 }
 
+// 环境列文本：如 "测试、生产"；无任何环境部署记录为 "-"。
+export function formatDeployEnvs(list: Env[] | undefined): string {
+  return list && list.length ? list.map((e) => shortLabels[e]).join('、') : DASH;
+}
+
+// JumpServer 资产主机名；未收录或主机名为空时回退为 IP。
+export function defaultHostName(ip: string): string {
+  const asset = (jumpserver.assets as Asset[]).find((a) => a.ip === ip);
+  return asset?.hostname?.trim() || ip;
+}
+
 const defaultDeps: ManagedQueryDeps = {
   state: ipServerState,
   spec: ipSpecSummary,
+  hostName: defaultHostName,
+  owner: resourceOwnerLabel,
   processes: processesForIp,
   webapps: webappsForIp,
   matchProcess: (app, ps) => matchAppToProcess({ ...app, ports: [] }, ps),
@@ -198,6 +233,7 @@ function appsDeployedOnIp(ip: string, apps: App[]): App[] {
 
 function dashRow(
   ip: string,
+  meta: IpMeta,
   managed: string,
   spec: string,
   source: ManagedRowSource,
@@ -205,6 +241,7 @@ function dashRow(
 ): IpManagedRow {
   return {
     ip,
+    ...meta,
     managed,
     spec,
     source,
@@ -230,9 +267,12 @@ function disambiguate(rows: IpManagedRow[]): IpManagedRow[] {
 }
 
 // ─── 按IP汇总行 ───
-// 每个 IP 一行：规格、CPU/内存使用率、监听端口数、进程分类信息。
+// 每个 IP 一行：名称、环境、资源归属、规格、CPU/内存使用率、监听端口数、进程分类信息。
 export type IpSummaryRow = {
   ip: string;
+  hostName: string;
+  deployEnvs: Env[];
+  owner: string;
   managed: string;
   spec: string;
   cpuPercent?: number;
@@ -249,6 +289,10 @@ export type IpSummaryRow = {
 export type SummaryQueryDeps = {
   state(ip: string): IpServerState;
   spec(ip: string): string;
+  hostName(ip: string): string;
+  owner(ip: string): string;
+  // DevOps 部署记录中该 IP 出现的环境。
+  deployEnvs(ip: string): Env[];
   processes(ip: string): Process[];
   serverUsage(ip: string): ServerUsage | undefined;
   appPorts(ip: string): AppPort[] | undefined;
@@ -291,6 +335,9 @@ function listeningPortsForIp(
 const defaultSummaryDeps: SummaryQueryDeps = {
   state: ipServerState,
   spec: ipSpecSummary,
+  hostName: defaultHostName,
+  owner: resourceOwnerLabel,
+  deployEnvs: (ip) => ipDeployEnvironments(ip),
   processes: processesForIp,
   serverUsage: (ip) =>
     (jumpserver.assets as Asset[]).find((a) => a.ip === ip)?.inspection?.serverUsage,
@@ -303,23 +350,31 @@ const defaultSummaryDeps: SummaryQueryDeps = {
 // 已纳管但无法登录的 IP 仅显示规格，无进程/端口/分类数据。
 export function buildIpSummaryRows(
   ips: string[],
-  deps: SummaryQueryDeps = defaultSummaryDeps,
+  deps: Partial<SummaryQueryDeps> = defaultSummaryDeps,
 ): IpSummaryRow[] {
+  // 与默认依赖合并，允许旧调用方/测试仅注入部分依赖。
+  const d: SummaryQueryDeps = { ...defaultSummaryDeps, ...deps };
   return ips.map((ip) => {
-    const spec = deps.spec(ip) || DASH;
-    const state = deps.state(ip);
+    const meta: IpMeta = {
+      hostName: d.hostName(ip),
+      owner: d.owner(ip),
+      deployEnvs: d.deployEnvs(ip),
+    };
+    const spec = d.spec(ip) || DASH;
+    const state = d.state(ip);
     if (state === 'not_collected') {
-      return { ip, managed: MANAGED_NO, spec, portCount: null, portList: [], categories: [] };
+      return { ip, ...meta, managed: MANAGED_NO, spec, portCount: null, portList: [], categories: [] };
     }
     if (state === 'cannot_login') {
-      return { ip, managed: MANAGED_YES, spec, portCount: null, portList: [], categories: [] };
+      return { ip, ...meta, managed: MANAGED_YES, spec, portCount: null, portList: [], categories: [] };
     }
-    const processes = deps.processes(ip);
-    const usage = deps.serverUsage(ip);
-    const ports = listeningPortsForIp(processes, deps.appPorts(ip));
+    const processes = d.processes(ip);
+    const usage = d.serverUsage(ip);
+    const ports = listeningPortsForIp(processes, d.appPorts(ip));
     const categories = summarizeProcessCategories(processes);
     return {
       ip,
+      ...meta,
       managed: MANAGED_YES,
       spec,
       cpuPercent: usage?.cpuPercent,
@@ -347,6 +402,9 @@ export function formatCategories(categories: [string, number][]): string {
 
 export const SUMMARY_CSV_HEADER = [
   'IP',
+  '服务器名称',
+  '环境',
+  '资源归属',
   '是否纳管',
   '服务器规格',
   'CPU%',
@@ -361,6 +419,9 @@ export function summaryRowsCsv(rows: IpSummaryRow[]): string {
     lines.push(
       [
         row.ip,
+        row.hostName,
+        formatDeployEnvs(row.deployEnvs),
+        row.owner,
         row.managed,
         row.spec,
         formatUsagePercent(row.cpuPercent),
@@ -385,25 +446,34 @@ export function buildIpManagedRows(
   ips: string[],
   apps: App[],
   nginxByIp?: Map<string, NginxConfigResult>,
-  deps: ManagedQueryDeps = defaultDeps,
+  deps: Partial<ManagedQueryDeps> = defaultDeps,
 ): IpManagedRow[] {
+  // 与默认依赖合并，允许旧调用方/测试仅注入部分依赖。
+  const d: ManagedQueryDeps = { ...defaultDeps, ...deps };
   const result: IpManagedRow[] = [];
   for (const ip of ips) {
-    // 规格是服务器级属性，同一 IP 的所有行展示同一个值。
-    const spec = deps.spec(ip) || DASH;
-    const state = deps.state(ip);
+    // 名称/环境/归属/规格都是服务器级属性，同一 IP 的所有行展示同一份值。
+    const meta: IpMeta = {
+      hostName: d.hostName(ip),
+      owner: d.owner(ip),
+      deployEnvs: envs.filter((e) =>
+        apps.some((a) => (a.envs[e] || []).some((r) => (r.ip || '').trim() === ip)),
+      ),
+    };
+    const spec = d.spec(ip) || DASH;
+    const state = d.state(ip);
     if (state === 'not_collected') {
-      result.push(dashRow(ip, MANAGED_NO, spec, 'unmanaged', DASH));
+      result.push(dashRow(ip, meta, MANAGED_NO, spec, 'unmanaged', DASH));
       continue;
     }
     if (state === 'cannot_login') {
-      result.push(dashRow(ip, MANAGED_YES, spec, 'unreachable', '无法登录，未采集'));
+      result.push(dashRow(ip, meta, MANAGED_YES, spec, 'unreachable', '无法登录，未采集'));
       continue;
     }
 
     const before = result.length;
-    const processes = deps.processes(ip);
-    const webapps = deps.webapps(ip);
+    const processes = d.processes(ip);
+    const webapps = d.webapps(ip);
     const deployed = appsDeployedOnIp(ip, apps);
     const nginxProcs = processes.filter((p) => classifyProcess(p).type === 'Nginx');
 
@@ -415,10 +485,11 @@ export function buildIpManagedRows(
         const kind = classifyProcess(p);
         const app = kind.middleware
           ? undefined
-          : deployed.find((a) => deps.matchProcess(a, [p]));
+          : deployed.find((a) => d.matchProcess(a, [p]));
         if (!app) {
           return {
             ip,
+            ...meta,
             managed: MANAGED_YES,
             spec,
             source: 'process' as const,
@@ -437,6 +508,7 @@ export function buildIpManagedRows(
         }
         return {
           ip,
+          ...meta,
           managed: MANAGED_YES,
           spec,
           source: 'process' as const,
@@ -444,8 +516,9 @@ export function buildIpManagedRows(
           detail: processDetail(p, kind.type),
           appId: app.id,
           appName: app.name,
+          appEnvs: appDeployEnvironments(app, ip),
           pushIn:
-            deps.latestTime([deps.appPushIn(app), p.startedAt || '']) || DASH,
+            d.latestTime([d.appPushIn(app), p.startedAt || '']) || DASH,
           pid: p.pid,
           command: p.command,
           memPercent: p.memPercent,
@@ -458,9 +531,10 @@ export function buildIpManagedRows(
 
     // /var/www/webapps 应用目录。
     for (const webapp of [...webapps].sort((a, b) => a.name.localeCompare(b.name))) {
-      const app = deployed.find((a) => deps.matchWebapp(a.name, [webapp]));
+      const app = deployed.find((a) => d.matchWebapp(a.name, [webapp]));
       result.push({
         ip,
+        ...meta,
         managed: MANAGED_YES,
         spec,
         source: 'webapp',
@@ -468,8 +542,9 @@ export function buildIpManagedRows(
         detail: `/var/www/webapps/${webapp.name}`,
         appId: app ? app.id : DASH,
         appName: app ? app.name : DASH,
+        appEnvs: app ? appDeployEnvironments(app, ip) : undefined,
         pushIn: app
-          ? deps.latestTime([deps.appPushIn(app), webapp.mtime || '']) || DASH
+          ? d.latestTime([d.appPushIn(app), webapp.mtime || '']) || DASH
           : DASH,
       });
     }
@@ -482,6 +557,7 @@ export function buildIpManagedRows(
         .sort((a, b) => a.localeCompare(b))) {
         result.push({
           ip,
+          ...meta,
           managed: MANAGED_YES,
           spec,
           source: 'nginx',
@@ -503,6 +579,7 @@ export function buildIpManagedRows(
       for (const p of chosen) {
         result.push({
           ip,
+          ...meta,
           managed: MANAGED_YES,
           spec,
           source: 'nginx',
@@ -516,6 +593,7 @@ export function buildIpManagedRows(
     } else if (nginxResult?.error) {
       result.push({
         ip,
+        ...meta,
         managed: MANAGED_YES,
         spec,
         source: 'nginx',
@@ -530,7 +608,7 @@ export function buildIpManagedRows(
     // 可登录但三类数据均为空（采集不完整等场景）。
     if (result.length === before) {
       result.push(
-        dashRow(ip, MANAGED_YES, spec, 'empty', '已登录但未发现进程 / Webapps / Nginx 配置'),
+        dashRow(ip, meta, MANAGED_YES, spec, 'empty', '已登录但未发现进程 / Webapps / Nginx 配置'),
       );
     }
   }
@@ -559,6 +637,9 @@ function csvCell(value: string): string {
 
 export const MANAGED_CSV_HEADER = [
   'IP',
+  '服务器名称',
+  '环境',
+  '资源归属',
   '是否纳管',
   '服务器规格',
   '应用类型',
@@ -579,6 +660,9 @@ export function managedRowsCsv(rows: IpManagedRow[]): string {
     lines.push(
       [
         row.ip,
+        row.hostName,
+        row.appEnvs && row.appEnvs.length ? formatDeployEnvs(row.appEnvs) : '',
+        row.owner,
         row.managed,
         row.spec,
         row.appType,

@@ -11,6 +11,7 @@ import {
   ChevronDown,
 } from 'lucide-react';
 import { Shell } from '../page';
+import { formatBeijingTime } from '@/lib/datetime';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { NativeSelect } from '@/components/ui/native-select';
@@ -294,12 +295,7 @@ export default function EcsView({ detail = false }: { detail?: boolean }) {
             <div className="eyebrow">ALIYUN · CN-SHANGHAI</div>
             <h1>{detail ? '阿里云资源列表' : '阿里云资源汇总'}</h1>
             <p>
-              上海区域 · ECS 快照{' '}
-              {new Date(fetchedAt).toLocaleString('zh-CN', {
-                timeZone: 'Asia/Shanghai',
-                hour12: false,
-              })}
-              （北京时间）
+              上海区域 · ECS 快照 {formatBeijingTime(fetchedAt)}（北京时间）
             </p>
           </div>
           <a

@@ -34,6 +34,7 @@ COLLECTORS=(
   check_codeup_access.py
   export_slb.py
   export_nat.py
+  export_dms.py
   fetch_ecs_inventory.py
 )
 ROOT_DIR="$(cd .. && pwd)"

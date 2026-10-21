@@ -86,9 +86,22 @@ test('an expired Cookie can be saved while a sync job is running', () => {
   assert.doesNotMatch(disabled[1], /running/, '保存设置不应受 running 约束');
 });
 
-test('sync, switch and per-source buttons stay locked while a job runs', () => {
-  const triggers = [
-    "act('sync')",
+test('sync and topology stay locked while any task runs', () => {
+  // Full sync and Topology generation must wait for every task (primary +
+  // concurrent retries) to finish.
+  for (const action of ["act('sync')", 'generateTopology()']) {
+    const { tag } = tagFor(action);
+    assert.ok(tag, `未找到 ${action} 按钮`);
+    const disabled = tag.match(/disabled=\{([^}]*)\}/);
+    assert.ok(disabled, `${action} 缺少 disabled 条件`);
+    assert.match(disabled[1], /anyRunning/, `${action} 应在任一任务运行期间禁用`);
+  }
+});
+
+test('per-source buttons are gated by server retryability', () => {
+  // A single source is unlocked exactly when the server reports it retryable
+  // (its own collection failed in the running full sync); otherwise locked.
+  for (const action of [
     "act('local_gitlab')",
     "syncSource('ecs')",
     "syncSource('clb')",
@@ -96,14 +109,12 @@ test('sync, switch and per-source buttons stay locked while a job runs', () => {
     "syncSource('jumpserver')",
     "syncSource('devops')",
     "syncSource('codeup')",
-    "generateTopology()",
-  ];
-  for (const action of triggers) {
+  ]) {
     const { tag } = tagFor(action);
     assert.ok(tag, `未找到 ${action} 按钮`);
     const disabled = tag.match(/disabled=\{([^}]*)\}/);
     assert.ok(disabled, `${action} 缺少 disabled 条件`);
-    assert.match(disabled[1], /running/, `${action} 应在任务运行期间禁用`);
+    assert.match(disabled[1], /!sourceEnabled\(/, `${action} 应受服务端 retryable 约束`);
   }
 });
 
@@ -118,7 +129,22 @@ test('topology generation is exposed with persisted version metadata and downloa
 
 test('version switch inside the history table keeps its own lock', () => {
   const { source } = buttonTags();
-  assert.match(source, /disabled=\{\s*busy \|\|\s*running \|\|\s*v\.status !== 'ready'/);
+  assert.match(source, /disabled=\{\s*busy \|\|\s*anyRunning \|\|\s*v\.status !== 'ready'/);
+});
+
+test('concurrent retry jobs are surfaced from server state', () => {
+  const { source } = buttonTags();
+  assert.match(source, /type Job = \{/);
+  assert.match(source, /extraJobs\?: Job\[\]/);
+  assert.match(source, /sourceStates\?: Record<string, SourceState>/);
+  assert.match(source, /并发重试任务/);
+  assert.match(source, /state\.extraJobs/);
+});
+
+test('the running-job notice names retryable sources', () => {
+  const { source } = buttonTags();
+  assert.match(source, /retryableLabels/);
+  assert.match(source, /可立即点击对应「单独同步」并发重试/);
 });
 
 test('the running-job notice explains that saving stays available', () => {

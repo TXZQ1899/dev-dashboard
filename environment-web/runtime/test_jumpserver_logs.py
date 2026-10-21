@@ -90,6 +90,43 @@ class JumpServerLogTests(unittest.TestCase):
             self.assertEqual(progress['completed'], 30)
             self.assertIn('JumpServer', progress['phase'])
 
+    def test_duplicate_ip_assets_are_collected_once(self):
+        # JumpServer may register the same machine twice (old record with hostname=IP,
+        # re-imported as IP_hostname). Only one record per IP is inspected and kept.
+        dup_assets = [
+            {'id': 'a1', 'hostname': '10.0.0.1', 'ip': '10.0.0.1', 'os': 'linux', 'platform': 'Linux'},
+            {'id': 'a2', 'hostname': '10.0.0.1_web01', 'ip': '10.0.0.1', 'os': 'linux', 'platform': 'Linux'},
+            {'id': 'a3', 'hostname': 'db01', 'ip': '10.0.0.2', 'os': 'linux', 'platform': 'Linux'},
+            {'id': 'a4', 'hostname': 'db01', 'ip': '10.0.0.2', 'os': 'linux', 'platform': 'Linux'},
+        ]
+        seen = {}
+        def spy_collect(assets, get, cookie, folidev_pw='', root_alt1='', root_alt2='', ip_map=None, progress=None):
+            seen['ids'] = [a['id'] for a in assets]
+            return fake_collect_servers(assets, get, cookie, folidev_pw, root_alt1, root_alt2, ip_map, progress)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            install_slot_logs(tmp / 'slots')
+            try:
+                import threading
+                threading.current_thread().name = 'slot:1'
+                with patch.object(collect, 'collect_servers', spy_collect):
+                    result = jumpserver('cookie', tmp, '', fetcher=make_fetcher(assets=dup_assets))
+            finally:
+                sys.stdout = sys.__stdout__
+            # a2 wins for 10.0.0.1 (real hostname beats pure-IP hostname); first record wins on a tie.
+            self.assertEqual(seen['ids'], ['a2', 'a3'])
+            self.assertEqual([a['id'] for a in result['assets']], ['a2', 'a3'])
+            text = (tmp / 'slots' / '1.log').read_text()
+            self.assertIn('JumpServer 授权资产：4 台', text)
+            self.assertIn('同 IP 重复资产：2 条跳过采集', text)
+            self.assertIn('10.0.0.1（10.0.0.1）', text)
+            self.assertIn('共 2 台', text)
+            snapshot = json.loads((tmp / 'jumpserver-snapshot.json').read_text())
+            self.assertEqual([a['id'] for a in snapshot['assets']], ['a2', 'a3'])
+            # Skipped duplicate ids must not linger in the groups: service.validate()
+            # requires group assetIds to match the snapshot asset list exactly.
+            self.assertEqual([a for g in snapshot['groups'] for a in g['assetIds']], ['a2', 'a3'])
+
     def test_logs_never_leak_the_cookie_or_password(self):
         # Collection logs are surfaced in the browser; secrets must not appear.
         with tempfile.TemporaryDirectory() as tmp:

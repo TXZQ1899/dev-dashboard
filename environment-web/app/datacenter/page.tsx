@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { Cpu, MemoryStick, Server, Boxes, Download } from 'lucide-react';
 import { Shell } from '../page';
+import { formatBeijingTime } from '@/lib/datetime';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import {
@@ -136,18 +137,8 @@ export default function DatacenterPage() {
             <p>
               本地机房服务器：10.58.1 / 10.58.9 / 10.58.10 / 10.58.140
               四个网段
-              {fetchedAt
-                ? ' · 规格采集 ' +
-                  new Date(fetchedAt).toLocaleString('zh-CN', {
-                    timeZone: 'Asia/Shanghai',
-                    hour12: false,
-                  })
-                : ' · 规格未采集'}
-              {' · 清单采集 ' +
-                new Date(inventoryDateStr).toLocaleString('zh-CN', {
-                  timeZone: 'Asia/Shanghai',
-                  hour12: false,
-                })}
+              {fetchedAt ? ` · 规格采集 ${formatBeijingTime(fetchedAt)}` : ' · 规格未采集'}
+              {` · 清单采集 ${formatBeijingTime(inventoryDateStr)}`}
             </p>
           </div>
         </div>

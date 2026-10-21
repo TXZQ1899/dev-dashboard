@@ -73,6 +73,21 @@ export function processType(process: Process): ProcessType {
   if(/^python[\d.]*$/.test(executable)||/^python[\d.]*$/.test(process.name))return 'Python';
   return '其他进程';
 }
+// 中间件进程：数据库/缓存/消息队列/搜索等共享基础服务，通常不归属任何 DevOps
+// 应用，但同样处于业务链路中，需要与业务应用一样提供“检测上下游”入口。
+// 已单独归类的中间件按类型判断；MongoDB/Elasticsearch/原生 RabbitMQ 等未归类的
+// 中间件按可执行文件名或命令行关键字识别。
+const middlewareTypes=new Set<ProcessType>(['MySQL','PostgreSQL','Redis','Kafka']);
+export function isMiddlewareProcess(process: Process): boolean {
+  if(process.system)return false;
+  if(middlewareTypes.has(processType(process)))return true;
+  const executable=(args(process.command)[0]||'').split('/').pop()||'';
+  const name=process.name||'';
+  if(/^(?:mongod|mongos)$/i.test(executable)||/^(?:mongod|mongos)$/i.test(name))return true;
+  if(/^(?:rabbitmq-server|rabbitmq)$/i.test(executable)||/^rabbitmq/i.test(name))return true;
+  if(/elasticsearch/i.test(name)||/elasticsearch/i.test(process.command))return true;
+  return /\b(?:rabbitmq|rocketmq|activemq)\b/i.test(process.command);
+}
 export function runningSeconds(process: Process, checkedAt: string, now: number): number {
   const observed=Date.parse(checkedAt);
   const elapsed=Number.isFinite(process.elapsedSeconds)?Math.max(0,process.elapsedSeconds):0;
@@ -117,6 +132,15 @@ export function filterProcesses(rows: ProcessRow[], query: string, duration: Dur
   const words=query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   return rows.filter(r=> (type==='全部进程'||r.type===type) && matchesDuration(r.seconds,duration) && words.every(word=>`${r.asset.ip} ${r.asset.hostname} ${r.process.pid} ${r.name} ${r.process.command}`.toLowerCase().includes(word)))
     .sort((a,b)=>b.seconds-a.seconds||a.asset.ip.localeCompare(b.asset.ip)||a.process.pid-b.process.pid||a.asset.id.localeCompare(b.asset.id));
+}
+// 服务器详情框内的进程搜索：按 PID、进程名（含业务名）、监听端口与详细命令匹配；
+// 多个关键词以空格分隔，需全部命中（AND）。空查询命中所有行。
+export function matchesProcessQuery(row: ProcessRow, query: string) {
+  const words=query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if(!words.length)return true;
+  const ports=(row.process.ports||[]).join(' ');
+  const haystack=`${row.process.pid} ${row.process.name} ${row.name} ${ports} ${row.process.command}`.toLowerCase();
+  return words.every(word=>haystack.includes(word));
 }
 export function paginate<T>(rows: T[], page: number, size: number) {
   const pages=Math.max(1,Math.ceil(rows.length/size));const current=Math.max(1,Math.min(page,pages));

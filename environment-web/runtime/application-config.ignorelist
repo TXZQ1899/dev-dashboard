@@ -1,0 +1,16 @@
+# Application configuration exclusions, matched against full paths with find -path.
+# One glob per line; blank lines and lines starting with # are ignored.
+# Matching directories are pruned before file counts and size limits are applied.
+
+*/classes/mapper
+*/mybatis-config
+*/mybatis-config.*
+
+# Tomcat defaults (keep server.xml, context.xml and application configuration).
+*/conf/catalina.properties
+*/conf/jaspic-providers.xml
+*/conf/logging.properties
+*/conf/tomcat-users.xml
+*/conf/web.xml
+*/WEB-INF/web.xml
+*/conf/yum/yum.conf

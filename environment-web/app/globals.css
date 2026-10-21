@@ -1047,6 +1047,61 @@ h2 {
 .ip-miss-row {
   background: #fdf5f4;
 }
+.application-check-panel {
+  margin-top: 24px;
+  padding: 20px;
+  border: 1px solid var(--border, #d8e1db);
+  border-radius: 12px;
+}
+.check-heading, .check-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.check-controls { justify-content: flex-start; margin: 16px 0; }
+.check-controls select { border: 1px solid #cbd5d1; border-radius: 6px; padding: 6px; background: var(--background, white); }
+.check-note { display: block; font-size: 12px; color: #68776e; margin-top: 5px; }
+.check-error { color: #b45309; }
+.check-flows { margin: 22px 0; overflow-x: auto; }
+.check-flows h3 { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
+.check-evidence { min-width: 260px; max-width: 440px; overflow-wrap: anywhere; }
+.application-check-panel details { margin-top: 12px; }
+.application-check-panel summary { cursor: pointer; color: #24866a; }
+.application-check-panel details p { margin: 8px 0; }
+.check-live { margin-top: 20px; padding: 18px; border: 1px solid var(--border, #d8e1db); border-radius: 10px; background: #f7faf8; color: #26392e; }
+.check-live-heading { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.check-live-heading h3 { font-size: 15px; font-weight: 650; }
+.check-live-status { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 20px; background: #e5eee8; font-size: 12px; }
+.check-live-status i, .check-live-indicator { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #82968a; flex-shrink: 0; }
+.check-live-status[data-running="true"] i, .check-live-indicator[data-active="true"] { background: #24866a; }
+.check-live-indicator[data-warning="true"] { background: #c28421; }
+.check-live-elapsed { margin-left: auto; font-size: 12px; font-variant-numeric: tabular-nums; color: #68776e; }
+.check-live-phase { display: block; margin-top: 12px; font-size: 14px; overflow-wrap: anywhere; }
+.check-live-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 16px 0; }
+.check-live-metrics > div { padding: 12px; background: var(--background, white); border: 1px solid #e0e9e3; border-radius: 8px; }
+.check-live-metrics span { display: block; font-size: 12px; color: #68776e; }
+.check-live-metrics strong { display: block; margin-top: 5px; font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.check-live-metrics small { font-size: 12px; font-weight: 400; }
+.check-live-sampling > div { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 12px; color: #68776e; }
+.check-live-sampling progress { display: block; width: 100%; height: 6px; margin: 8px 0; accent-color: #24866a; }
+.check-live-activities { max-height: 300px; overflow: auto; margin-top: 16px; border-top: 1px solid #e0e9e3; }
+.check-live-activity { display: flex; align-items: flex-start; gap: 10px; padding: 12px 0; border-bottom: 1px solid #e0e9e3; }
+.check-live-activity .check-live-indicator { margin-top: 6px; }
+.check-live-activity strong { font-size: 12px; font-weight: 600; }
+.check-live-activity p { margin: 3px 0; font-size: 13px; overflow-wrap: anywhere; }
+.check-live-activity small { font-size: 12px; color: #68776e; }
+.check-live-events summary { font-size: 12px; }
+.check-live-events ol { list-style: none; margin-top: 10px; padding: 12px; max-height: 240px; overflow: auto; background: #182b24; color: #e4eee8; border-radius: 8px; }
+.check-live-events li { display: flex; gap: 14px; padding: 4px 0; font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.check-live-events time { flex-shrink: 0; color: #a7bfb1; font-variant-numeric: tabular-nums; }
+@media (max-width: 700px) {
+  .check-live { padding: 12px; }
+  .check-live-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .check-live-events li { flex-direction: column; gap: 1px; }
+}
+
 .ip-set-tabs {
   display: flex;
   gap: 4px;
@@ -1402,6 +1457,55 @@ h2 {
   border-color: #f59e0b;
   background: #fef3c7;
   color: #92400e;
+}
+/* IP 单元格内的服务器名称 / 环境 / 资源归属元信息。 */
+.ip-meta-cell .ip-meta-name {
+  margin-top: 1px;
+}
+.ip-meta-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.env-chip,
+.owner-chip {
+  display: inline-block;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.env-chip-test {
+  color: #1d4ed8;
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+.env-chip-simulation {
+  color: #7e22ce;
+  border-color: #e9d5ff;
+  background: #faf5ff;
+}
+.env-chip-product {
+  color: #166534;
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+.env-chip-none {
+  color: #9aa3ad;
+  background: #f8faf9;
+}
+.owner-local {
+  color: #9a3412;
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+.owner-cloud {
+  color: #075985;
+  border-color: #bae6fd;
+  background: #f0f9ff;
 }
 .ip-detail-box {
   padding: 16px 20px;
@@ -1779,3 +1883,28 @@ h2 {
 .settings-log-tablist button.active{border-color:#175cd3;background:#eff8ff;color:#175cd3;font-weight:600}
 .settings-log-panel{max-height:360px;overflow:auto;margin:0;padding:12px;background:#101828;color:#d0d5dd;border-radius:6px;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap}
 .settings-log-panel[hidden]{display:none}
+
+.check-page { padding: 28px clamp(16px, 3vw, 48px); max-width: 1720px; margin: 0 auto; }
+.check-back, .check-download { color: #24866a; font-size: 13px; text-decoration: underline; text-underline-offset: 3px; }
+.check-page .application-check-panel { background: var(--background, white); margin-top: 18px; }
+.check-heading h2 { font-size: 23px; font-weight: 650; }
+.check-files { border-top: 1px solid var(--border, #d8e1db); margin-top: 28px; padding-top: 24px; }
+.check-files h3 { font-size: 17px; font-weight: 600; }
+.check-file { border: 1px solid var(--border, #d8e1db); border-radius: 8px; padding: 12px 14px; }
+.check-file summary { overflow-wrap: anywhere; font-family: ui-monospace, monospace; font-size: 13px; }
+.check-file summary small { display: block; color: #68776e; font-family: inherit; margin: 5px 0 0 16px; }
+.check-files pre { margin-top: 12px; padding: 16px; border-radius: 8px; border: 1px solid #d8e1db; background: #f5f8f6; color: #26392e; font-size: 12px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 520px; overflow: auto; }
+.check-log-heading { margin-top: 28px; }
+.check-files .check-controls select { max-width: min(840px, 75vw); }
+.check-files .check-log-content { background: #182b24; color: #e4eee8; }
+.check-log-tabs { margin-top: 12px; }
+.check-log-history { max-height: 480px; overflow: auto; margin-top: 16px; border: 1px solid var(--border, #d8e1db); border-radius: 8px; }
+.check-log-history table { width: 100%; border-collapse: collapse; font-size: 13px; text-align: left; }
+.check-log-history th, .check-log-history td { padding: 10px 14px; border-bottom: 1px solid var(--border, #d8e1db); }
+.check-log-history th { position: sticky; top: 0; background: var(--background, white); font-weight: 600; }
+.check-log-history td:first-child { font-family: ui-monospace, monospace; overflow-wrap: anywhere; min-width: 240px; }
+.check-log-history td:not(:first-child) { white-space: nowrap; }
+@media (max-width: 700px) { .check-page { padding: 16px 12px; } .check-page .application-check-panel { padding: 16px 12px; } .check-heading h2 { font-size: 20px; } }
+.check-config-list { max-height: 480px; overflow: auto; padding-right: 6px; }
+.check-config-list:empty { display: none; }
+.check-files output { display: block; }

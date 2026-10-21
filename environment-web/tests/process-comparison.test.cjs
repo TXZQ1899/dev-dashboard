@@ -45,9 +45,13 @@ const ecsInstanceRows = [
   { privateIps: ['172.16.0.5'], publicIps: ['47.100.1.1'], cpu: 8, memoryGiB: 16 },
 ];
 
+// process-comparison.ts 的时间格式化已委托给 lib/datetime.ts（统一北京时间实现）。
+const datetimeModule = evaluate(path.join(__dirname, '../lib/datetime.ts'));
+
 const lib = evaluate(
   path.join(__dirname, '../lib/process-comparison.ts'),
   (id) => {
+    if (id === './datetime') return datetimeModule;
     if (id === '@/lib/jumpserver') return jumpserverModule;
     if (id === '@/lib/server-processes')
       return {
@@ -801,6 +805,91 @@ test('appMatchOnIp uses tomcat base directory as business name', () => {
   const note = lib.appMatchOnIp(app, '10.0.0.57');
   assert.equal(note.kind, 'process');
   assert.equal(note.processName, '/opt/apache-tomcat_phoenix-open-web_37864');
+});
+
+test('tomcatInstanceName extracts business name from catalina home/base', () => {
+  // 用户案例：-Dcatalina.home=/opt/apache-tomcat_dolphin-webhook → dolphin-webhook
+  assert.equal(
+    lib.tomcatInstanceName(makePidProc(23251, '/opt/jdk1.8.0_101/jre/bin/java -Djava.util.logging.config.file=/opt/apache-tomcat_dolphin-webhook/conf/logging.properties -Dcatalina.base=/opt/apache-tomcat_dolphin-webhook -Dcatalina.home=/opt/apache-tomcat_dolphin-webhook -classpath /opt/apache-tomcat_dolphin-webhook/bin/bootstrap.jar org.apache.catalina.startup.Bootstrap start').command),
+    'dolphin-webhook',
+  );
+  // catalina.base 优先于 catalina.home
+  assert.equal(
+    lib.tomcatInstanceName('java -Dcatalina.base=/opt/apache-tomcat_a-base -Dcatalina.home=/opt/apache-tomcat_b-home org.apache.catalina.startup.Bootstrap'),
+    'a-base',
+  );
+  // 无 catalina 参数时从命令行 apache-tomcat_* 路径回退提取（保留 PID 后缀，关联时仍按命令匹配应用）
+  assert.equal(
+    lib.tomcatInstanceName(makePidProc(3, '/opt/jdk/bin/java -Djava.util.logging.config.file=/opt/apache-tomcat_phoenix-open-web_37864/conf/logging.properties -server').command),
+    'phoenix-open-web_37864',
+  );
+  // 连字符分隔同样支持
+  assert.equal(
+    lib.tomcatInstanceName('java -Dcatalina.home=/opt/tomcat-simple-app org.apache.catalina.startup.Bootstrap'),
+    'simple-app',
+  );
+  // 通用 tomcat 目录名（无业务名段）与非 Tomcat 命令返回 undefined
+  assert.equal(lib.tomcatInstanceName('java -Dcatalina.home=/opt/tomcat org.apache.catalina.startup.Bootstrap'), undefined);
+  assert.equal(lib.tomcatInstanceName('java -Dcatalina.home=/opt/apache-tomcat org.apache.catalina.startup.Bootstrap'), undefined);
+  assert.equal(lib.tomcatInstanceName('java -jar /srv/app.jar'), undefined);
+});
+
+test('tomcatProcessApp links the deployed app matching the tomcat instance', () => {
+  const dolphinCmd = makePidProc(23251, '/opt/jdk1.8.0_101/jre/bin/java -Dcatalina.base=/opt/apache-tomcat_dolphin-webhook -Dcatalina.home=/opt/apache-tomcat_dolphin-webhook -classpath /opt/apache-tomcat_dolphin-webhook/bin/bootstrap.jar org.apache.catalina.startup.Bootstrap start');
+  const dolphinApp = { ...makeEnvApp('dolphin-webhook', [{ ip: '10.58.1.34' }]), id: '1441' };
+  // 同机部署且进程匹配 → 命中应用 1441
+  assert.equal(lib.tomcatProcessApp('10.58.1.34', dolphinCmd, [dolphinApp])?.id, '1441');
+  // 应用部署在其他机器 → 不关联
+  assert.equal(lib.tomcatProcessApp('10.58.1.35', dolphinCmd, [dolphinApp]), undefined);
+  // IP trim 后精确比较
+  assert.equal(lib.tomcatProcessApp(' 10.58.1.34 ', dolphinCmd, [dolphinApp])?.id, '1441');
+});
+
+test('tomcatProcessApp prefers exact instance-name match over substring candidates', () => {
+  // dolphin-webhook 与 dolphin-webhook-batch 都在本机有部署记录，且通用子串规则
+  // 都会命中 batch 实例的命令行；实例名精确匹配应选中 batch 应用自身。
+  const batchCmd = makePidProc(2001, 'java -Dcatalina.home=/opt/apache-tomcat_dolphin-webhook-batch org.apache.catalina.startup.Bootstrap start');
+  const core = { ...makeEnvApp('dolphin-webhook', [{ ip: '10.58.1.34' }]), id: '1441' };
+  const batch = { ...makeEnvApp('dolphin-webhook-batch', [{ ip: '10.58.1.34' }]), id: '1500' };
+  assert.equal(lib.tomcatProcessApp('10.58.1.34', batchCmd, [core, batch])?.id, '1500');
+  // 实例目录带 _PID 后缀时规范化不相等，回退到首个按命令匹配的候选应用
+  const pidCmd = makePidProc(37864, 'java -Dcatalina.home=/opt/apache-tomcat_phoenix-open-web_37864 org.apache.catalina.startup.Bootstrap start');
+  const phoenix = { ...makeEnvApp('phoenix-open-web', [{ ip: '10.58.1.34' }]), id: '1600' };
+  assert.equal(lib.tomcatProcessApp('10.58.1.34', pidCmd, [phoenix])?.id, '1600');
+  // 本机无任何匹配应用 → undefined
+  assert.equal(lib.tomcatProcessApp('10.58.1.34', batchCmd, []), undefined);
+});
+
+test('jarBusinessName strips .jar/.war suffix and keeps original case', () => {
+  assert.equal(lib.jarBusinessName('java -jar /srv/App-Api.jar --server.port=8080'), 'App-Api');
+  assert.equal(lib.jarBusinessName('java -Xmx2G -jar /var/www/webapps/fcrs-base/fcrs-base-exec.war'), 'fcrs-base-exec');
+  // 仅保留 basename，去掉路径
+  assert.equal(lib.jarBusinessName('java -jar /opt/app/bin/target/cashier.jar'), 'cashier');
+  // 非 -jar 启动 → undefined
+  assert.equal(lib.jarBusinessName('java -Dcatalina.home=/opt/apache-tomcat_x org.apache.catalina.startup.Bootstrap'), undefined);
+  assert.equal(lib.jarBusinessName('nginx: master process /usr/sbin/nginx'), undefined);
+});
+
+test('jarProcessApp links the deployed app matching the jar name', () => {
+  const jarCmd = makePidProc(23252, 'java -Xmx2G -jar /srv/cashier.jar --server.port=7003');
+  const cashier = { ...makeEnvApp('cashier', [{ ip: '10.58.1.34' }]), id: '1441' };
+  // 同机部署且 jar 名匹配 → 命中应用 1441
+  assert.equal(lib.jarProcessApp('10.58.1.34', jarCmd, [cashier])?.id, '1441');
+  // 应用部署在其他机器 → 不关联
+  assert.equal(lib.jarProcessApp('10.58.1.35', jarCmd, [cashier]), undefined);
+  // 进程是其他 jar、本机部署记录不匹配 → undefined
+  assert.equal(lib.jarProcessApp('10.58.1.34', makePidProc(1, 'java -jar /srv/other.jar'), [cashier]), undefined);
+});
+
+test('jarProcessApp prefers exact jar-name match over substring candidates', () => {
+  // cashier 与 cashier-batch 都在本机，且通用子串规则都会命中 batch 的 jar 名；
+  // jar 名精确匹配应选中 batch 应用自身。
+  const batchCmd = makePidProc(2002, 'java -jar /srv/cashier-batch.jar');
+  const core = { ...makeEnvApp('cashier', [{ ip: '10.58.1.34' }]), id: '1441' };
+  const batch = { ...makeEnvApp('cashier-batch', [{ ip: '10.58.1.34' }]), id: '1500' };
+  assert.equal(lib.jarProcessApp('10.58.1.34', batchCmd, [core, batch])?.id, '1500');
+  // 本机无任何匹配应用 → undefined
+  assert.equal(lib.jarProcessApp('10.58.1.34', batchCmd, []), undefined);
 });
 
 test('appMatchOnIp prefers appPorts listening port correlated by pid over command flag', () => {

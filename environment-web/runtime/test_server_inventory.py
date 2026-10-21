@@ -154,6 +154,26 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
             chunks=iter(['echo INVabc _BEGIN\nINVabc_BEGIN\n','0\nINVabc_END:0\n'])
             self.assertEqual(terminal.run('id -u'),(0,'0'))
 
+    def test_probe_command_waits_until_the_interactive_prompt_is_ready(self):
+        terminal=object.__new__(inv.Terminal)
+        sent=[]
+        terminal.send=sent.append
+        terminal._prompt_ready=False
+        terminal._prompt_tail=''
+        chunks=iter(['[root@test ~]# ', 'INVabc_BEGIN\n0\nINVabc_END:0\n', '[root@test ~]# '])
+        received=[0]
+        def receive():
+            value=next(chunks)
+            if received[0]==0:
+                self.assertEqual(sent, [])
+            received[0]+=1
+            return value
+        terminal.recv=receive
+        with patch.object(inv.uuid,'uuid4',return_value=type('U',(),{'hex':'abc'})()):
+            self.assertEqual(terminal.run('id -u',wait_for_prompt=True),(0,'0'))
+        self.assertTrue(terminal._prompt_ready)
+        self.assertEqual(len(sent),1)
+
     def test_sudo_login_shell_passwordless_correct_and_wrong(self):
         for mode in ('passwordless','password','password_error'):
             terminal=object.__new__(inv.Terminal)

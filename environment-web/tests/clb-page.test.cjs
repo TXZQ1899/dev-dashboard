@@ -18,6 +18,8 @@ function render(view, fixture, resources={}){
  const eip=evaluate('lib/eip.ts',()=>JSON.parse(fs.readFileSync('lib/eip-snapshot.json','utf8')));
  const dns=evaluate('lib/dns.ts',id=>id==='./eip'?eip:{zones:[],sources:[],records:[]});
  const nat=evaluate('lib/nat.ts',()=>resources.nat || {available:false,gateways:[],collectedAt:null});
+ // 页面时间展示已统一委托给 lib/datetime.ts。
+ const datetimeLib=evaluate('lib/datetime.ts',()=>({}));
  const page=evaluate('app/aliyun/clb/page.tsx',id=>{
   if(id==='react')return {...React,useEffect:()=>{},useState:initial=>[initial==='certificates'&&view?view:initial,()=>{}]};
   if(id==='react/jsx-runtime')return require(id);
@@ -27,6 +29,7 @@ function render(view, fixture, resources={}){
   if(id==='@/lib/nat')return nat;
   if(id==='@/lib/ecs')return {instances:resources.ecs || [],fetchedAt:'today'};
   if(id==='@/lib/jumpserver')return {jumpserver:{assets:[]}};
+  if(id==='@/lib/datetime')return datetimeLib;
   if(id==='@/app/page')return {Shell:({children})=>children};
   if(id.includes('input'))return {Input:()=>null};
   if(id.includes('button'))return {Button:({children})=>React.createElement('button',null,children)};

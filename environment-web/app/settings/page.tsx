@@ -12,6 +12,7 @@ import {
   TableHead,
   TableCell,
 } from '@/components/ui/table';
+import { formatBeijingTime } from '@/lib/datetime';
 
 type Source = 'devops' | 'aliyun' | 'jumpserver' | 'local_gitlab';
 type Version = {
@@ -22,7 +23,7 @@ type Version = {
   kind: string;
   note?: string;
   error?: string;
-  counts?: { applications: number; repositories: number; servers: number; ecs?: number; clb?: number | null; nat?: number | null; dnat?: number | null };
+  counts?: { applications: number; repositories: number; servers: number; ecs?: number; clb?: number | null; nat?: number | null; dnat?: number | null; dms?: number | null };
 };
 type Topology = {
   id: string;
@@ -38,6 +39,27 @@ type Topology = {
   viewHref: string;
   downloadHref: string;
 };
+type Job = {
+  id: string;
+  kind: string;
+  status: string;
+  phase: string;
+  startedAt: string;
+  progress?: {
+    phase?: string;
+    completed?: number;
+    total?: number;
+    current?: string;
+    sources?: Record<string, string>;
+    slots?: Record<string, { source: string | null; status: string }>;
+    slotHistory?: Record<string, { source: string; status: string }[]>;
+    jumpServer?: { phase?: string; completed?: number; total?: number };
+  };
+  logTail?: string;
+  slotLogs?: Record<string, string>;
+  failures?: { source: string; type: string; credential?: string; message: string; credentialUpdatedAt?: string }[];
+};
+type SourceState = { busy: boolean; retryable: boolean; reason?: string };
 type State = {
   topology?: Topology | null;
   folidev?: { configured: boolean; updatedAt?: string };
@@ -47,26 +69,9 @@ type State = {
   schedule: { enabled: boolean; time: string };
   current: { id: string; activatedAt: string };
   versions: Version[];
-  job?: {
-    id: string;
-    kind: string;
-    status: string;
-    phase: string;
-    startedAt: string;
-    progress?: {
-      phase?: string;
-      completed?: number;
-      total?: number;
-      current?: string;
-      sources?: Record<string, string>;
-      slots?: Record<string, { source: string | null; status: string }>;
-      slotHistory?: Record<string, { source: string; status: string }[]>;
-      jumpServer?: { phase?: string; completed?: number; total?: number };
-    };
-    logTail?: string;
-    slotLogs?: Record<string, string>;
-    failures?: { source: string; type: string; credential?: string; message: string; credentialUpdatedAt?: string }[];
-  };
+  job?: Job;
+  extraJobs?: Job[];
+  sourceStates?: Record<string, SourceState>;
   storage: string;
 };
 const sources: [Source, string][] = [
@@ -75,13 +80,9 @@ const sources: [Source, string][] = [
   ['jumpserver', 'JumpServer'],
   ['local_gitlab', 'Local GitLab（http://gitlab.dev.thomascook.com.cn/）'],
 ];
+// 展示时间统一走 lib/datetime（北京时间），无值时显示占位符。
 function date(value?: string) {
-  return value
-    ? new Date(value).toLocaleString('zh-CN', {
-        timeZone: 'Asia/Shanghai',
-        hour12: false,
-      })
-    : '—';
+  return formatBeijingTime(value, '—');
 }
 export default function SettingsPage() {
   const [state, setState] = useState<State | null>(null);
@@ -136,7 +137,7 @@ export default function SettingsPage() {
     setState(data);
     return data;
   }
-  async function syncSource(source: 'local-gitlab' | 'codeup' | 'devops' | 'ecs' | 'clb' | 'nat' | 'jumpserver') {
+  async function syncSource(source: 'local-gitlab' | 'codeup' | 'devops' | 'ecs' | 'clb' | 'nat' | 'dms' | 'jumpserver') {
     setBusy(true);
     setError('');
     try {
@@ -195,6 +196,26 @@ export default function SettingsPage() {
     }
   }
   const running = state?.job?.status === 'running';
+  const extraRunningJobs = (state?.extraJobs ?? []).filter((j) => j.status === 'running');
+  const anyRunning = running || extraRunningJobs.length > 0;
+  // Full sync / switch / topology stay locked while any task runs; a single
+  // source is unlocked by the server exactly when its own collection failed and
+  // a concurrent retry is safe.
+  const sourceEnabled = (key: string) => state?.sourceStates?.[key]?.retryable ?? !anyRunning;
+  const sourceReason = (key: string) => state?.sourceStates?.[key]?.reason || undefined;
+  const sourceLabel: Record<string, string> = {
+    ecs: 'ECS',
+    clb: 'CLB',
+    nat: 'NAT',
+    dms: 'DMS',
+    jumpserver: 'JumpServer',
+    codeup: '云效',
+    local_gitlab: 'Local GitLab',
+    devops: 'DevOps',
+  };
+  const retryableLabels = Object.entries(state?.sourceStates ?? {})
+    .filter(([, s]) => s.retryable)
+    .map(([key]) => sourceLabel[key] ?? key);
   return (
     <Shell active="settings">
       <main className="settings-page">
@@ -290,26 +311,31 @@ export default function SettingsPage() {
                 <Button disabled={busy} onClick={() => act('save')}>
                   保存设置
                 </Button>
-                <Button disabled={busy || running} onClick={() => act('sync')}>
-                  {running ? '任务进行中…' : '保存并一键同步'}
+                <Button disabled={busy || anyRunning} onClick={() => act('sync')}>
+                  {anyRunning ? '任务进行中…' : '保存并一键同步'}
                 </Button>
-                <Button disabled={busy || running} variant="outline" onClick={() => act('local_gitlab')}>
+                <Button disabled={busy || !sourceEnabled('local_gitlab')} variant="outline" title={sourceReason('local_gitlab')} onClick={() => act('local_gitlab')}>
                   单独同步 Local GitLab
                 </Button>
-                <Button disabled={busy || running} variant="outline" onClick={() => syncSource('ecs')}>单独同步 ECS</Button>
-                <Button disabled={busy || running} variant="outline" onClick={() => syncSource('clb')}>单独同步 CLB</Button>
-                <Button disabled={busy || running} variant="outline" onClick={() => syncSource('nat')}>单独同步 NAT</Button>
-                <Button disabled={busy || running} variant="outline" onClick={() => syncSource('jumpserver')}>单独同步 JumpServer</Button>
-                <Button disabled={busy || running} variant="outline" onClick={() => syncSource('devops')}>单独同步 DevOps</Button>
-                <Button disabled={busy || running} variant="outline" onClick={() => syncSource('codeup')}>单独同步云效</Button>
+                <Button disabled={busy || !sourceEnabled('ecs')} variant="outline" title={sourceReason('ecs')} onClick={() => syncSource('ecs')}>单独同步 ECS</Button>
+                <Button disabled={busy || !sourceEnabled('clb')} variant="outline" title={sourceReason('clb')} onClick={() => syncSource('clb')}>单独同步 CLB</Button>
+                <Button disabled={busy || !sourceEnabled('nat')} variant="outline" title={sourceReason('nat')} onClick={() => syncSource('nat')}>单独同步 NAT</Button>
+                <Button disabled={busy || !sourceEnabled('dms')} variant="outline" title={sourceReason('dms')} onClick={() => syncSource('dms')}>单独同步 DMS</Button>
+                <Button disabled={busy || !sourceEnabled('jumpserver')} variant="outline" title={sourceReason('jumpserver')} onClick={() => syncSource('jumpserver')}>单独同步 JumpServer</Button>
+                <Button disabled={busy || !sourceEnabled('devops')} variant="outline" title={sourceReason('devops')} onClick={() => syncSource('devops')}>单独同步 DevOps</Button>
+                <Button disabled={busy || !sourceEnabled('codeup')} variant="outline" title={sourceReason('codeup')} onClick={() => syncSource('codeup')}>单独同步云效</Button>
               </div>
-              {running && (
+              {anyRunning && (
                 <p className="settings-hint" role="status">
-                  任务进行中：仍可保存 Cookie（不会影响正在运行的任务，下次同步生效）；同步与版本切换需等待任务结束。
+                  任务进行中：仍可保存 Cookie（不会影响正在运行的任务，下次同步生效）。
+                  {retryableLabels.length > 0
+                    ? `本轮同步中${retryableLabels.join('、')}已失败，可立即点击对应「单独同步」并发重试；`
+                    : '同步与版本切换需等待任务结束；'}
+                  单个数据源仅在其本轮采集失败后才能并发重试，其余来源需等待任务结束。
                 </p>
               )}
               <p className="settings-hint">
-                同步 DevOps、云效、Local GitLab、JumpServer、上海 ECS、CLB 和 NAT（DNAT IP / 端口映射）。ECS 项目名称目录沿用前版，实例及项目 ID 每次重新采集。每次同步新建目录，完整采集并验证后才启用。同步可能需要数十分钟。
+                同步 DevOps、云效、Local GitLab、JumpServer、上海 ECS、CLB、NAT（DNAT IP / 端口映射）和 DMS 数据库实例。ECS 项目名称目录沿用前版，实例及项目 ID 每次重新采集。每次同步新建目录，完整采集并验证后才启用。同步可能需要数十分钟。
               </p>
             </section>
             {state.job && (
@@ -362,6 +388,58 @@ export default function SettingsPage() {
                 </small>
               </section>
             )}
+            {(state.extraJobs ?? []).length > 0 && (
+              <section className="panel settings-panel" aria-live="polite">
+                <h2>并发重试任务</h2>
+                <p className="settings-hint">
+                  全量同步该来源已失败时发起的单独重试；结果构建为独立版本，不影响进行中的主任务。
+                </p>
+                {(state.extraJobs ?? []).map((job) => (
+                  <div key={job.id} className="settings-extra-job">
+                    <p>
+                      <strong>{sourceLabel[job.kind] ?? job.kind}</strong> ·{' '}
+                      {job.status === 'running'
+                        ? '进行中'
+                        : job.status === 'succeeded'
+                          ? '已完成'
+                          : '失败'}
+                    </p>
+                    <p>{job.phase}</p>
+                    {job.progress?.total ? (
+                      <p className="settings-progress">
+                        进度：{job.progress.completed ?? 0} / {job.progress.total}
+                        {job.progress.current ? ` · 当前：${job.progress.current}` : ''}
+                      </p>
+                    ) : null}
+                    {job.logTail ? (
+                      <details className="settings-log">
+                        <summary>查看完整日志</summary>
+                        <pre>{job.logTail}</pre>
+                      </details>
+                    ) : null}
+                    {job.failures && job.failures.length > 0 ? (
+                      <details className="settings-log settings-failures" open>
+                        <summary>采集失败原因（{job.failures.length} 项）</summary>
+                        <ul className="settings-failure-list">
+                          {job.failures.map((f, i) => (
+                            <li key={i} className="settings-failure-item">
+                              <span className="settings-failure-source">{f.source}</span>
+                              <span className="settings-failure-type">
+                                {f.credential ? `${f.type}（凭据：${f.credential}）` : f.type}
+                              </span>
+                              <span className="settings-failure-message">{f.message}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    ) : null}
+                    <small>
+                      {date(job.startedAt)} · {job.id}
+                    </small>
+                  </div>
+                ))}
+              </section>
+            )}
             <section className="panel settings-panel" id="topology-settings">
               <h2>Topology 数据</h2>
               {state.topology ? (
@@ -396,7 +474,7 @@ export default function SettingsPage() {
                 <p className="settings-hint">尚未生成 Topology。生成后会保存到 Docker 数据卷，并保留独立版本号。</p>
               )}
               <div className="flex flex-wrap gap-3" style={{ marginTop: 16 }}>
-                <Button disabled={busy || running} onClick={() => generateTopology()}>
+                <Button disabled={busy || anyRunning} onClick={() => generateTopology()}>
                   {busy ? '生成中…' : '基于当前数据版本生成 Topology'}
                 </Button>
               </div>
@@ -448,7 +526,7 @@ export default function SettingsPage() {
                         </TableCell>
                         <TableCell>
                           {v.counts
-                            ? `${v.counts.applications} 应用 / ${v.counts.repositories} 仓库 / ${v.counts.servers} 堡垒机资产 / ${v.counts.ecs ?? '—'} ECS / ${v.counts.clb ?? '未采集'} CLB / ${v.counts.nat ?? '未采集'} NAT / ${v.counts.dnat ?? '未采集'} DNAT`
+                            ? `${v.counts.applications} 应用 / ${v.counts.repositories} 仓库 / ${v.counts.servers} 堡垒机资产 / ${v.counts.ecs ?? '—'} ECS / ${v.counts.clb ?? '未采集'} CLB / ${v.counts.nat ?? '未采集'} NAT / ${v.counts.dnat ?? '未采集'} DNAT / ${v.counts.dms ?? '未采集'} DMS`
                             : '—'}
                         </TableCell>
                         <TableCell>{v.error || v.note || '—'}</TableCell>
@@ -457,7 +535,7 @@ export default function SettingsPage() {
                             variant="outline"
                             disabled={
                               busy ||
-                              running ||
+                              anyRunning ||
                               v.status !== 'ready' ||
                               v.id === state.current.id
                             }

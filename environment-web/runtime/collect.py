@@ -20,6 +20,7 @@ from service import write, read
 from server_inventory import collect_servers, is_10_58
 from aliyun import collect_clb, collect_ecs, normalize_clb, ecs_snapshot
 from export_nat import collect as collect_nat, normalize_nat
+from export_dms import collect as collect_dms
 
 # Readers must never observe half-written progress or snapshot JSON.
 daily.save_json = write
@@ -109,6 +110,24 @@ def jumpserver(cookie, folder, folidev_pw="", root_alt1="", root_alt2="", ip_map
     all_assets = assets('/api/v1/perms/users/assets/')
     if not all_assets: raise ExportError('JumpServer 返回空清单，请检查账号权限')
     print(f'JumpServer 授权资产：{len(all_assets)} 台', flush=True)
+    # 同一 IP 可能被登记为多条资产（如旧记录 hostname 直接用 IP，后来又按「IP_主机名」重新导入）。
+    # 采集与快照按 IP 去重：优先保留 hostname 不是纯 IP 的记录，重复记录只采一次。
+    by_ip, duplicates = {}, []
+    for a in all_assets:
+        key = a.get('ip') or a['id']
+        prev = by_ip.get(key)
+        if prev is None:
+            by_ip[key] = a
+        elif prev.get('hostname') in ('', key) and a.get('hostname') not in ('', key):
+            duplicates.append(prev)
+            by_ip[key] = a
+        else:
+            duplicates.append(a)
+    if duplicates:
+        print('JumpServer 同 IP 重复资产：' + str(len(duplicates)) + ' 条跳过采集：'
+              + '、'.join(f"{a.get('hostname')}（{a.get('ip')}）" for a in duplicates), flush=True)
+    keep_ids = {a['id'] for a in by_ip.values()}
+    unique_assets = [a for a in all_assets if a['id'] in keep_ids]
     nodes = [n for n in get('/api/v1/perms/users/nodes/') if n['id'] != 'favorite']
     print(f'JumpServer 授权分组：{len(nodes)} 个', flush=True)
     keys = {n['key']: n for n in nodes}
@@ -122,19 +141,23 @@ def jumpserver(cookie, folder, folidev_pw="", root_alt1="", root_alt2="", ip_map
         parts = node['key'].split(':')
         node['path'] = ' / '.join(keys[':'.join(parts[:i])]['name'] for i in range(1, len(parts)+1))
     if covered != {a['id'] for a in all_assets}: raise ExportError('JumpServer 分组未覆盖完整资产')
+    # 同一 IP 的重复资产只采一条，被跳过的 id 也必须从分组资产列表里剔除：
+    # 否则分组会引用快照 assets 中不存在的资产，激活校验报「分组与资产不一致」。
+    for node in nodes:
+        node['assetIds'] = [aid for aid in node['assetIds'] if aid in keep_ids]
     for node in nodes:
         child_ids = {aid for child in nodes if child['parentKey'] == node['key'] for aid in child['assetIds']}
         node['assetsOutsideChildGroups'] = len(set(node['assetIds']) - child_ids)
     result = {'collectedAt': daily.now(), 'groups': nodes,
-              'assets': [{k: a.get(k) for k in ('id','hostname','ip','os','platform')} for a in all_assets]}
-    print(f'JumpServer 开始检查服务器、进程与 Nginx（共 {len(all_assets)} 台，最多 6 台并行）', flush=True)
-    total_assets = len(all_assets)
+              'assets': [{k: a.get(k) for k in ('id','hostname','ip','os','platform')} for a in unique_assets]}
+    print(f'JumpServer 开始检查服务器、进程与 Nginx（共 {len(unique_assets)} 台，最多 6 台并行）', flush=True)
+    total_assets = len(unique_assets)
     def report_progress(done, total):
         write(folder/'server-progress.json', {'phase':'正在通过 JumpServer 检查服务器、进程与 Nginx', 'completed':done, 'total':total})
         # Log at a readable cadence; the last asset always closes the run.
         if done % 25 == 0 or done == total:
             print(f'JumpServer 检查：{done}/{total} 台', flush=True)
-    inspections, map_updates = collect_servers(all_assets, get, cookie, folidev_pw, root_alt1, root_alt2, ip_map or {}, report_progress)
+    inspections, map_updates = collect_servers(unique_assets, get, cookie, folidev_pw, root_alt1, root_alt2, ip_map or {}, report_progress)
     specs_list = []
     for asset in result['assets']:
         inspection = inspections[asset['id']]
@@ -334,7 +357,7 @@ def main():
             if key not in credentials: continue
             p = daily.ROOT / name
             p.write_text(credentials[key]['value']); p.chmod(0o600)
-        if mode in ('ecs', 'clb', 'nat', 'jumpserver', 'devops', 'jumpserver_asset'):
+        if mode in ('ecs', 'clb', 'nat', 'dms', 'jumpserver', 'devops', 'jumpserver_asset'):
             if mode == 'ecs':
                 daily.save_json(folder / 'progress.json', {'phase': '正在独立采集阿里云 ECS 实例'})
                 raw = collect_ecs(credentials['aliyun']['value'], folder/'ecs')
@@ -346,6 +369,9 @@ def main():
             elif mode == 'nat':
                 daily.save_json(folder / 'progress.json', {'phase': '正在独立采集阿里云 NAT 网关与 DNAT IP / 端口映射'})
                 daily.save_json(folder/'nat-snapshot.json', normalize_nat(collect_nat(credentials['aliyun']['value'], folder/'nat')))
+            elif mode == 'dms':
+                daily.save_json(folder / 'progress.json', {'phase': '正在独立采集阿里云 DMS 数据库实例'})
+                daily.save_json(folder/'dms-snapshot.json', collect_dms(credentials['aliyun']['value'], folder/'dms'))
             elif mode == 'jumpserver':
                 daily.save_json(folder / 'progress.json', {'phase': '正在独立采集 JumpServer 资产和分组'})
                 jumpserver(credentials['jumpserver']['value'], folder,
@@ -438,6 +464,7 @@ def main():
             'ECS': ecs_job,
             'CLB': lambda: write(folder/'clb-snapshot.json', normalize_clb(collect_clb(credentials['aliyun']['value'], folder/'clb'))),
             'NAT': lambda: write(folder/'nat-snapshot.json', normalize_nat(collect_nat(credentials['aliyun']['value'], folder/'nat'))),
+            'DMS': lambda: write(folder/'dms-snapshot.json', collect_dms(credentials['aliyun']['value'], folder/'dms')),
             'JumpServer': lambda: jumpserver(credentials['jumpserver']['value'], folder,
                            credentials.get('folidev',{}).get('value',''),
                            credentials.get('rootAlt1',{}).get('value',''),

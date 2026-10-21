@@ -85,6 +85,7 @@ COPY --from=collectors --chown=node:node \
 COPY --from=collectors --chown=node:node \
     export_slb.py \
     export_nat.py \
+    export_dms.py \
     fetch_ecs_inventory.py \
     ./runtime/
 

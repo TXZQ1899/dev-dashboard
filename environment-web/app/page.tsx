@@ -37,6 +37,7 @@ import { SettingsLink } from '@/components/settings-link';
 import { fetchedAt as ecsDate } from '@/lib/ecs';
 import { fetchedAt as specsDate } from '@/lib/server-specs';
 import { clb } from '@/lib/clb';
+import { formatBeijingDate, formatBeijingMinute, formatBeijingTime } from '@/lib/datetime';
 export function Shell({
   children,
   active = 'dashboard',
@@ -44,6 +45,35 @@ export function Shell({
   children: React.ReactNode;
   active?: string;
 }) {
+  // 侧栏「环境资产快照」时间：统一按北京时间展示（ecsDate 是 UTC，直接截断会差 8 小时）。
+  const snapshotMinute =
+    active === 'topology'
+      ? '实时查询'
+      : active === 'clb'
+        ? formatBeijingMinute(clb.collectedAt, '该版本未采集')
+        : active.startsWith('ecs-')
+          ? formatBeijingMinute(ecsDate)
+          : active === 'jumpserver'
+            ? formatBeijingMinute(jumpserver.collectedAt)
+            : active === 'datacenter'
+              ? formatBeijingMinute(specsDate, '未采集')
+              : active === 'repos'
+                ? formatBeijingMinute(repositorySnapshot.accessDate)
+                : formatBeijingMinute(inventoryDate);
+  const snapshotDate =
+    active === 'topology'
+      ? '实时查询'
+      : active === 'clb'
+        ? formatBeijingDate(clb.collectedAt, '未采集')
+        : active === 'jumpserver'
+          ? formatBeijingDate(jumpserver.collectedAt)
+          : active === 'datacenter'
+            ? formatBeijingDate(specsDate, '未采集')
+            : active.startsWith('ecs-')
+              ? formatBeijingDate(ecsDate)
+              : active === 'repos'
+                ? formatBeijingDate(repositorySnapshot.accessDate)
+                : formatBeijingDate(inventoryDate);
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -88,7 +118,11 @@ export function Shell({
             href="/aliyun/instances"
           >
             <Server size={18} />
-            阿里云资源
+            阿里云ECS资源
+          </a>
+          <a className={active === 'dms' ? 'active' : ''} href="/aliyun/dms">
+            <Database size={18} />
+            阿里云DMS资源
           </a>
           <a
             className={active === 'clb' ? 'active' : ''}
@@ -115,22 +149,7 @@ export function Shell({
         <div className="side-note">
           <Database size={18} />
           <strong>环境资产快照</strong>
-          <span>
-            {active === 'topology'
-              ? '实时查询'
-              : active === 'clb' ? (clb.collectedAt?.replace('T', ' ').slice(0,16) ?? '该版本未采集') : active.startsWith('ecs-')
-              ? ecsDate.replace('T', ' ').slice(0,16)
-              : (active === 'jumpserver'
-                  ? jumpserver.collectedAt
-                  : active === 'datacenter'
-                    ? (specsDate ?? '未采集')
-                    : active === 'repos'
-                      ? repositorySnapshot.accessDate
-                      : inventoryDate
-                  )
-                    .replace('T', ' ')
-                    .slice(0, 16)}
-          </span>
+          <span>{snapshotMinute}</span>
           <small>
             {active === 'topology' ? '按当前 Topology 版本实时遍历' : '基于导出清单的静态数据'}
           </small>
@@ -147,7 +166,9 @@ export function Shell({
           <SettingsLink />
           <span>
             工作空间 <b>/</b>{' '}
-            {active === 'topology' ? '拓扑路径查询' : active === 'clb' ? 'CLB 全景' : active === 'resources'
+            {active === 'topology' ? '拓扑路径查询' : active === 'clb' ? 'CLB 全景' : active === 'dms'
+              ? '阿里云DMS资源'
+              : active === 'resources'
               ? '服务器资源全景'
               : active === 'settings'
                 ? 'Settings · 数据同步'
@@ -156,9 +177,9 @@ export function Shell({
                   : active === 'datacenter'
                     ? '本地机房资源'
                     : active === 'ecs-summary'
-                      ? '阿里云资源汇总'
+                      ? '阿里云ECS资源汇总'
                       : active === 'ecs-list'
-                        ? '阿里云资源列表'
+                        ? '阿里云ECS资源列表'
                         : active === 'repos'
                           ? '代码库全景'
                           : active === 'apps'
@@ -168,15 +189,7 @@ export function Shell({
           <span className="snapshot">
             <i />
             快照模式 <b>·</b>{' '}
-            {active === 'topology' ? '实时查询' : active === 'clb' ? (clb.collectedAt?.slice(0,10) ?? '未采集') : active === 'jumpserver'
-              ? jumpserver.collectedAt.slice(0, 10)
-              : active === 'datacenter'
-                ? (specsDate?.slice(0, 10) ?? '未采集')
-                : active.startsWith('ecs-')
-                  ? ecsDate.slice(0,10)
-                  : active === 'repos'
-                    ? repositorySnapshot.accessDate.slice(0, 10)
-                    : inventoryDate.slice(0, 10)}
+            {snapshotDate}
           </span>
         </header>
         {children}
@@ -434,7 +447,7 @@ export default function Home() {
         <footer className="page-footer">
           <span>
             <i />
-            清单采集时间：{inventoryDate.replace('T', ' ').slice(0, 19)}
+            清单采集时间：{formatBeijingTime(inventoryDate)}
           </span>
           <span>统计仅反映导出时状态，不代表实时运行健康度</span>
         </footer>

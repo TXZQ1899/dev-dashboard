@@ -1,3 +1,4 @@
 exports/
 *cookie*.txt
+*/config/*.csv
 __pycache__/

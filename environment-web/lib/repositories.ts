@@ -1,4 +1,6 @@
 import data from './repositories.json';
+import { formatBeijingTime } from './datetime';
+
 export type Repository = {
   id: string;
   name: string;
@@ -228,8 +230,7 @@ export function filterGroups(query: string, filter: string, order: string, perio
     );
 }
 export function formatRepoTime(value?: string) {
-  if (!value) return '未采集';
-  return new Date(value).toLocaleString('zh-CN', {timeZone:'Asia/Shanghai',hour12:false});
+  return formatBeijingTime(value, '未采集');
 }
 export function matchesRepository(repo: Repository, period: string, pipeline: string, reference = repositorySnapshot.accessDate) {
   const linked = repo.apps.length > 0;

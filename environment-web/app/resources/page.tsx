@@ -1,6 +1,7 @@
 'use client';
 import { Fragment, useState, useEffect } from 'react';
 import { Shell } from '@/app/page';
+import { formatBeijingTime } from '@/lib/datetime';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import {
@@ -48,11 +49,9 @@ function Highlight({ text, query }: { text: string; query: string }) {
   parts.push(text.slice(start));
   return <>{parts}</>;
 }
+// 采集时间统一按北京时间展示。
 function date(raw: string) {
-  return new Date(raw).toLocaleString('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    hour12: false,
-  });
+  return formatBeijingTime(raw, '—');
 }
 export default function ResourcesPage() {
   const [filters, setFilters] = useState<ComparisonFilters>({

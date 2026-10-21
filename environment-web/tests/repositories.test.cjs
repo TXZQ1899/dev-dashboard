@@ -8,10 +8,25 @@ const filename = path.resolve(__dirname, '../lib/repositories.ts');
 const source = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, esModuleInterop: true },
 }).outputText;
+// 时间格式化已统一委托给 lib/datetime.ts；它也是 .ts，需要先编译并接入模块解析。
+const datetimeFile = path.resolve(__dirname, '../lib/datetime.ts');
+const datetimeModule = new Module(datetimeFile, module);
+datetimeModule.filename = datetimeFile;
+datetimeModule.paths = module.paths;
+datetimeModule._compile(ts.transpileModule(fs.readFileSync(datetimeFile, 'utf8'), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, esModuleInterop: true },
+}).outputText, datetimeFile);
+Module._cache[datetimeFile] = datetimeModule;
+const originalResolveFilename = Module._resolveFilename;
+Module._resolveFilename = function (request, parent, ...rest) {
+  if (request === './datetime' && parent && parent.filename === filename) return datetimeFile;
+  return originalResolveFilename.call(this, request, parent, ...rest);
+};
 const mod = new Module(filename, module);
 mod.filename = filename;
 mod.paths = module.paths;
 mod._compile(source, filename);
+Module._resolveFilename = originalResolveFilename;
 const { groups, summary, unmatched, repositorySnapshot, filterGroups } =
   mod.exports;
 test('commit filters use commit date only and compose with pipeline association',()=>{

@@ -70,6 +70,179 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(len(self.service.status()['versions']),1)
         self.assertEqual(s.Service().status()['current'],current)
 
+    def application_check_fixture(self):
+        self.service.save_settings({'cookies':{'jumpserver':'cookie=private'}})
+        folder = self.service.version(self.service.status()['current']['id'])
+        snapshot = s.read(folder/'jumpserver-snapshot.json')
+        snapshot['assets'][0]['inspection'] = {'processes':[{'pid':123,'startedAt':'2026-10-15T01:00:00+00:00'}]}
+        s.write(folder/'jumpserver-snapshot.json', snapshot)
+        return {'asset':'server','pid':123,'environment':'TEST','duration':10}
+
+    def test_application_check_validates_scope_and_persists_private_job(self):
+        payload = self.application_check_fixture()
+        for invalid in ({'pid':True}, {'pid':0}, {'pid':'123'}, {'environment':'ALL'}, {'duration':0}, {'duration':301}, {'asset':'other'}):
+            with self.assertRaises(ValueError): self.service.start_application_check({**payload, **invalid})
+        with patch.object(s.threading.Thread, 'start'):
+            result = self.service.start_application_check(payload)
+        identifier = result['job']['id']
+        self.assertEqual(self.service.application_check_state(identifier)['job']['pid'],123)
+        self.assertNotIn('private',json.dumps(result))
+        self.assertEqual((self.data/'checks'/identifier/'job.json').stat().st_mode & 0o777,0o600)
+        with self.assertRaises(ValueError):self.service.start_application_check(payload)
+        with self.assertRaises(ValueError):self.service.application_check_state('../escape')
+
+    def test_application_check_restart_marks_interruption(self):
+        payload = self.application_check_fixture()
+        with patch.object(s.threading.Thread, 'start'):
+            result = self.service.start_application_check(payload)
+        restarted = s.Service()
+        self.assertEqual(restarted.application_check_state(result['job']['id'])['job']['status'],'failed')
+        self.assertEqual(restarted.application_check_state()['job']['status'],'failed')
+
+    def test_application_check_cancel_and_collection_conflict(self):
+        payload = self.application_check_fixture()
+        with patch.object(s.threading.Thread, 'start'):
+            result = self.service.start_application_check(payload)
+        self.service.backend = {'port':3101}
+        with self.assertRaises(ValueError):self.service.start('sync')
+        self.service.cancel_application_check(result['job']['id'])
+        self.assertTrue(self.service.check_cancel.is_set())
+
+    def test_application_check_worker_failure_persists_safe_report(self):
+        payload = self.application_check_fixture()
+        with patch.object(s.threading.Thread, 'start'):
+            result = self.service.start_application_check(payload)
+        identifier = result['job']['id']
+        with patch('application_check.inspect_application', side_effect=ValueError('password=private-secret')):
+            self.service.work_application_check(identifier, {'id':'server','ip':'10.0.0.1'}, {'pid':123},
+                {}, {}, {}, {}, 'TEST', 10, self.service.check_cancel)
+        state = self.service.application_check_state(identifier)
+        self.assertEqual(state['report']['error']['code'],'CHECK_INTERNAL_ERROR')
+        self.assertEqual(state['report']['error']['stage'],'worker')
+        self.assertEqual(state['job']['status'],'failed')
+        self.assertNotIn('private-secret',json.dumps(state))
+
+    def test_application_check_accepts_automatic_environment(self):
+        payload = self.application_check_fixture()
+        payload.pop('environment')
+        with patch.object(s.threading.Thread, 'start'):
+            result = self.service.start_application_check(payload)
+        self.assertIsNone(result['job']['environment'])
+
+    def test_application_check_live_progress_preserves_target_and_bounds_private_history(self):
+        payload = self.application_check_fixture()
+        with patch.object(s.threading.Thread, 'start'):
+            identifier = self.service.start_application_check(payload)['job']['id']
+        initial = self.service.application_check_state()
+        self.service.update_application_check_progress(identifier, '等待目标采样', stage='sampling',
+            samples=10, upstream=2, downstream=3, environment='PRODUCT', serverIp='10.0.0.1')
+        for i in range(70):
+            self.service.update_application_check_progress(identifier, f'对端已返回 {i} 帧', scope='peer',
+                assetId='peer', serverIp='10.0.0.2', stage='sampling', samples=i)
+        state = self.service.application_check_state(identifier)
+        job = state['job']
+        self.assertEqual(job['phase'], '等待目标采样')
+        self.assertEqual(job['environment'], 'PRODUCT')
+        self.assertEqual(job['progress'], {'samples':10, 'upstream':2, 'downstream':3})
+        self.assertEqual(len(job['activities']), 2)
+        self.assertEqual(job['activities'][1]['samples'], 69)
+        self.assertEqual(len(job['events']), 60)
+        self.assertEqual(job['events'][-1]['message'], '对端已返回 69 帧')
+        self.assertTrue(job['updatedAt'])
+        self.assertEqual(initial['job']['progress'], {})
+        self.assertEqual(len(initial['job']['activities']), 1)
+        self.assertEqual(s.read(self.data/'checks/latest.json'), job)
+        self.assertEqual((self.data/'checks'/identifier/'job.json').stat().st_mode & 0o777, 0o600)
+        self.assertNotIn('cookie=private', json.dumps(state))
+        self.service.update_application_check_progress('other-job', '过期回调')
+        self.assertEqual(self.service.application_check_state(identifier), state)
+
+    def test_application_check_cancellation_keeps_activity_until_report_saved(self):
+        payload = self.application_check_fixture()
+        with patch.object(s.threading.Thread, 'start'):
+            identifier = self.service.start_application_check(payload)['job']['id']
+        def inspect(*args, progress, **kwargs):
+            progress('已收到目标有效采样 5 帧', stage='sampling', samples=5, samplingStartedAt=s.now())
+            self.service.cancel_application_check(identifier)
+            progress('迟到的采样阶段', stage='sampling')
+            self.assertEqual(self.service.application_check_state(identifier)['job']['phase'], '正在结束检查并保存已观察证据')
+            return {'status':'cancelled', 'environment':'TEST'}
+        with patch('application_check.inspect_application', side_effect=inspect):
+            self.service.work_application_check(identifier, {'id':'server'}, {'pid':123}, {}, {}, {}, {},
+                'TEST', 10, self.service.check_cancel)
+        job = self.service.application_check_state(identifier)['job']
+        self.assertEqual(job['status'], 'cancelled')
+        self.assertEqual(job['progress']['samples'], 5)
+        self.assertTrue(job['progress']['samplingFinishedAt'])
+        self.assertEqual(job['activities'][0]['stage'], 'cancelled')
+        self.assertEqual(job['events'][-1]['message'], '核验已取消，已保留观察证据')
+        self.service.update_application_check_progress(identifier, '已结束任务的回调')
+        self.assertEqual(self.service.application_check_state(identifier)['job'], job)
+
+    def completed_check(self):
+        payload = self.application_check_fixture()
+        with patch.object(s.threading.Thread, 'start'):
+            result = self.service.start_application_check(payload)
+        self.service.check_job['status'] = 'complete'
+        identifier = result['job']['id']
+        s.write(self.data/'checks'/identifier/'job.json', self.service.check_job)
+        s.write(self.data/'checks'/identifier/'report.json', {'target':{'pid':123,'startTicks':'54321'}})
+        return identifier
+
+    def test_application_file_scope_rejects_ids_and_arbitrary_paths(self):
+        for identifier in (None, '../escape', ''):
+            with self.assertRaises(ValueError):self.service.application_file_context(identifier)
+        identifier = self.completed_check()
+        s.write(self.data/'checks'/identifier/'files.json', {'startTicks':'54321','files':[]})
+        class Terminal:
+            def close(self):pass
+        with patch.object(self.service,'open_application_files',return_value=(Terminal(),{'startTicks':'54321'},None)):
+            with self.assertRaisesRegex(ValueError,'文件不在'):
+                self.service.application_files({'id':identifier,'action':'read','file':'/etc/passwd'})
+        self.assertFalse(self.service.files_lock.locked())
+        with self.assertRaises(ValueError):self.service.log_archive_file(identifier)
+
+    def test_log_archive_survives_restart_and_blocks_conflicting_tasks(self):
+        identifier = self.completed_check()
+        s.write(self.data/'checks'/identifier/'files.json', {'files':[]})
+        with patch.object(s.threading.Thread,'start'):
+            self.service.start_log_archive(identifier)
+        with self.assertRaises(ValueError):self.service.start_application_check(self.application_check_fixture())
+        with self.assertRaises(ValueError):self.service.start('sync')
+        self.service.application_files({'id':identifier,'action':'cancel-archive'})
+        self.assertTrue(self.service.archive_cancel.is_set())
+        (self.data/'checks'/identifier/'logs.part').write_bytes(b'partial')
+        restarted = s.Service()
+        self.assertEqual(restarted.log_archive_state(identifier)['status'],'failed')
+        self.assertFalse((self.data/'checks'/identifier/'logs.part').exists())
+        s.write(self.data/'checks'/identifier/'archive.json',{'status':'complete'})
+        path=self.data/'checks'/identifier/'logs.tar.gz';path.write_bytes(b'archive')
+        self.assertEqual(restarted.log_archive_file(identifier),path)
+
+    def test_history_archive_scope_is_validated_persisted_and_sent_to_worker(self):
+        identifier = self.completed_check()
+        folder = self.data/'checks'/identifier
+        s.write(folder/'files.json', {'files':[]})
+        with patch.object(s.threading.Thread, 'start'):
+            result = self.service.application_files({'id':identifier, 'action':'archive', 'group':'history'})
+        self.assertEqual(result['logGroup'], 'history')
+        self.assertEqual(s.read(folder/'archive.json')['logGroup'], 'history')
+        class Terminal:
+            def close(self): pass
+        def pack(_terminal, _process, _roots, destination, *_args, **kwargs):
+            self.assertEqual(kwargs['group'], 'history')
+            destination.write_bytes(b'archive')
+            return {'size':7, 'fileCount':1, 'logGroup':'history', 'cutoff':0}
+        with patch.object(self.service, 'open_application_files', return_value=(Terminal(), {}, None)), \
+             patch('application_files.catalogue', return_value={'roots':{'log':['/app/logs']}}), \
+             patch('application_files.archive_logs', side_effect=pack):
+            self.service.work_log_archive(identifier)
+        self.assertEqual(self.service.log_archive_state(identifier)['status'], 'complete')
+        self.assertEqual(self.service.log_archive_file(identifier).read_bytes(), b'archive')
+        self.assertFalse(self.service.files_lock.locked())
+        with self.assertRaisesRegex(ValueError, '无效日志打包范围'):
+            self.service.application_files({'id':identifier, 'action':'archive', 'group':'bad'})
+
     def test_topology_generation_uses_current_version_and_persists_new_ids(self):
         current=self.service.status()['current']
         topology={'generatedAt':'2026-09-20T12:00:00+08:00','nodes':[{'id':'n'}],'edges':[{'id':'e'}],
@@ -177,6 +350,12 @@ class SettingsTests(unittest.TestCase):
         (folder/'clb-snapshot.json').unlink()
         self.assertIsNone(s.validate(folder)['clb'])
         self.assertFalse(s.read(folder/'clb-snapshot.json',s.EMPTY_CLB)['available'])
+
+    def test_legacy_versions_have_no_fabricated_dms(self):
+        folder=self.service.version(self.service.status()['current']['id'])
+        (folder/'dms-snapshot.json').unlink()
+        self.assertIsNone(s.validate(folder)['dms'])
+        self.assertFalse(s.read(folder/'dms-snapshot.json',s.EMPTY_DMS)['available'])
 
     def test_legacy_nat_and_invalid_rules(self):
         folder=self.service.version(self.service.status()['current']['id'])
@@ -378,6 +557,120 @@ class SettingsTests(unittest.TestCase):
         self.service.backend={'port':3101}
         self.service.job={'status':'running','kind':'switch'}
         with self.assertRaises(ValueError):self.service.start('switch',self.service.status()['current']['id'])
+
+    def running_sync(self, sources):
+        """A primary full sync in progress whose per-source states are `sources`."""
+        self.service.backend={'port':3101}
+        self.service.job={'id':'running-sync','kind':'sync','status':'running','startedAt':s.now(),'phase':'正在采集数据'}
+        s.write(self.data/'versions/running-sync/version.json',{'id':'running-sync','createdAt':s.now(),'status':'collecting','kind':'sync'})
+        s.write(self.data/'versions/running-sync/progress.json',{'phase':'并行采集','completed':0,'total':7,'sources':sources})
+        self.service.save_settings({'cookies':{'aliyun':'a=1','devops':'d=1','jumpserver':'j=1','local_gitlab':'l=1'}})
+        s.write(self.data/'job.json', self.service.job)
+
+    def test_per_source_retry_allowed_only_after_its_sync_source_failed(self):
+        self.running_sync({'ECS':'失败','CLB':'失败','NAT':'采集中','JumpServer':'采集中','Codeup':'等待','Local GitLab':'等待','DevOps':'完成'})
+        with patch.object(s.threading.Thread,'start'):
+            identifier=self.service.start('ecs')
+        # The retry runs as a concurrent extra job; the primary job is untouched.
+        self.assertTrue(identifier)
+        self.assertEqual(self.service.job['id'],'running-sync')
+        self.assertEqual(s.read(self.data/'job.json')['id'],'running-sync')
+        self.assertEqual(len(self.service.extra_jobs),1)
+        self.assertEqual(self.service.extra_jobs[0]['kind'],'ecs')
+        self.assertEqual(self.service.extra_jobs[0]['status'],'running')
+        self.assertEqual(s.read(self.data/'extra-jobs.json')[0]['kind'],'ecs')
+
+    def test_per_source_retry_rejected_while_source_collecting_or_waiting(self):
+        self.running_sync({'ECS':'采集中','CLB':'等待','NAT':'失败','JumpServer':'采集中','Codeup':'失败','Local GitLab':'等待','DevOps':'失败'})
+        # Only a source whose own collection already FAILED may be retried.
+        for kind in ('ecs','clb','local_gitlab'):
+            with self.assertRaises(ValueError):self.service.start(kind)
+        self.assertEqual(self.service.extra_jobs,[])
+
+    def test_per_source_retry_rejected_while_another_extra_runs(self):
+        self.running_sync({'ECS':'失败','NAT':'失败'})
+        with patch.object(s.threading.Thread,'start'):
+            self.service.start('ecs')
+        # A second concurrent retry would share the same base version; reject it.
+        with self.assertRaises(ValueError):self.service.start('nat')
+        self.assertEqual(len(self.service.extra_jobs),1)
+
+    def test_per_source_retry_rejected_on_single_source_main(self):
+        self.service.backend={'port':3101}
+        self.service.job={'id':'jg','kind':'jumpserver','status':'running','startedAt':s.now()}
+        self.service.save_settings({'cookies':{'aliyun':'a=1'}})
+        # A running single-source job never unlocks another source.
+        with self.assertRaises(ValueError):self.service.start('ecs')
+
+    def test_extra_job_updates_extra_jobs_not_main_job(self):
+        self.running_sync({'ECS':'失败'})
+        with patch.object(s.threading.Thread,'start'):
+            self.service.start('ecs')
+        record=self.service.extra_jobs[0]
+        self.service.job={'id':'running-sync','kind':'sync','status':'running','phase':'PRIMARY'}
+        s.write(self.data/'job.json', self.service.job)
+        self.service._set_job(record, phase='EXTRA')
+        self.assertEqual(s.read(self.data/'extra-jobs.json')[0]['phase'],'EXTRA')
+        self.assertEqual(s.read(self.data/'job.json')['phase'],'PRIMARY')
+
+    def test_extra_job_status_view_exposes_own_progress_and_log(self):
+        record={'id':'extra-1','kind':'ecs','status':'running','startedAt':s.now(),'phase':'任务准备中'}
+        s.write(self.data/'versions/extra-1/version.json',{'id':'extra-1','createdAt':s.now(),'status':'collecting','kind':'ecs'})
+        s.write(self.data/'versions/extra-1/progress.json',{'phase':'正在采集 ECS','completed':1,'total':2})
+        s.write(self.data/'versions/extra-1/collection.log','hello-extra-log')
+        self.service.extra_jobs=[record]
+        view=self.service._job_view(dict(record))
+        self.assertEqual(view['phase'],'正在采集 ECS')
+        self.assertEqual(view['progress']['total'],2)
+        self.assertIn('hello-extra-log',view['logTail'])
+        self.assertEqual(self.service.status()['extraJobs'][0]['id'],'extra-1')
+
+    def test_restart_marks_running_extra_job_failed(self):
+        s.write(self.data/'extra-jobs.json',[{'id':'extra-x','kind':'ecs','status':'running','startedAt':s.now()}])
+        s.write(self.data/'versions/extra-x/version.json',{'id':'extra-x','status':'collecting','createdAt':s.now()})
+        restored=s.Service()
+        self.assertEqual(restored.extra_jobs[0]['status'],'failed')
+        self.assertEqual(s.read(self.data/'versions/extra-x/version.json')['status'],'failed')
+
+    def test_any_running_covers_extra_jobs(self):
+        # The scheduler and conflict checks must treat a concurrent retry as a
+        # blocking task even when the primary job has already finished.
+        self.service.job={'status':'succeeded'}
+        self.service.extra_jobs=[{'id':'e','kind':'ecs','status':'running'}]
+        self.assertTrue(self.service._any_running())
+        self.service.extra_jobs=[{'id':'e','kind':'ecs','status':'succeeded'}]
+        self.assertFalse(self.service._any_running())
+
+    def test_sync_and_switch_blocked_while_extra_runs(self):
+        self.service.backend={'port':3101}
+        self.service.job={'status':'succeeded'}
+        self.service.extra_jobs=[{'id':'e','kind':'ecs','status':'running'}]
+        with self.assertRaises(ValueError):self.service.start('sync')
+        with self.assertRaises(ValueError):self.service.start('switch',self.service.status()['current']['id'])
+
+    def test_source_states_label_mapping(self):
+        self.running_sync({'ECS':'失败','CLB':'采集中','NAT':'等待','JumpServer':'采集中','Codeup':'失败','Local GitLab':'等待','DevOps':'完成'})
+        states=self.service._source_states()
+        self.assertTrue(states['ecs']['retryable'])
+        self.assertTrue(states['codeup']['retryable'])
+        self.assertTrue(states['clb']['busy'])
+        self.assertFalse(states['clb']['retryable'])
+        self.assertFalse(states['devops']['retryable'])
+        self.assertFalse(states['local_gitlab']['retryable'])
+
+    def test_activation_acquires_serialisation_lock(self):
+        identifier=self.service.status()['current']['id']
+        events=[]
+        class SpyLock:
+            def __enter__(self):events.append('enter')
+            def __exit__(self,*args):events.append('exit')
+        (self.app/'node_modules').mkdir()
+        with patch.object(s.subprocess,'run') as run,patch.object(self.service,'launch') as launch:
+            run.return_value.returncode=0
+            launch.return_value={'port':3101,'pid':1}
+            self.service.activate_lock=SpyLock()
+            self.service.activate(identifier)
+        self.assertEqual(events,['enter','exit'])
 
     def test_incomplete_group_coverage_rejected(self):
         s.write(self.app/'lib/jumpserver-snapshot.json',{'assets':[{'id':'server'}],'groups':[{'id':'g','assetIds':[]}]})

@@ -11,21 +11,36 @@ function evaluate(file,requireModule=()=>{}) {
  return sandbox.exports;
 }
 const lib=evaluate('lib/server-processes.ts');
+// 组件的时间展示已统一委托给 lib/datetime.ts。
+const datetimeLib=evaluate('lib/datetime.ts');
 const now=Date.parse('2026-09-18T12:00:00Z');
 function render(assets,options={}) {
  let index=0;
- // ServerInspections 的状态顺序：login, query, duration, page, size, sort, expanded, selected, procSort, inspect, pwTarget, pwBusy, pwError, now；
+ // ServerInspections 的状态顺序：login, query, duration, env, page, size, sort, expanded, selected, procSort, procQuery, inspect, pwTarget, pwBusy, pwError, now；
  // 之后是 ServerDetails：routeQuery, webappQuery, routeIndex, files, filesBusy, filesError；最后是密码弹窗的 password 输入。
- const state=[options.login||'can_login',options.query||'',options.duration||'all',options.page||1,options.size||25,options.sort||{field:'ip',dir:'asc'},options.expanded||{},options.selected||'',options.procSort||{},options.inspect||{},options.pwTarget||null,options.pwBusy||false,options.pwError||'',now,
+ const state=[options.login||'can_login',options.query||'',options.duration||'all',options.env||'all',options.page||1,options.size||25,options.sort||{field:'ip',dir:'asc'},options.expanded||{},options.selected||'',options.procSort||{},options.procQuery||{},options.inspect||{},options.pwTarget||null,options.pwBusy||false,options.pwError||'',now,
   options.routeQuery||'',options.webappQuery||'',typeof options.routeIndex==='number'?options.routeIndex:-1,options.files||null,false,'',''];
  const ui=evaluate('components/server-inspections.tsx',id=>{
   if(id==='react')return {...React,useEffect:()=>{},useMemo:f=>f(),useState:initial=>[index<state.length?state[index++]:typeof initial==='function'?initial():initial,()=>{}]};
   if(id==='react/jsx-runtime')return require(id);
   if(id==='@/lib/jumpserver')return {jumpserver:{assets,collectedAt:'2026-09-17T12:00:00Z'}};
   if(id==='@/lib/server-processes')return lib;
-  if(id==='@/lib/process-comparison')return {ipSpecSummary:ip=>ip==='10.0.0.2'?'2C 4G':''};
+  if(id==='@/lib/process-comparison')return {
+    ipSpecSummary:ip=>ip==='10.0.0.2'?'2C 4G':'',
+    ipDeployEnvironments:(ip)=>options.ipEnvs&&options.ipEnvs[ip]?options.ipEnvs[ip]:[],
+    appDeployEnvironments:(app)=>options.appEnvs&&options.appEnvs[app.id]?options.appEnvs[app.id]:[],
+    // 与 lib/process-comparison.ts 的 tomcatInstanceName 同口径的最小实现。
+    tomcatInstanceName:options.tomcatInstanceName||(cmd=>{const m=cmd.match(/(?:apache-)?tomcat[_\-]([^/\s]+)/i);return m?m[1]:undefined;}),
+    tomcatProcessApp:options.tomcatProcessApp||(()=>undefined),
+    jarBusinessName:options.jarBusinessName||(cmd=>{const t=(cmd.match(/"(?:\\.|[^"\\])*"|'[^']*'|[^\s]+/g)||[]).map(s=>s.replace(/^(['"])(.*)\1$/,'$2'));const i=t.indexOf('-jar');return i>=0&&t[i+1]?t[i+1].split('/').pop().replace(/\.(jar|war)$/i,''):undefined;}),
+    jarProcessApp:options.jarProcessApp||(()=>undefined),
+  };
+  if(id==='@/lib/inventory')return {envs:['TEST','SIMULATION','PRODUCT'],shortLabels:{TEST:'测试',SIMULATION:'仿真',PRODUCT:'生产'},labels:{TEST:'测试环境',SIMULATION:'仿真环境',PRODUCT:'生产环境'}};
+  if(id==='@/lib/datetime')return datetimeLib;
   if(id==='@/components/ui/input')return {Input:()=>null};
   if(id==='@/components/ui/button')return {Button:(props)=>React.createElement('button',props)};
+  if(id==='@/components/application-check-link')return {ApplicationCheckLink:(props)=>React.createElement('a',{className:'check-link'},`检测上下游:${props.asset}:${props.pid}`)};
+  if(id==='@/components/ip-meta-cell')return {IpMetaCell:(props)=>React.createElement('span',{className:'ip-meta-cell-stub'},'IPMETA ',React.createElement('code',null,props.ip),' ',React.createElement('small',null,props.hostName||props.ip))};
   if(id==='lucide-react')return {Download:()=>null,ChevronRight:props=>React.createElement('svg',props)};
   throw new Error(id);
  });
@@ -64,7 +79,8 @@ test('nginx route table explains the location uri and shows the static directory
 });
 test('server details list webapps applications with update time',()=>{
  const html=render([{...asset,inspection:{...inspection,webapps:{status:'complete',apps:[{name:'tc-fostay',mtime:'2026-09-30T03:24:05+00:00'},{name:'portal',mtime:null}]}}}],{selected:'a'});
- for(const text of ['Webapps 应用目录（2）','tc-fostay','portal','2026/9/30 11:24:05','—','已忽略 __ 开头'])assert.ok(html.includes(text),text);
+ // 时间统一按北京时间（UTC+8）格式化为 YYYY-MM-DD HH:mm:ss（源值 03:24:05+00:00 → 11:24:05）。
+ for(const text of ['Webapps 应用目录（2）','tc-fostay','portal','2026-09-30 11:24:05','—','已忽略 __ 开头'])assert.ok(html.includes(text),text);
 });
 test('webapps absent directory explains itself without an app table',()=>{
  const html=render([{...asset,inspection:{...inspection,webapps:{status:'absent',apps:[]}}}],{selected:'a'});
@@ -83,6 +99,14 @@ test('collapsed ip rows summarize spec, usage, listening ports and process categ
  for(const text of ['2C 4G','45%','72%','Java Jar 2','Nginx 1','监听端口数'])assert.ok(html.includes(text),text);
  assert.ok(html.includes('title="443, 8080">2<'),'监听端口数取 appPorts 数量并在提示中列出端口');
  assert.ok(!html.includes('详细命令'),'未展开时不展示进程明细');
+});
+test('ip column renders meta cell with hostname (falls back to IP when unnamed)',()=>{
+ const html=render([asset]);
+ assert.ok(html.includes('ip-meta-cell-stub'),'IP 列接入名称/环境/归属元信息单元');
+ assert.ok(html.includes('<code>10.0.0.2</code>'));
+ assert.ok(html.includes('>server</small>'),'展示 JumpServer 主机名');
+ const noName=render([{...asset,hostname:''}]);
+ assert.ok(noName.includes('>10.0.0.2</small>'),'主机名为空时元信息单元回退为 IP');
 });
 test('summary row has a reinspect button that shows busy state without expanding',()=>{
  const html=render([asset],{inspect:{a:{busy:true,message:'',error:''}}});
@@ -118,10 +142,60 @@ test('expanded ip shows a tab per present process category and filters rows by t
  const nginxOnly=render([{...asset,inspection:insp}],{expanded:{a:{type:'Nginx',page:1}}});
  assert.ok(nginxOnly.includes('nginx: master process'));assert.ok(!nginxOnly.includes('app-api.jar'));
 });
+test('expanded tomcat row shows instance business name without app link when unmatched',()=>{
+ const tomcat={...process,pid:23251,user:'root',name:'java',kind:'Java',command:'/opt/jdk1.8.0_101/jre/bin/java -Djava.util.logging.config.file=/opt/apache-tomcat_dolphin-webhook/conf/logging.properties -Dcatalina.base=/opt/apache-tomcat_dolphin-webhook -Dcatalina.home=/opt/apache-tomcat_dolphin-webhook org.apache.catalina.startup.Bootstrap start'};
+ const html=render([{...asset,inspection:{...inspection,processes:[tomcat]}}],{expanded:{a:{type:'Tomcat',page:1}}});
+ assert.ok(html.includes('dolphin-webhook'),'进程名取 catalina 实例目录业务名');
+ assert.ok(html.includes('Tomcat · root'),'保留进程类别与用户副信息');
+ assert.ok(!html.includes('/applications?appId='),'未关联到 DevOps 应用时不渲染跳转链接');
+ assert.ok(!html.includes('（1441）'),'未关联时不追加应用ID');
+});
+test('expanded tomcat row renders name with app id and links to applications page when matched',()=>{
+ const tomcat={...process,pid:23251,user:'root',name:'java',kind:'Java',command:'/opt/jdk1.8.0_101/jre/bin/java -Dcatalina.base=/opt/apache-tomcat_dolphin-webhook -Dcatalina.home=/opt/apache-tomcat_dolphin-webhook org.apache.catalina.startup.Bootstrap start'};
+ const html=render([{...asset,inspection:{...inspection,processes:[tomcat]}}],{
+   expanded:{a:{type:'Tomcat',page:1}},
+   tomcatProcessApp:(ip,p)=>ip==='10.0.0.2'&&p.pid===23251?{id:'1441',name:'dolphin-webhook'}:undefined,
+ });
+ assert.ok(html.includes('href="/applications?appId=1441#app-1441"'),'进程名链接到应用列表对应应用');
+ assert.ok(html.includes('dolphin-webhook（1441）'),'展示业务名与 DevOps 应用ID');
+});
+test('expanded java jar row shows jar name without suffix when unmatched',()=>{
+ const html=render([asset],{expanded:{a:{type:'Java Jar',page:1}}});
+ assert.ok(html.includes('app-api<small'),'进程名列显示去 .jar 后缀的 jar 文件名');
+ assert.ok(!html.includes('app-api.jar<small'),'进程名不再带 .jar 后缀（command 列仍保留完整命令）');
+ assert.ok(!html.includes('/applications?appId='),'未关联到 DevOps 应用时不渲染跳转链接');
+ assert.ok(!html.includes('（1441）'),'未关联时不追加应用ID');
+});
+test('expanded java jar row renders name with app id and links when matched',()=>{
+ const html=render([asset],{
+   expanded:{a:{type:'Java Jar',page:1}},
+   jarProcessApp:(ip,p)=>ip==='10.0.0.2'&&p.pid===2?{id:'1441',name:'app-api'}:undefined,
+ });
+ assert.ok(html.includes('href="/applications?appId=1441#app-1441"'),'进程名链接到应用列表对应应用');
+ assert.ok(html.includes('app-api（1441）'),'展示 jar 业务名与 DevOps 应用ID');
+});
 test('expanded process list paginates per server and clamps stale pages',()=>{
  const processes=Array.from({length:26},(_,i)=>({...process,pid:i+1,command:`java -jar app-${i+1}.jar`}));
  const html=render([{...asset,inspection:{...inspection,processes}}],{expanded:{a:{type:'全部进程',page:9}}});
  assert.match(html,/第 3 \/ 3 页/);assert.match(html,/app-26.jar/);assert.ok(!html.includes('app-1.jar'));
+});
+test('expanded process search filters rows by pid, process name and listening port',()=>{
+ const p1={...process,pid:1011,command:'java -jar /srv/app-api.jar'};
+ const p2={...process,pid:2022,name:'python3',kind:'Python',command:'python3 /srv/worker.py',ports:[9000]};
+ const p3={...process,pid:3033,name:'faiss-server',command:'faiss-server --serve',ports:[7070]};
+ const insp={...inspection,processes:[p1,p2,p3]};
+ const open={a:{type:'全部进程',page:1}};
+ const all=render([{...asset,inspection:insp}],{expanded:open});
+ assert.ok(all.includes('1011')&&all.includes('2022')&&all.includes('3033'),'no search shows every row');
+ const byPid=render([{...asset,inspection:insp}],{expanded:open,procQuery:{a:'1011'}});
+ assert.ok(byPid.includes('>1011<')&&!byPid.includes('>3033<'),'pid search keeps only the matching row');
+ assert.ok(byPid.includes('匹配 1 条进程'),'shows the matched count while searching');
+ const byPort=render([{...asset,inspection:insp}],{expanded:open,procQuery:{a:'9000'}});
+ assert.ok(byPort.includes('>9000<')&&!byPort.includes('>7070<'),'port search keeps only the matching row');
+ const byName=render([{...asset,inspection:insp}],{expanded:open,procQuery:{a:'python3'}});
+ assert.ok(byName.includes('>2022<')&&!byName.includes('>3033<'),'process name search keeps only the matching row');
+ const none=render([{...asset,inspection:insp}],{expanded:open,procQuery:{a:'nope-xyz'}});
+ assert.match(none,/没有匹配“nope-xyz”的进程/);
 });
 test('ip summary rows paginate by server',()=>{
  const assets=Array.from({length:26},(_,i)=>({id:'a'+i,ip:`10.0.0.${i+1}`,hostname:'h'+(i+1),inspection:{...inspection,processes:[{...process,pid:2,command:`java -jar app-${i+1}.jar`}]}}));
@@ -163,6 +237,26 @@ test('classifies tomcat, jar, kafka and node without classifying argument substr
  assert.equal(classify('/usr/bin/node /srv/nginx-helper.js','node','Nginx'),'Node');
  assert.equal(classify('nginx: master process /usr/sbin/nginx','nginx','Nginx'),'Nginx');
  assert.equal(lib.jarName({...process,command:`java -jar '/srv/application api.jar'`}), 'application api.jar');
+});
+test('middleware processes are recognized for upstream/downstream detection',()=>{
+ const p=(over)=>lib.isMiddlewareProcess({...process,...over});
+ assert.equal(p({command:'/usr/sbin/mysqld --defaults-file=/etc/my.cnf',name:'mysqld',kind:'MySQL'}),true,'MySQL');
+ assert.equal(p({command:'/usr/bin/redis-server 127.0.0.1:6379',name:'redis-server',kind:'Redis'}),true,'Redis');
+ assert.equal(p({command:'/usr/lib/postgresql/12/bin/postgres -D /var/lib/pgsql',name:'postgres',kind:'PostgreSQL'}),true,'PostgreSQL');
+ assert.equal(p({command:'java -cp libs/* kafka.Kafka config/server.properties'}),true,'Kafka');
+ assert.equal(p({command:'/usr/bin/mongod --config /etc/mongod.conf',name:'mongod',kind:'未分类'}),true,'MongoDB');
+ assert.equal(p({command:'java -cp libs/elasticsearch org.elasticsearch.bootstrap.Elasticsearch'}),true,'Elasticsearch');
+ assert.equal(p({command:'/usr/lib/rabbitmq/bin/rabbitmq-server',name:'rabbitmq-server',kind:'未分类'}),true,'原生 RabbitMQ');
+ assert.equal(p({command:'node /srv/app.js',name:'node',kind:'Node'}),false,'Node 非中间件');
+ assert.equal(p({command:'nginx: master process /usr/sbin/nginx',name:'nginx',kind:'Nginx'}),false,'Nginx 已另有入口');
+ assert.equal(p({command:'[kworker/0:1]',name:'kworker/0:1',system:true}),false,'系统进程');
+});
+test('expanded middleware rows expose the check link while non-middleware rows do not',()=>{
+ const mysql={pid:5,ppid:1,user:'mysql',name:'mysqld',kind:'MySQL',elapsedSeconds:86400,startedAt:'2026-09-17T12:00:00Z',command:'/usr/sbin/mysqld --defaults-file=/etc/my.cnf'};
+ const nodeProc={pid:6,ppid:1,user:'app',name:'node',kind:'Node',elapsedSeconds:86400,startedAt:'2026-09-17T12:00:00Z',command:'node /srv/app.js'};
+ const html=render([{...asset,inspection:{...inspection,processes:[mysql,nodeProc]}}],{expanded:{a:{type:'全部进程',page:1}}});
+ assert.ok(html.includes('检测上下游:a:5'),'中间件（MySQL）行显示检测上下游入口');
+ assert.ok(!html.includes('检测上下游:a:6'),'非中间件（Node）行不显示检测上下游入口');
 });
 test('listening ports show in summary count and expanded rows, with an em dash when none',()=>{
  const open={a:{type:'全部进程',page:1}};
@@ -286,6 +380,39 @@ test('search combines IP, command and type with duration; failed assets never co
  assert.equal(lib.filterProcesses(rows,'10.0.0.2 APP-API.jar','over_year','Java Jar').length,1);
  assert.equal(lib.filterProcesses(rows,'app-api.jar','week','Java Jar').length,0);
  assert.equal(lib.filterProcesses(rows,'app-api.jar','all','Kafka').length,0);
+});
+test('environment filter keeps only processes on IPs deployed in the selected environment',()=>{
+ const b={...asset,id:'b',ip:'10.0.0.3',hostname:'prod-server',inspection:{...inspection,processes:[{...process,pid:20,command:'java -jar /srv/prod.jar'}]}};
+ const opts={ipEnvs:{'10.0.0.2':['TEST'],'10.0.0.3':['PRODUCT']}};
+ const all=render([asset,b],opts);
+ assert.match(all,/匹配 2 条进程/);assert.ok(all.includes('全部环境')&&all.includes('>测试<')&&all.includes('>仿真<')&&all.includes('>生产<')&&all.includes('>待识别<'));
+ const testOnly=render([asset,b],{...opts,env:'TEST'});
+ assert.match(testOnly,/匹配 1 条进程/);assert.ok(testOnly.includes('10.0.0.2'));assert.ok(!testOnly.includes('10.0.0.3'));
+ const prod=render([asset,b],{...opts,env:'PRODUCT'});
+ assert.ok(!prod.includes('10.0.0.2'));assert.ok(prod.includes('10.0.0.3'));
+ assert.match(render([asset,b],{...opts,env:'SIMULATION'}),/匹配 0 条进程/);
+ // 无 DevOps 部署记录的 IP 落入"待识别"：仅匹配未关联任何环境的机器。
+ const c={...asset,id:'c',ip:'10.0.0.4',hostname:'db-server',inspection:{...inspection,processes:[{...process,pid:30,command:'/usr/sbin/mysqld'}]}};
+ const unknown=render([asset,b,c],{...opts,env:'unknown'});
+ assert.match(unknown,/匹配 1 条进程/);assert.ok(unknown.includes('10.0.0.4'));assert.ok(!unknown.includes('10.0.0.2'));assert.ok(!unknown.includes('10.0.0.3'));
+});
+test('multi-env host appends per-process environment label; unmatched flags 待识别',()=>{
+ // IP 同时有 TEST 与 SIMULATION 部署记录，展开其 Java Jar 进程。
+ const multi={...asset,ip:'10.179.1.224',hostname:'pub-server',inspection:{...inspection,processes:[
+   {...process,pid:2,command:'java -jar /srv/phoenix-mappingtool.jar --server.port=37863'},
+   {...process,pid:3,command:'/usr/sbin/mysqld'},
+ ]}};
+ const opts={
+   expanded:{a:{type:'全部进程',page:1}},
+   ipEnvs:{'10.179.1.224':['TEST','SIMULATION']},
+   jarProcessApp:(ip,p)=>ip==='10.179.1.224'&&p.pid===2?{id:'1656',name:'phoenix-mappingtool'}:undefined,
+   appEnvs:{'1656':['SIMULATION']},
+ };
+ const html=render([multi],opts);
+ assert.match(html,/phoenix-mappingtool（1656）/);
+ assert.ok(html.includes('仿真环境'),'关联应用在该 IP 的环境应标注为仿真环境');
+ assert.ok(!html.includes('测试环境'),'该应用不部署于测试环境，不应出现测试标签');
+ assert.ok(html.includes('环境待识别'),'MySQL 进程未关联 DevOps 应用，标注环境待识别');
 });
 test('nginx worker processes are grouped into one row with a worker count',()=>{
  const master={pid:1,ppid:0,user:'root',name:'nginx',kind:'Nginx',elapsedSeconds:100,startedAt:'2026-09-17T11:58:20Z',command:'nginx: master process /usr/sbin/nginx -c /etc/nginx/nginx.conf'};

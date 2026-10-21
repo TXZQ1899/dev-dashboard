@@ -3,7 +3,7 @@
 - 整理对象：`environment-web` 当前使用的快照数据与 `/resources` 宽表计算结果。
 - 说明：字段类型按 JSON 实际数据和代码定义归纳；`?` 表示可空/条件存在；`[]` 后的 `T` 表示数组元素类型。
 - 样本原则：每个实体保留 1 条最小但有代表性的记录，数组适当截短，避免泄露大面积内部清单。
-- 当前 checked-in 快照状态：DevOps 545 个应用、Codeup/仓库 556 条、ECS 204 台、JumpServer 421 台、DNS 481 条、EIP 53 条。当前仓库中的 `clb-snapshot.json` 和 `nat-snapshot.json` 是 `available: false` 占位，但 CLB 有 2026-09-14 原始导出，NAT 结构由采集器定义；二者样本按实际/规范化结构展示。
+- 当前 checked-in 快照状态：DevOps 545 个应用、Codeup/仓库 556 条、ECS 204 台、JumpServer 421 台、DNS 481 条、EIP 53 条。当前仓库中的 `clb-snapshot.json`、`nat-snapshot.json` 和 `dms-snapshot.json` 是 `available: false` 占位，但 CLB 有 2026-09-14 原始导出，NAT 与 DMS 结构由采集器定义；三者样本按实际/规范化结构展示。
 
 ## 总览
 
@@ -16,6 +16,7 @@
 | NAT 网关 / DNAT | `environment-web/lib/nat-snapshot.json` | `gateways[].id`；`gateways[].entries[].id` | 当前 checked-in 为空占位 | 外网/内网 IP 均进入宽表 `sources.nat` |
 | ECS | `environment-web/lib/ecs-snapshot.json` | `instances[].id` | 204 | 私网/公网 IP 进入宽表 `sources.aliyun` |
 | CLB | `environment-web/lib/clb-snapshot.json` | `instances[].id` | 当前 checked-in 为空占位；原始导出 19 台 | CLB IP 与后端 IP 进入宽表 |
+| 阿里云 DMS 实例 | `environment-web/lib/dms-snapshot.json` | `instances[].实例ID` + `instances[].实例地址` | 当前 checked-in 为空占位；2026-10-20 实测 65 实例 | 仅 `/aliyun/dms` 页面展示，IP 暂不进入宽表与拓扑 |
 | JumpServer 资产 / Nginx | `environment-web/lib/jumpserver-snapshot.json`；版本目录 `nginx-configs/<sha256(assetId)>.json` | `assets[].id`；分组 `groups[].id` | 421 asset / 20 group | 资产 IP 进入宽表 `sources.jumpserver` |
 | 宽表 | 运行时由 `environment-web/lib/resource-comparison.ts` 生成，不单独落盘 | `ip` | 610 | 按 IP 汇总以上来源 |
 
@@ -1285,3 +1286,161 @@ STALE
 - 理论可归属 Host 的 endpoint 未归属 Host
 - ambiguous edge 数量
 - unresolved node / path 数量
+
+# 11. 单应用运行核验报告
+
+核验数据与采集快照、Topology 分开保存，不覆盖 `Inspection` 或自动生成拓扑边。
+
+- 启动：`POST /api/settings/application-check`，参数 `{ asset, pid, environment, duration }`。`environment` 可省略，由实时目标进程、监听端口与部署匹配自动识别；显式传入时为 `TEST / SIMULATION / PRODUCT`，`duration` 为 10–300 秒；目标 PID 必须存在于当前版本的目标资产快照中，执行前重新验证启动时间。
+- 查询：`GET /api/settings/application-check?id=<task-id>`；省略 ID 返回最近一次任务。
+- 取消：`POST /api/settings/application-check/cancel`，参数 `{ id }`。
+- 存储：`${ENVSCOPE_DATA:-/data}/checks/<task-id>/job.json`、`report.json`；`checks/latest.json` 保存最近任务。文件权限为 `0600`。
+
+响应为 `{ job, report }`，执行中 `report` 可为空。任务/报告状态为 `running`（仅任务）、`complete`、`partial`、`failed`、`cancelled`。容器重启把运行中任务标为 `failed`。
+
+任务新增可选实时进度字段：`updatedAt` 为最近一次活动上报时间；`progress` 包含 `samplingStartedAt / samplingFinishedAt`（采样窗口起止）、`samples`（已返回的目标有效帧数）、`elapsedSeconds`（最近一批返回时的采样耗时）、`lastObservedAt`、`upstream / downstream`（当前已观察的连接数）。`activities[]` 按目标机或对端资产保留最新活动 `{ key, scope: target | peer, serverIp, phase, stage, updatedAt, samples? }`；`events[]` 保留最近 60 条安全活动记录 `{ at, key, scope, serverIp, message }`。仅记录程序生成的阶段说明与统计，不保存终端原文、命令或凭证；随 `job.json` 在原数据卷持久化，旧任务可缺少以上字段。页面每 2 秒读取进度、每秒更新本地耗时，明确区分采样窗口计时、已返回帧数和最终有效观察覆盖；等待较久及同步中断会提示，取消、失败、容器重启保留已有记录。进度统计不改变报告证据或归属置信度。
+
+失败报告附带 `error: { stage, code, exitCode, message, diagnostics[] }`。`stage` 区分登录、目标探针、对端探针与 worker；`exitCode` 未知时为 `null`。诊断只保存已识别的安全错误分类，不保存原始终端输出或 stderr。后台内部异常也生成失败报告，避免只有笼统状态而无法定位原因。
+
+只读 socket 探针等待终端返回的单次上限为 35 秒，超时后至多重试一次；重试成功保留警告，两次均超时返回 `SOCKET_PROBE_TIMEOUT` 及对应探针阶段，不包含原始异常内容。部分失败报告保留最后一次有效采样对应的 `coverage.actualSeconds` 和目标进程身份，失败等待不计入额外观察覆盖；尚无有效采样时为 `0`。页面不重复展示已在错误块中出现的错误和诊断。探针不使用旧 `iproute2-ss130716` 不支持的 `-H`，解析器兼容带表头输出。
+
+正式 socket 会话把探针脚本及长过滤参数分段写入私有远端临时目录：先 gzip 压缩再 Base64 编码，每段最多 768 字符，每段作为独立短命令发送，在远端解码并校验原文 SHA-256，文件权限为 `0600`。相同脚本和参数在同一会话内复用，稳态采样只发送短执行命令；未通过校验的内容不会执行，会话关闭时清理目录。避免每次交互输入整段长脚本或嵌套引号；完整 Endpoint 与源端口匹配条件保持不变。非缓存执行路径仍兼容按 512 字符分段转义的参数。
+
+目标会话初始化在观察计时开始前完成，任务总耗时还包含登录、初始化与配置核对；对端初始化前仍有发现空档。显式传输/校验失败使用 `PROBE_UPLOAD_FAILED`、阶段 `socket_probe`，不作为 TCP 连接失败或没有连接的证据。
+
+快速批次在发送下一条命令前、收到结束标记后，均等待交互 Shell 的命令提示符就绪；结束标记不等同于交互终端已准备接收下一条输入。该行为仅由 socket 探针显式启用，其他终端调用维持原有默认行为，等待仍计入单次 35 秒上限。
+
+正式检测采用 `ss-batched-polling`：每次在远端连续采集最多 5 帧，目标周期为 0.2 秒；按上一次查询开始时间扣除查询耗时后等待，默认批次之间不再额外等待 2 秒。累计约 5 秒后不再开始下一帧，已开始的只读查询仍按原有超时上限执行。每帧保留独立 socket、字节计数、PID 启动计数和观察时间，不以批次最后一帧覆盖短连接。进程元数据只在同一短批次、启动计数、executable 和网络空间均未改变时复用，并以版本引用对应每帧；长命令行元数据每批只在采样完成后传输一次，避免阻塞逐帧观察。目标与对端仍为异步采样，短于实际间隔的连接和对端启动前的连接可能漏采。
+
+目标端不再通过 `ss -p` 扫描全机进程：使用所选 PID 的 `/proc/<pid>/fd` 在枚举前后的 socket inode 交集，与同一帧 `ss -antnie` 结果关联，监听端口也从该帧提取。`coverage.targetOwnershipMethod = "proc-fd-inode"`；目标端 `pids` 表示已核验的所选 PID，不声明共享 socket 的完整进程所有者清单。无法读取文件描述符时显式失败，不当作没有连接。对端仍检查实时 socket/PID；两端 socket cookie 或 inode 不可跨机器互相比较。
+
+探针仅回传原有报告所需的 socket 行、`bytes_acked` 和 `bytes_received`，省略未使用的 TCP 内部统计以减少终端传输；字节差值、缺失计数为未知等语义不变。文件描述符枚举期间有条目消失或不可读时保留已验证交集并警告；整个目标目录不可读时失败。
+
+对端发现查询按已观察的服务 Endpoint 和客户端 IP 预采样，不要求先发现每个临时客户端端口；最终归属始终检查完整反向五元组。每台对端最多缓冲 2000 条 socket 观察，单帧最多接收 400 条发现记录；缓冲区按完整端点索引，匹配保留源端口及协议。PID 不能从另一个连接复制到本条连接。目标采样中的前后缺失帧限制连接的可能存续窗口，窗口外的对端观察不作为归属依据；同一五元组在时间边界内有多个本地 socket 候选时保留 `AMBIGUOUS`。
+
+同一资产上的对端继续按已发现的完整反向连接查询，避免相同客户端 IP 把其他本机应用的连接一并扩大到当前检查。每个已发现且能唯一匹配资产的对端（含同机及回环地址）保留独立采样 worker，不设上游/下游对端台数上限，避免对端排队至观察窗口结束后被跳过。采样结束前新发现的对端、登录较慢的对端仍尝试至少一次查询（取消检测除外），观察窗口外的结果仍不作为原连接归属证据。对端 400 条限制在远端传输、进程元数据枚举前执行，并保留超限警告；不把截断后的结果当作全量。
+
+每帧记录远端 `ss` 枚举开始/结束时间，以容器请求发出/接收时间及远端批次时钟边界估计时钟偏移上下界，不假设两台服务器时钟同步。`observedAt` 为换算后的观察区间中点，`observationStart / observationEnd` 包含枚举和传输误差。只有整个对端观察区间被同一目标 socket 的连续观察包围、两端 socket 身份存在时，进程归属才可为 `EXACT`；单次或时间边界不足仍为 `INFERRED`。缺失 TCP 状态为 `UNKNOWN`，不能默认填充 `ESTAB`。
+
+报告 `schemaVersion = 1`，包含 `taskId`、`sourceVersion`、`environment`、`startedAt`、`finishedAt`、`target`、`upstream[]`、`downstream[]`、`configuration`、`coverage`、`warnings[]`。
+
+每条连接记录包含：
+
+| 字段 | 语义 |
+|---|---|
+| `local` / `peer` | `{ ip, port, protocol: "tcp" }`，保留临时源端口；IPv4-mapped IPv6 归一化为 IPv4 |
+| `socketId` / `pids` | 本机 socket cookie（缺少时 inode）与所有者 PID；两端 socket ID 不可互相比较 |
+| `direction` / `directionConfidence` / `directionBasis` | `upstream` 或 `downstream` 是基于所选进程监听端口的连接角色推断，未对握手取证 |
+| `firstSeenAt` / `lastSeenAt` / `samples` | 本次窗口内的观察时间及采样次数 |
+| `sentDelta` / `receivedDelta` | 同一 socket 的 TCP ACK 字节/接收字节差值；缺少计数、仅一次采样或计数回退时为 `null`，不能解释成零 |
+| `networkActivity` | `DATA_OBSERVED / NO_DATA_OBSERVED / UNKNOWN`，不代表业务分类或可删除结论 |
+| `remoteProcesses[]` | `{ serverIp, pid, startedAt, processName, application, service, observedAt, confidence }`，来自对端实时反向五元组检查；无法确认时为空 |
+| `peerListeningProcesses[]` | 可选下游监听进程候选，含 `{ serverIp, pid, startedAt, processName, application, service, observedAt, confidence, endpoint, basis }`。在反向连接归属未解析时，按对端 IP、端口、TCP 协议查询实时监听，保留全部 PID 候选；进程关联置信度为 `INFERRED`，不填入 `remoteProcesses`，不提升 `resolution`。`endpoint` 保留实际监听地址（含通配绑定），`observedAt` 可晚于原连接观察窗口，不代表历史连接所有者 |
+| `remoteProcesses[].observationStart` / `.observationEnd` | 可选观察时间上下界，包含远端枚举耗时与时钟/传输不确定性；`observedAt` 不是整次探针回传时间 |
+| `remoteProcesses[].container` / `.connection` | Docker 容器服务的可选证据：`container = { id, name, initPid }`；`connection = { published, local, peer, socketId }`，Endpoint 均为 `{ ip, port, protocol }`。`pid` 保留宿主机 PID，`local` 是容器实际地址/端口；原连接 `peer` 仍为宿主机发布 Endpoint |
+| `dockerMappings[]` | 可选 `{ containerId, containerName, initPid, published, target, observedAt?, service? }`，来自实时 Docker 发布端口配置；仅为映射候选，不单独证明连接归属。容器监听进程可提供 `INFERRED` 服务类型，不能当作连接所有者 |
+| `proxyProcesses[]` | 可选 `{ pid, startedAt, processName, observedAt }`，记录反向连接匹配到的 Docker 代理，不把代理当作最终业务进程 |
+| `resolution` / `reason` | 对端进程归属的置信度与说明；连接消失、资产多候选和权限不足保留未解析结果 |
+| `service` | `{ name, confidence, basis }`；常用端口与配置声明仅为类型推断，进程命令可提供直接类型证据 |
+| `configurationMatches[]` | 与对端地址、端口匹配的配置声明；域名需使用目标机 DNS 解析结果辅助关联 |
+
+`application` 独立包含 `appId`、`appName`、`confidence`、`basis`、`candidates[]`。仅在已识别/显式指定的单一环境、目标主机部署范围内匹配；环境不唯一时应用归属为 `UNKNOWN`，不合并多环境候选。进程声明与监听/部署端口共同唯一匹配时可为 `EXACT`；名称/目录或端口推断为 `INFERRED`；多个候选保留 `AMBIGUOUS`，不会任意选择 ID。
+
+对端应用匹配在检测环境未识别时，使用已实时确认的对端进程、对端主机部署记录与该 PID 的监听端口单独识别唯一环境；环境仍不唯一时保留 `UNKNOWN`。已指定/识别的检测环境继续约束对端匹配，不自动跨环境回退。Tomcat 优先使用 `catalina.base`、其次 `catalina.home` 的实例业务名，Java 使用启动 jar/war 名，忽略大小写及 `-_.` 分隔符差异；业务名完全匹配优先于仅子串/目录提示，冲突的显式声明或监听端口候选仍保留。连接归属置信度与应用匹配置信度独立，不因已精确确认 PID 就提升应用归属。
+
+页面提供「连接明细」（默认）与「连接聚合」Tab。两种视图优先显示 `remoteProcesses`，缺少时显示 `peerListeningProcesses` 并标注「端口监听（推断）」。聚合仅用于展示，上游、下游分别按 `peer.ip + 进程证据类型 + 对端进程 PID/名称集合` 分组，端口不参与分组；监听候选与连接所有者分别聚合，多候选集合按相同集合聚合，未确认进程仅与同 IP 的未确认记录聚合。聚合表仅展示对端 IP、类型、对端进程 PID/名称、DevOps 应用 ID/名称，保留不同服务/应用归属及置信度，不展示网络活动、配置核对/连接证据；聚合不修改原始报告或 JSON 导出。
+
+`configuration.endpoints[]` 仅保存 `{ host, port, protocol, kind, file, key, line, resolvedIps? }`，不保存 URL 认证、查询参数、密码或原始配置。读取限定为进程推导目录，最多 20 个文件、单文件 128 KiB、总量 1 MiB，最多解析 8 个域名；配置中心、占位符、生效 profile 与 jar 内配置暂不展开。
+
+配置读取与实时配置文件列表共用 `runtime/application-config.ignorelist`，并追加数据卷 `${ENVSCOPE_DATA:-/data}/application-config.ignorelist` 中的规则。每行是按完整路径匹配的 glob（空行与 `#` 注释忽略），匹配目录在远端剪枝，匹配文件在列表输出和内容读取前排除，不占用文件数/大小限额；规则每次请求重新读取。默认排除 `classes/mapper`、`mybatis-config` / `mybatis-config.*`、Tomcat 通用配置文件及 `WEB-INF/web.xml`，保留 `server.xml`、`context.xml` 和业务配置。旧列表中的已忽略配置也不可继续读取；日志操作不应用这些规则。报告和文件列表的响应字段不变。
+
+`coverage` 明确记录 TCP 周期采样、实际观察时长与局限。短连接可能漏采；最多 100 条连接，所有已发现且能唯一匹配资产的对端均参与周期连接采样，不按对端台数截断；目标服务器上的同机对端另行核验。未解析下游的唯一资产在采样结束后追加一次监听端口核验，按主机合并查询、最多并发 4 台并遍历全部待查主机，不查询上游临时客户端端口；取消检测后不再启动核验。结果统计独立写入可选 `coverage.listenerChecks[]`，包含 `serverIp`、`status` 和观察统计，不计入原始连接采样覆盖。未纳管托管数据库、CLB/NAT 地址和共享 Tomcat JVM 不能强制归属到一个应用。
+
+新报告额外包含 `requestedSamplePeriodSeconds`、`samplesPerBatch`、`batchPauseSeconds`、`samples`、`firstObservedAt`、`lastObservedAt`、`averageIntervalSeconds`、`maxIntervalSeconds` 及 `peers[]` 中每台对端的相同观察统计。旧字段 `intervalSeconds` 保留，表示批次完成后的额外等待，默认 `0`，不表示实际观察间隔。平均/最长间隔按有效帧测算，包含批次间查询与传输空档；只有一次采样时为 `null`。页面明确显示最近一次观察到的 TCP 状态与时间。默认未匹配原因仅说明未确认对端进程，不把连接消失或权限不足当作已查明原因；实际未提权或无有效对端采样时单独说明。
+
+下游未确认连接或 Docker 代理连接会继续核验 Docker 发布端口（区分宿主机 IP、TCP/UDP、宿主机和容器端口），最多读取 64 个运行容器的网络元数据、核验 8 个匹配容器。对端通过 `nsenter -t <initPid> -n -- ss` 查询容器网络空间，保留宿主机 PID；不依赖容器安装 `ss`，不读取 Docker Env/完整 inspect、不挂载本服务的 Docker socket。容器 init PID 启动计数和网络空间在探针执行前后核验，并重新读取该容器映射，容器重启/映射变化保留未解析结果。只有容器反向连接的客户端 IP、源端口、协议和映射目标 Endpoint 完整匹配、进程处于该网络空间、socket 身份及目标观察时间重叠充分时，连接归属才为 `EXACT`；多个容器候选为 `AMBIGUOUS`。代理重建连接、SNAT、缺少 Docker/nsenter 或权限不足时不猜测客户端映射。Docker 服务类型可由实际进程确认为 Redis、MQ 等，DevOps 应用独立保留 `UNKNOWN`，不按宿主机部署端口强制关联。字节统计仍使用所选进程原 socket，缺失计数仍为未知。
+
+### 11.1 实时配置与日志文件
+
+- 独立页面：`/jumpserver/check/<asset-id>/<pid>`；所有入口新标签页打开，移除手动环境选择。
+- `POST /api/settings/application-check/files`：`{ id, action: "list" }` 返回 `{ files[], roots: {config[], log[]}, warnings[], observedAt, pid, startTicks }`。文件包含不透明 `id`、`kind: config | log`、`path`、`root`、`size`（bytes）、`modifiedAt`（Unix seconds）。日志额外包含 `logGroup: current | history`，分别对应「当前日志」和「历史日志」Tab；当前日志只接收 `.log/.out/.txt` 普通文本文件（空文件保留，前 4 KiB 二进制检测）；历史日志接收这些扩展名后的数字/日期轮转后缀及 `gz/tar.gz/bz2/xz/zip` 压缩后缀。Logback 明确声明的 `gz/bz2/xz/zip/tgz` 滚动文件按文件名范围接收，不能扩展为共享目录内其他应用文件。列表和打包在遍历时跳过 `apache-flume-*` 目录及其内容。额外保留 `logScopes: { root, patterns[] }[]`：进程推导目录为 `*`，Logback 共享目录按配置的文件名和滚动规则限定；配置、当前日志、历史日志分别最多列出最近更新的 1000 个文件，目录不可读/截断显示警告。
+- 同接口 `{ id, action: "read", file: <file-id> }` 返回 `{ id, content, observedAt, lines, truncated, redacted }`。配置读取前 256 KiB并遮盖常见凭证；当前日志读取末尾 100 行（最多 256 KiB）；历史日志不支持文本预览，需打包下载。旧列表中的无关文件、已排除目录内日志及压缩日志也不能继续预览。配置/日志文本仅实时返回，不写入报告或文件列表。
+- 操作使用原任务的版本、资产和进程，实时复核 `startedAt` / `startTicks`；客户端不能指定任意路径。目录符号链接在列目录时解析，内容读取拒绝路径重定向到列表外。
+- `{ id, action: "archive", group: "history" }` 打包全部符合规则的历史日志，排除当前日志，`cutoff = 0`（不限制最近 30 天）。省略 `group` 或传 `all` 兼容原 API，按修改时间打包最近 30 天的当前及历史日志；其他范围拒绝。`{ id, action: "cancel-archive" }` 请求取消，在打包结束后的分块传输阶段生效。
+- `GET /api/settings/application-check/logs?id=<task-id>` 返回 `{ status, logGroup?: all | history, phase, startedAt, finishedAt?, transferred, total, size?, fileCount?, cutoff?, sha256?, warnings? }`；`cutoff` 为修改时间下限：历史打包为 `0`，兼容模式为服务器当前时刻减 30×86400 秒。范围从启动阶段即持久化，完成后历史 Tab 仅展示历史范围下载链接。
+- `GET /api/settings/application-check/logs/download?id=<task-id>` 下载 gzip tar 压缩包。包内目录相对 `/` 保存，无绝对路径，不跟随目录内符号链接；共享目录仅打包 `logScopes` 指定的文件，列表与打包共用文件名及目录排除规则（进程目录深度最多 6 层，按文件名限定的共享目录仅当前层），文件列表去重；最多 10000 个文件、512 MiB 原始文件，超限失败，不生成不完整下载。
+- 元数据持久化为 `checks/<task-id>/files.json`、`archive.json`；最终压缩包为 `logs.tar.gz`，均在数据卷中，权限 `0600`。临时分块文件 `logs.part` 在失败/重启时清理。远端私有临时目录在传输结束后清理。下载任务与检测、采集、版本切换互斥。
+
+## 阿里云 DMS 数据库实例（`dms-snapshot.json`）
+
+数据源：阿里云 DMS 控制台内部接口 `POST https://dms.aliyun.com/dms/metastore/instances/list`（复用统一阿里云 Cookie，无 OpenAPI AK）。采集器 `export_dms.py`，容器内随全量同步或「单独同步 DMS」写入版本目录，经 `OPTIONAL_FILES` 激活后由 `/aliyun/dms` 页面展示。
+
+### 根对象
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `available` | `boolean` | 本次是否成功采集；缺文件时 `SERVICE.EMPTY_DMS` 兜底为 `false` |
+| `source` | `string` | 接口地址，用于回溯 |
+| `collectedAt` | `string` | 采集时间（UTC ISO） |
+| `tenantId` | `number?` | DMS 租户 ID |
+| `rawRecordCount` | `number` | 接口原始记录条数（去重前） |
+| `totalCount` | `number` | 合并重复记录后的实例数 |
+| `instances` | `DmsInstance[]` | 实例清单 |
+
+### `DmsInstance`
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `实例名称` | `string` | DMS 实例别名，如 `Prod-UserCenter` |
+| `实例ID` | `string` | 云产品实例 ID，如 `rm-uf6od1a9f4zc7oes4` |
+| `dmsInstanceIds` | `string[]` | 合并前各条 DMS 记录 ID；未合并时为单元素 |
+| `实例地址` | `string` | `host:port`，端口缺失时只有 host |
+| `host` / `port` | `string` / `number?` | 地址拆分，供后续解析使用 |
+| `类型` / `dbType` | `string` | 展示名与接口原值（`MySQL` / `mysql`） |
+| `实例地区` / `regionId` | `string` | 中文地区名与 `cn-*` 代码 |
+| `实例IP` | `string` | 由 `host` 经 AliDNS DoH（`https://223.5.5.5/resolve`）解析；解析不到为空串 |
+| `登录状态` | `string` | `免登录` / `未登录`，口径见下 |
+| `controlMode` | `string` | `COMMON` / `STABLE` / `NONE_CONTROL`，由 `sellCommon`、`sellStable` 推导 |
+| `sellTrust` | `boolean` | 是否启用信任登录 |
+| `实例来源` / `环境` / `实例状态` / `登录方式` / `版本` | `string` | 接口原始 `instanceSource` / `envType` / `instanceStatus` / `loginType` / `version` |
+| `重复记录` | `number` | 同地址被合并掉的记录条数 |
+
+### 判定口径
+
+- 去重键为 `实例ID + 实例地址`：DMS 对同一实例存在多条记录时合并为一行，`dmsInstanceIds` 保留全部记录 ID，地址不同的副本集成员（如 MongoDB 多节点）各自保留。
+- `登录状态` 按 DMS 控制台实例列表逻辑还原：`controlMode = COMMON`（安全模式）或 `sellTrust = true` 时为 `免登录`；其余实例在采集会话没有登录凭据，记为 `未登录`。采集过程不执行任何数据库登录。
+- `实例IP` 只做 DNS 解析：本机 DNS 若处于代理 fake-IP 模式会返回 `198.18.0.0/15` 假地址，因此统一走 AliDNS DoH；解析为空表示该地址仅在 VPC 私网解析或实例已不存在。
+- 该快照目前不参与 `/resources` 宽表与拓扑构建，仅用于 DMS 资源页面。
+
+### 样本
+
+```json
+{
+  "available": true,
+  "source": "https://dms.aliyun.com/dms/metastore/instances/list",
+  "collectedAt": "2026-10-20T09:39:24Z",
+  "rawRecordCount": 68,
+  "totalCount": 65,
+  "instances": [
+    {
+      "实例名称": "Prod-UserCenter",
+      "实例ID": "rm-uf6od1a9f4zc7oes4",
+      "dmsInstanceIds": ["1308342"],
+      "实例地址": "rm-uf6od1a9f4zc7oes4641.mysql.rds.aliyuncs.com:3306",
+      "host": "rm-uf6od1a9f4zc7oes4641.mysql.rds.aliyuncs.com",
+      "port": 3306,
+      "类型": "MySQL",
+      "dbType": "mysql",
+      "实例地区": "华东2（上海）",
+      "regionId": "cn-shanghai",
+      "实例IP": "10.179.0.182",
+      "登录状态": "免登录",
+      "controlMode": "COMMON",
+      "sellTrust": true,
+      "envType": "product",
+      "重复记录": 0
+    }
+  ]
+}
+```
+

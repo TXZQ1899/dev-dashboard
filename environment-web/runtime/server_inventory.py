@@ -752,6 +752,8 @@ def parse_nginx(dump):
 class Terminal:
     def __init__(self, asset, account, cookie, password):
         import websocket
+        self._prompt_ready = False
+        self._prompt_tail = ''
         self.wsmod=websocket; self.password=password; self.account=account; self.tid=None
         self.ws=websocket.create_connection(BASE.replace('http:','ws:')+'/koko/ws/terminal/?'+urlencode({'target_id':asset['id'],'type':'asset','system_user_id':account['id']}), cookie=cookie, subprotocols=['JMS-KOKO'], origin=BASE, timeout=5)
 
@@ -879,16 +881,30 @@ class Terminal:
         self.send('\x03')
         return 'timeout', f'su 超时（buf 末尾: {tail[:200]}）'
 
-    def run(self, command, timeout=60):
+    def _wait_prompt(self, deadline):
+        tail = getattr(self, '_prompt_tail', '')
+        while not re.search(r'[^\n]*[#$>]\s*$', tail):
+            if time.monotonic() >= deadline:
+                raise TimeoutError('等待远端命令提示符超时')
+            tail = clean(tail+self.recv())[-20000:]
+        self._prompt_tail, self._prompt_ready = tail, True
+
+    def run(self, command, timeout=60, wait_for_prompt=False):
+        deadline=time.monotonic()+timeout
+        if wait_for_prompt and not getattr(self, '_prompt_ready', True):
+            self._wait_prompt(deadline)
+        self._prompt_ready=False
         token='INV'+uuid.uuid4().hex
         # Split markers ensure echoed commands cannot be interpreted as output.
         self.send("printf '\\n%s%s\\n' "+token+" _BEGIN; "+command+"; r=$?; printf '\\n%s%s:%s\\n' "+token+" _END \"$r\"\r")
-        deadline=time.monotonic()+timeout;buf=''
+        buf=''
         while time.monotonic()<deadline:
             buf=clean(buf+self.recv())
             if len(buf)>24_000_000: raise ValueError('终端输出超过 24 MB 限制')
             match=re.search(r'(?m)^'+token+r'_END:(\d+)\s*$',buf)
             if match:
+                self._prompt_tail=buf[match.end():]
+                self._prompt_ready=bool(re.search(r'[^\n]*[#$>]\s*$',self._prompt_tail))
                 end_pos = match.start()
                 # Strategy 1: find BEGIN marker (most reliable).
                 marker=token+'_BEGIN\n'
@@ -917,6 +933,8 @@ class Terminal:
                         tail = buf[:end_pos]
                         prompt_hits = list(re.finditer(r'[#$>]\s*$', tail, re.M))
                         out = tail[prompt_hits[-1].end():].strip() if prompt_hits else tail.strip()
+                if wait_for_prompt and not self._prompt_ready:
+                    self._wait_prompt(deadline)
                 return int(match[1]), out
         self.send('\x03')
         raise TimeoutError('只读命令执行超时')

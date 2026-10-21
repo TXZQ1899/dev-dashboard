@@ -74,7 +74,7 @@ export default async function RepositoryDetail({ params }: Props) {
               <dt>检查说明</dt>
               <dd>{repo.reason}</dd>
               <dt>权限快照日期</dt>
-              <dd>{repositorySnapshot.accessDate}</dd>
+              <dd>{formatRepoTime(repositorySnapshot.accessDate)}</dd>
             </dl>
             {external && (
               <a className="repo-address" href={external} target="_blank" rel="noopener noreferrer">

@@ -6,6 +6,12 @@ export const labels = {
   SIMULATION: '仿真环境',
   PRODUCT: '生产环境',
 };
+// 短环境名（芯片、CSV 等紧凑场景使用）。
+export const shortLabels = {
+  TEST: '测试',
+  SIMULATION: '仿真',
+  PRODUCT: '生产',
+} as const;
 export type Deployment = {
   ip: string;
   deploy: string;
