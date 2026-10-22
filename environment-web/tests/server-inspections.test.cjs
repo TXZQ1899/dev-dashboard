@@ -16,9 +16,9 @@ const datetimeLib=evaluate('lib/datetime.ts');
 const now=Date.parse('2026-09-18T12:00:00Z');
 function render(assets,options={}) {
  let index=0;
- // ServerInspections 的状态顺序：login, query, duration, env, page, size, sort, expanded, selected, procSort, procQuery, inspect, pwTarget, pwBusy, pwError, now；
+ // ServerInspections 的状态顺序：login, query, duration, env, page, size, sort, expanded, selected, procSort, procQuery, inspect, pwTarget, pwBusy, pwError, commandDialog, now；
  // 之后是 ServerDetails：routeQuery, webappQuery, routeIndex, files, filesBusy, filesError；最后是密码弹窗的 password 输入。
- const state=[options.login||'can_login',options.query||'',options.duration||'all',options.env||'all',options.page||1,options.size||25,options.sort||{field:'ip',dir:'asc'},options.expanded||{},options.selected||'',options.procSort||{},options.procQuery||{},options.inspect||{},options.pwTarget||null,options.pwBusy||false,options.pwError||'',now,
+ const state=[options.login||'can_login',options.query||'',options.duration||'all',options.env||'all',options.page||1,options.size||25,options.sort||{field:'ip',dir:'asc'},options.expanded||{},options.selected||'',options.procSort||{},options.procQuery||{},options.inspect||{},options.pwTarget||null,options.pwBusy||false,options.pwError||'',options.commandDialog||null,now,
   options.routeQuery||'',options.webappQuery||'',typeof options.routeIndex==='number'?options.routeIndex:-1,options.files||null,false,'',''];
  const ui=evaluate('components/server-inspections.tsx',id=>{
   if(id==='react')return {...React,useEffect:()=>{},useMemo:f=>f(),useState:initial=>[index<state.length?state[index++]:typeof initial==='function'?initial():initial,()=>{}]};
@@ -41,7 +41,7 @@ function render(assets,options={}) {
   if(id==='@/components/ui/button')return {Button:(props)=>React.createElement('button',props)};
   if(id==='@/components/application-check-link')return {ApplicationCheckLink:(props)=>React.createElement('a',{className:'check-link'},`检测上下游:${props.asset}:${props.pid}`)};
   if(id==='@/components/ip-meta-cell')return {IpMetaCell:(props)=>React.createElement('span',{className:'ip-meta-cell-stub'},'IPMETA ',React.createElement('code',null,props.ip),' ',React.createElement('small',null,props.hostName||props.ip))};
-  if(id==='lucide-react')return {Download:()=>null,ChevronRight:props=>React.createElement('svg',props)};
+  if(id==='lucide-react')return {Download:()=>null,ChevronRight:props=>React.createElement('svg',props),X:props=>React.createElement('svg',props)};
   throw new Error(id);
  });
  return renderToStaticMarkup(React.createElement(ui.ServerInspections));
@@ -61,6 +61,23 @@ test('command search locates the matching ip and the process appears after expan
  const html=render([asset],{query:'app-api.jar',expanded:{a:{type:'全部进程',page:1}}});
  for(const text of ['10.0.0.2','app-api.jar','366天','进程ID','详细命令','非 CPU 时间','未超过2星期'])assert.ok(html.includes(text),text);
  assert.match(render([asset],{query:'missing.jar'}),/匹配 0 条进程/);
+});
+test('超长进程命令折叠为预览并提供展开详情弹窗',()=>{
+ const longCommand='/bin/java '+Array.from({length:80},(_,i)=>`-Dkey${i}=value${i}`).join(' ');
+ const longAsset={...asset,inspection:{...inspection,processes:[{...process,pid:9,command:longCommand}]}};
+ const collapsed=render([longAsset],{expanded:{a:{type:'全部进程',page:1}}});
+ assert.match(collapsed,/command-preview/);
+ assert.match(collapsed,/展开详情/);
+ // 短命令不折叠、不显示展开按钮。
+ const shortHtml=render([asset],{expanded:{a:{type:'全部进程',page:1}}});
+ assert.ok(!shortHtml.includes('展开详情'));
+ // 弹窗展示格式化为逐行参数的命令，并提供复制与关闭。
+ const dialog=render([longAsset],{commandDialog:longCommand});
+ assert.match(dialog,/进程完整命令/);
+ assert.match(dialog,/复制/);
+ assert.match(dialog,/aria-label="关闭"/);
+ assert.match(dialog,/command-dialog-pre/);
+ assert.ok(dialog.includes('-Dkey0=value0\n-Dkey1=value1'),'参数应逐行展示');
 });
 test('failed tab preserves reasons and excludes running processes',()=>{
  const html=render([asset,{...asset,id:'b',ip:'10.0.0.3',inspection:{...inspection,loginStatus:'cannot_login',reason:'连接超时',processes:[]}}],{login:'cannot_login'});

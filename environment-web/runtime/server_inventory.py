@@ -754,6 +754,8 @@ class Terminal:
         import websocket
         self._prompt_ready = False
         self._prompt_tail = ''
+        self._timed_out = False
+        self._aborted = False
         self.wsmod=websocket; self.password=password; self.account=account; self.tid=None
         self.ws=websocket.create_connection(BASE.replace('http:','ws:')+'/koko/ws/terminal/?'+urlencode({'target_id':asset['id'],'type':'asset','system_user_id':account['id']}), cookie=cookie, subprotocols=['JMS-KOKO'], origin=BASE, timeout=5)
 
@@ -889,10 +891,50 @@ class Terminal:
             tail = clean(tail+self.recv())[-20000:]
         self._prompt_tail, self._prompt_ready = tail, True
 
+    def _set_read_timeout(self, seconds):
+        """Bound every blocking read so run() can re-check its deadline."""
+        ws = getattr(self, 'ws', None)
+        for target in (ws, getattr(ws, 'sock', None) if ws is not None else None):
+            if target is None:
+                continue
+            try:
+                target.settimeout(seconds)
+                return
+            except Exception:
+                continue
+
+    def _abort_after_timeout(self):
+        """A timed-out PTY is no longer in sync; close it instead of reusing it."""
+        self._timed_out = True
+        self._aborted = True
+        try:
+            self.send('\x03')
+        except Exception:
+            pass
+        ws = getattr(self, 'ws', None)
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
     def run(self, command, timeout=60, wait_for_prompt=False):
+        # The PTY line discipline splits on newlines before the shell parses
+        # quotes, so only one physical command line is safe here. Existing
+        # script probes keep their explicit bash -c wrapper.
+        if ('\n' in command or '\r' in command) and not re.match(
+                r'^[ \t]*(?:timeout[ \t]+\S+[ \t]+)?bash[ \t]+-c(?:[ \t]|$)', command):
+            raise ValueError('run() 仅支持单行命令；多行脚本请使用 bash -c 形式或上传后执行')
+        if getattr(self, '_aborted', False):
+            raise ConnectionError('终端已在超时后关闭，需要重新建立会话')
         deadline=time.monotonic()+timeout
-        if wait_for_prompt and not getattr(self, '_prompt_ready', True):
-            self._wait_prompt(deadline)
+        try:
+            self._set_read_timeout(min(1.0, max(0.05, timeout)))
+            if wait_for_prompt and not getattr(self, '_prompt_ready', True):
+                self._wait_prompt(deadline)
+        except TimeoutError:
+            self._abort_after_timeout()
+            raise
         self._prompt_ready=False
         token='INV'+uuid.uuid4().hex
         # Split markers ensure echoed commands cannot be interpreted as output.
@@ -934,9 +976,13 @@ class Terminal:
                         prompt_hits = list(re.finditer(r'[#$>]\s*$', tail, re.M))
                         out = tail[prompt_hits[-1].end():].strip() if prompt_hits else tail.strip()
                 if wait_for_prompt and not self._prompt_ready:
-                    self._wait_prompt(deadline)
+                    try:
+                        self._wait_prompt(deadline)
+                    except TimeoutError:
+                        self._abort_after_timeout()
+                        raise
                 return int(match[1]), out
-        self.send('\x03')
+        self._abort_after_timeout()
         raise TimeoutError('只读命令执行超时')
 
     def close(self):

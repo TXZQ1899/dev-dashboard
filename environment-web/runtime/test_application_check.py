@@ -1,5 +1,7 @@
 import copy
 import base64
+import gzip
+import hashlib
 import json
 import subprocess
 import threading
@@ -7,6 +9,12 @@ import unittest
 from unittest.mock import patch
 
 import application_check as c
+
+
+def blob(text, label='sample-0'):
+    encoded = base64.b64encode(gzip.compress(text.encode(), mtime=0)).decode()
+    lines = '\n'.join(encoded[index:index+512] for index in range(0, len(encoded), 512))
+    return 'CHECK_BLOB_BEGIN\t'+label+'\n'+lines+'\nCHECK_BLOB_END\n'
 
 
 def process(pid=123, command='java -Dappid=orders -jar /var/www/webapps/orders/orders.jar'):
@@ -45,6 +53,63 @@ class ParsingTests(unittest.TestCase):
         self.assertTrue(any('重试一次后成功' in warning for warning in sample['warnings']))
         self.assertNotIn('private-secret', json.dumps(sample))
 
+    def test_truncated_batch_is_reported_but_keeps_the_frames_it_has(self):
+        body = ('CHECK_CLOCK_BEGIN\t1000.0\n'
+                'CHECK_SAMPLE_BEGIN\nCHECK_OBSERVED\t1000.5\t1000.6\n'
+                'CHECK_SOCKETS_BEGIN\nCHECK_SOCKETS_END\nCHECK_SS_RC\t0\n'
+                'CHECK_UID\t0\nCHECK_LISTEN_BEGIN\nCHECK_LISTEN_END\nCHECK_LISTEN_RC\t0\n'
+                'CHECK_SAMPLE_END\n'
+                'CHECK_TRUNCATED\tsample-budget\t1\t5\n'
+                'CHECK_CLOCK_END\t1001.0\n')
+        sample = c.parse_observations(body, 'peer_probe', 1000.4, 1002.0)
+        self.assertEqual(len(sample['observations']), 1)
+        self.assertTrue(any('仅完成 1/5 帧' in warning for warning in sample['warnings']))
+        self.assertTrue(any('观测窗口被截断' in warning for warning in sample['warnings']))
+
+    def test_compressed_frames_and_catalog_are_restored_before_parsing(self):
+        row = base64.b64encode(b' 123 1 root 60 Tue Sep  1 10:00:00 2026 java 1.0 1.0 1024 2048 '
+                               b'java -jar /var/www/webapps/orders/orders.jar').decode()
+        catalog = ('CHECK_PROC_VERSION\t1\tCHECK_PROC\t123\t54321\t'+row+'\t'+
+                   base64.b64encode(b'/var/www/webapps/orders').decode()+'\t'+
+                   base64.b64encode(b'/usr/bin/java').decode()+'\t'+
+                   base64.b64encode(b'net:[4026532000]').decode()+'\n')
+        frame = ('CHECK_SAMPLE_BEGIN\nCHECK_OBSERVED\t1000.5\t1000.6\n'
+                 'CHECK_SOCKETS_BEGIN\n'
+                 'ESTAB 0 0 10.0.0.1:8080 10.0.0.2:50000 users:(("java",pid=123,fd=8)) ino:123\n'
+                 '  cubic bytes_acked:10 bytes_received:20\n'
+                 'CHECK_SOCKETS_END\nCHECK_SS_RC\t0\nCHECK_UID\t0\n'
+                 'CHECK_LISTEN_BEGIN\nCHECK_LISTEN_END\nCHECK_LISTEN_RC\t0\n'
+                 'CHECK_PROC_REF\t123\t54321\t1\nCHECK_SAMPLE_END\n')
+        body = ('CHECK_CLOCK_BEGIN\t1000.0\n'+blob(frame)+blob(catalog, 'catalog')+
+                'CHECK_CLOCK_END\t1001.0\n')
+        class Terminal:
+            def run(self, *_args, **_kwargs):
+                return 0, body
+        with patch.object(c.time, 'time', side_effect=[1000.2, 1002.0]):
+            sample = c.probe(Terminal(), 'target', 123)
+        self.assertEqual(len(sample['observations']), 1)
+        self.assertEqual(sample['processes'][123]['startedAt'], '2026-09-01T10:00:00+00:00')
+        self.assertEqual(sample['sockets'][0]['peer']['port'], 50000)
+        self.assertEqual(sample['sockets'][0]['bytesSent'], 10)
+
+    def test_corrupt_compressed_section_is_rejected_without_partial_results(self):
+        body = ('CHECK_CLOCK_BEGIN\t1000.0\nCHECK_BLOB_BEGIN\tsample-0\n!!!not-base64!!!\n'
+                'CHECK_BLOB_END\nCHECK_CLOCK_END\t1001.0\n')
+        with self.assertRaises(c.ProbeError) as error:
+            c.expand_transfer(body, 'target_probe')
+        self.assertEqual(error.exception.details['code'], 'PROBE_OUTPUT_INCOMPLETE')
+        self.assertEqual(error.exception.details['stage'], 'target_probe')
+
+    def test_probe_command_wraps_only_the_uploaded_script(self):
+        script = '#!/bin/sh\n'
+        terminal = object.__new__(c.ProbeTerminal)
+        terminal._socket_probe_path = '/tmp/envscope-socket-probe.x/probe.sh'
+        terminal._socket_probe_digest = hashlib.sha256(script.encode()).hexdigest()
+        command = terminal.probe_command(script, ['target', '2059', '', '', '', '5', '0.2'],
+                                         'timeout 30')
+        self.assertEqual(command, "timeout 30 bash /tmp/envscope-socket-probe.x/probe.sh "
+                                  "target 2059 '' '' '' 5 0.2")
+
     def test_persistent_terminal_timeout_has_safe_stage_and_error_code(self):
         class Terminal:
             calls = 0
@@ -59,6 +124,21 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(error.exception.details['stage'], 'peer_probe')
         self.assertIsNone(error.exception.details['exitCode'])
         self.assertTrue(error.exception.details['diagnostics'])
+        self.assertNotIn('private-secret', json.dumps(error.exception.details))
+
+    def test_aborted_terminal_timeout_is_not_retried(self):
+        class Terminal:
+            _aborted = True
+            calls = 0
+            def run(self, *_args, **_kwargs):
+                self.calls += 1
+                raise TimeoutError('password=private-secret')
+        terminal = Terminal()
+        with self.assertRaises(c.ProbeError) as error:
+            c.probe(terminal, 'target', 123)
+        self.assertEqual(terminal.calls, 1)
+        self.assertEqual(error.exception.details['code'], 'SOCKET_PROBE_TIMEOUT')
+        self.assertIn('未在同一会话上重试', error.exception.details['message'])
         self.assertNotIn('private-secret', json.dumps(error.exception.details))
 
     def test_legacy_ss_headers_do_not_hide_connections_or_listeners(self):
@@ -294,15 +374,18 @@ class OrchestrationTests(unittest.TestCase):
             def close(self): pass
         samples = iter([1, 2, 3])
         def sample(*_):
-            if next(samples) == 3:
+            number = next(samples)
+            if number == 3:
                 raise c.ProbeError('SOCKET_PROBE_TIMEOUT', 'target_probe', '只读探针超时')
             return {'sockets': [socket()], 'listeners': [socket(state='LISTEN')],
-                    'processes': {123: process()}, 'warnings': []}
-        with patch.object(c.time, 'monotonic', side_effect=[0, 5, 5, 12, 12]):
+                    'processes': {123: process()}, 'warnings': [],
+                    'observedAt': c.iso_stamp(1000+(5 if number == 1 else 12))}
+        with patch.object(c.time, 'monotonic', side_effect=[0, 5, 5, 12, 12, 47]):
             report = c.inspect_application({'id': 'a', 'ip': '10.0.0.1'}, process(), [], [], {}, {}, 'TEST',
                 duration=60, interval=0, terminal_opener=lambda *_: (Terminal(), 'root'), sample_probe=sample)
         self.assertEqual(report['status'], 'partial')
-        self.assertEqual(report['coverage']['actualSeconds'], 12)
+        self.assertEqual(report['coverage']['actualSeconds'], 7)
+        self.assertEqual(report['coverage']['samplingElapsedSeconds'], 47)
         self.assertEqual(report['upstream'][0]['samples'], 2)
         self.assertEqual(report['target']['startTicks'], process()['startTicks'])
         self.assertEqual(report['target']['startedAt'], process()['startedAt'])

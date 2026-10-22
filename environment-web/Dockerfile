@@ -1,4 +1,6 @@
-# syntax=docker/dockerfile:1.7
+# 不再声明 `# syntax=docker/dockerfile:1.7`：远端 daemon 只配了 daocloud 镜像，
+# 它不代理 docker/dockerfile 前端镜像（401），会让构建在第一步就失败。
+# 引擎 29.x 的内置 frontend 已支持本文件用到的 cache mount 与具名构建上下文。
 
 ARG NODE_IMAGE=node:22-bookworm-slim
 
@@ -48,8 +50,23 @@ WORKDIR /app
 
 USER root
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+# Debian bookworm 默认走 deb.debian.org，实测只有 26 KB/s，apt 一步能拖到 13 分钟。
+# 这里在安装前把 deb822 源换成国内镜像（同时覆盖 debian 与 debian-security），
+# 并给下载加超时与重试：慢连接快速失败重试，而不是静默挂住。
+# 用 HTTP 入口：构建容器里访问 https 镜像会因证书链不完整而校验失败；
+# apt 仍会用 debian-archive-keyring 校验索引与包的 GPG 签名，完整性不受影响。
+ARG DEBIAN_MIRROR=http://mirrors.tuna.tsinghua.edu.cn
+ARG APT_TIMEOUT=20
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    sed -i "s|http://deb.debian.org/debian|${DEBIAN_MIRROR}/debian|g" \
+        /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::http::Timeout=${APT_TIMEOUT} \
+               -o Acquire::https::Timeout=${APT_TIMEOUT} \
+               -o Acquire::Retries=1 update \
+    && apt-get -o Acquire::http::Timeout=${APT_TIMEOUT} \
+               -o Acquire::https::Timeout=${APT_TIMEOUT} \
+               -o Acquire::Retries=1 install -y --no-install-recommends \
         python3 \
         python3-websocket \
         python3-pymysql \

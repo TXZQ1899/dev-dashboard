@@ -1,13 +1,13 @@
 'use client';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronRight, Download } from 'lucide-react';
+import { ChevronRight, Download, X } from 'lucide-react';
 import { jumpserver } from '@/lib/jumpserver';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { ApplicationCheckLink } from '@/components/application-check-link';
 import { IpMetaCell } from '@/components/ip-meta-cell';
 
-import { processTypes, durations, processRows, filterProcesses, matchesProcessQuery, formatDuration, paginate, locationHint, findLocationBlock, isMiddlewareProcess, type Asset, type Inspection, type ProcessRow, type ProcessType, type Duration } from '@/lib/server-processes';
+import { processTypes, durations, processRows, filterProcesses, matchesProcessQuery, formatDuration, paginate, locationHint, findLocationBlock, isMiddlewareProcess, formatCommand, COMMAND_COLLAPSE_THRESHOLD, type Asset, type Inspection, type ProcessRow, type ProcessType, type Duration } from '@/lib/server-processes';
 import { ipSpecSummary, tomcatInstanceName, tomcatProcessApp, jarBusinessName, jarProcessApp, ipDeployEnvironments, appDeployEnvironments } from '@/lib/process-comparison';
 import { envs, shortLabels, labels, type Env } from '@/lib/inventory';
 import { formatBeijingTime } from '@/lib/datetime';
@@ -97,6 +97,46 @@ function RootPasswordDialog({asset, busy, error, onConfirm, onDirect, onClose}: 
       </div>
     </div>
   </div>;
+}
+// 复制到剪贴板：优先 Clipboard API，不可用时回退到临时 textarea。
+async function copyToClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.style.position = 'fixed';
+  area.style.opacity = '0';
+  document.body.appendChild(area);
+  area.select();
+  document.execCommand('copy');
+  document.body.removeChild(area);
+}
+// 长命令弹窗：展示格式化后的完整命令，支持复制与关闭。
+function CommandDialog({command, onClose}: {command: string; onClose: ()=>void}) {
+  const [copied,setCopied]=useState(false);
+  const formatted=formatCommand(command);
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-labelledby="process-command-dialog-title">
+    <div className="flex max-h-[85vh] w-full max-w-4xl flex-col gap-3 rounded-lg border bg-background p-6 shadow-lg">
+      <div className="flex items-start justify-between gap-4">
+        <h3 id="process-command-dialog-title" className="font-semibold">进程完整命令</h3>
+        <button type="button" aria-label="关闭" className="command-dialog-close" onClick={onClose}><X size={16}/></button>
+      </div>
+      <pre className="command-dialog-pre">{formatted}</pre>
+      <div className="flex justify-end">
+        <Button size="sm" onClick={()=>{void copyToClipboard(formatted).then(()=>setCopied(true)).catch(()=>setCopied(false));}}>{copied?'已复制':'复制'}</Button>
+      </div>
+    </div>
+  </div>;
+}
+// 进程命令列：超长命令折叠为预览，通过"展开详情"打开完整命令弹窗。
+function ProcessCommand({command, onExpand}: {command: string; onExpand: (command: string)=>void}) {
+  const long=command.length>COMMAND_COLLAPSE_THRESHOLD;
+  return <>
+    <span className={long?'command-preview text-xs font-mono':'text-xs whitespace-pre-wrap break-all font-mono'}>{command}</span>
+    {long&&<button type="button" className="command-expand" onClick={()=>onExpand(command)}>展开详情</button>}
+  </>;
 }
 // 单独采集的忙态/消息由 ServerInspections 统一持有（行内按钮与详情按钮共用同一状态）。
 function ServerDetails({asset, inspectState, onInspect}: {asset: Asset; inspectState?: {busy:boolean;message:string;error:string}; onInspect: (asset: Asset)=>void}) {
@@ -217,6 +257,8 @@ export function ServerInspections() {
   const [pwTarget,setPwTarget]=useState<Asset|null>(null);
   const [pwBusy,setPwBusy]=useState(false);
   const [pwError,setPwError]=useState('');
+  // 长命令弹窗的当前命令；null 表示关闭。
+  const [commandDialog,setCommandDialog]=useState<string|null>(null);
   // Stable SSR/hydration; after mount advance to the browser clock once a minute.
   const [now,setNow]=useState(()=>Date.parse(jumpserver.collectedAt));
   useEffect(()=>{setNow(Date.now());const timer=setInterval(()=>setNow(Date.now()),60000);return ()=>clearInterval(timer);},[]);
@@ -318,7 +360,7 @@ export function ServerInspections() {
     const processNameNode=envLabel
       ? <>{namePart}<span className="inline-block rounded bg-muted px-1 text-xs text-muted-foreground">{envLabel}</span></>
       : <>{namePart}</>;
-    return <tr className="border-t align-top" key={r.asset.id+':'+(r.workerCount?'workers':r.process.pid)}><td className="p-3">{r.workerCount?<span title={`${r.workerCount} 个 Nginx worker 进程`}>×{r.workerCount}</span>:r.process.pid}</td><td className="p-3 break-all">{r.workerCount?<span>Nginx worker<small className="block text-muted-foreground">{r.type} · {r.process.user} · 共 {r.workerCount} 个进程</small></span>:<>{processNameNode}<small className="block text-muted-foreground">{r.type} · {r.process.user}</small></>}</td><td className="p-3 whitespace-nowrap text-right" title={r.process.cpuPercent!=null?`CPU ${r.process.cpuPercent}%`:'旧快照无 CPU 数据'}>{r.process.cpuPercent!=null?<span className={r.process.cpuPercent>=80?'text-red-600 font-medium':r.process.cpuPercent>=50?'text-amber-600':''}>{r.process.cpuPercent}%</span>:'—'}</td><td className="p-3 whitespace-nowrap text-right" title={r.process.memPercent!=null?`内存 ${r.process.memPercent}%${r.process.rssKB!=null?` · RSS ${(r.process.rssKB/1024).toFixed(0)}M`:''}`:'旧快照无内存数据'}>{r.process.memPercent!=null?<span className={r.process.memPercent>=80?'text-red-600 font-medium':r.process.memPercent>=50?'text-amber-600':''}>{r.process.memPercent}%</span>:'—'}</td><td className="p-3">{r.process.ports?.length?<code>{r.process.ports.join(', ')}</code>:'—'}</td><td className="p-3 whitespace-nowrap">{r.workerCount?'—':date(r.process.startedAt)}</td><td className="p-3 whitespace-nowrap" title={r.workerCount?'worker 进程启动时间各异，已合并展示':`采集时：${formatDuration(r.process.elapsedSeconds)}；采集时间：${date(r.asset.inspection!.checkedAt)}`}>{r.workerCount?'—':formatDuration(r.seconds)}</td><td className="p-3 min-w-80 max-w-2xl"><pre className="text-xs whitespace-pre-wrap break-all font-mono">{r.workerCount?`nginx: worker process（共 ${r.workerCount} 个）`:r.process.command}</pre></td><td className="p-3">{r.type==='Nginx'&&<button className="border rounded p-2 whitespace-nowrap" title="查看该服务器的 Nginx 转发与原始配置" onClick={()=>setSelected(selected===r.asset.id?'':r.asset.id)}>Nginx</button>}{checkButton}</td></tr>;
+    return <tr className="border-t align-top" key={r.asset.id+':'+(r.workerCount?'workers':r.process.pid)}><td className="p-3">{r.workerCount?<span title={`${r.workerCount} 个 Nginx worker 进程`}>×{r.workerCount}</span>:r.process.pid}</td><td className="p-3 break-all">{r.workerCount?<span>Nginx worker<small className="block text-muted-foreground">{r.type} · {r.process.user} · 共 {r.workerCount} 个进程</small></span>:<>{processNameNode}<small className="block text-muted-foreground">{r.type} · {r.process.user}</small></>}</td><td className="p-3 whitespace-nowrap text-right" title={r.process.cpuPercent!=null?`CPU ${r.process.cpuPercent}%`:'旧快照无 CPU 数据'}>{r.process.cpuPercent!=null?<span className={r.process.cpuPercent>=80?'text-red-600 font-medium':r.process.cpuPercent>=50?'text-amber-600':''}>{r.process.cpuPercent}%</span>:'—'}</td><td className="p-3 whitespace-nowrap text-right" title={r.process.memPercent!=null?`内存 ${r.process.memPercent}%${r.process.rssKB!=null?` · RSS ${(r.process.rssKB/1024).toFixed(0)}M`:''}`:'旧快照无内存数据'}>{r.process.memPercent!=null?<span className={r.process.memPercent>=80?'text-red-600 font-medium':r.process.memPercent>=50?'text-amber-600':''}>{r.process.memPercent}%</span>:'—'}</td><td className="p-3">{r.process.ports?.length?<code>{r.process.ports.join(', ')}</code>:'—'}</td><td className="p-3 whitespace-nowrap">{r.workerCount?'—':date(r.process.startedAt)}</td><td className="p-3 whitespace-nowrap" title={r.workerCount?'worker 进程启动时间各异，已合并展示':`采集时：${formatDuration(r.process.elapsedSeconds)}；采集时间：${date(r.asset.inspection!.checkedAt)}`}>{r.workerCount?'—':formatDuration(r.seconds)}</td><td className="p-3 min-w-80 max-w-2xl">{r.workerCount?<pre className="text-xs whitespace-pre-wrap break-all font-mono">{`nginx: worker process（共 ${r.workerCount} 个）`}</pre>:<ProcessCommand command={r.process.command} onExpand={setCommandDialog}/>}</td><td className="p-3">{r.type==='Nginx'&&<button className="border rounded p-2 whitespace-nowrap" title="查看该服务器的 Nginx 转发与原始配置" onClick={()=>setSelected(selected===r.asset.id?'':r.asset.id)}>Nginx</button>}{checkButton}</td></tr>;
   }
   return <section className="panel p-6 space-y-5">
     <h2 className="text-lg font-semibold">服务器与进程</h2>
@@ -432,6 +474,7 @@ export function ServerInspections() {
       </div>
       {login==='can_login'&&selectedAsset?.inspection&&<div id="selected-server-details" className="space-y-3 scroll-mt-6"><button className="text-sm underline" onClick={()=>setSelected('')}>收起服务器详情</button><ServerDetails key={selectedAsset.id} asset={selectedAsset} inspectState={inspect[selectedAsset.id]} onInspect={requestInspect}/></div>}
       {pwTarget&&<RootPasswordDialog asset={pwTarget} busy={pwBusy} error={pwError} onConfirm={password=>startInspect(pwTarget,password)} onDirect={()=>startInspect(pwTarget)} onClose={()=>setPwTarget(null)}/>}
+      {commandDialog!==null&&<CommandDialog command={commandDialog} onClose={()=>setCommandDialog(null)}/>}
       {!assets.some(a=>a.inspection)&&<p>当前历史版本没有服务器采集结果，请在设置中同步 JumpServer。</p>}
     </div>
   </section>;

@@ -106,6 +106,14 @@ test('older reports without Docker metadata still render', () => {
   assert.doesNotMatch(html, /Docker 端口映射|容器内连接|Docker 代理/);
 });
 
+test('effective observation span is shown separately from sampling phase elapsed time', () => {
+  const html = render(flow, { coverage: { actualSeconds: 8.2, samplingElapsedSeconds: 77.4, limitations: [] } });
+  assert.match(html, /目标有效观察跨度 8.2 秒/);
+  assert.match(html, /采样阶段耗时 77.4 秒/);
+  assert.doesNotMatch(html, /实际观察 77.4/);
+  assert.match(render(flow), /实际观察 30 秒/);
+});
+
 test('listener candidates show PID and app in both tabs without becoming connection owners', () => {
   const listener = { ...flow.remoteProcesses[0], pid: 456, processName: 'Tomcat', confidence: 'INFERRED',
     container: undefined, connection: undefined, endpoint: endpoint('*', 8080), basis: '实时监听 Endpoint',

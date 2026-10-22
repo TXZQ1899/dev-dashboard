@@ -98,6 +98,22 @@ class CanonicalTerminalTests(unittest.TestCase):
         self.assertFalse(directory.exists())
 
 
+    def test_peer_pid_limit_is_explicit_in_connection_mode(self):
+        import shlex
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Path(directory)/'sockets'
+            fixture.write_text(''.join(
+                f'ESTAB 0 0 10.0.0.2:{40000+i} 10.0.0.1:3306 users:(("fixture",pid={900000+i},fd=8)) ino:{i+1}\n'
+                for i in range(41)))
+            wrapper = Path(directory)/'ss'
+            wrapper.write_text('#!/bin/bash\nif [[ "$1" == -antpie ]]; then cat '+shlex.quote(str(fixture))+'; fi\n')
+            wrapper.chmod(0o700)
+            terminal = LocalTerminal(dict(os.environ, PATH=directory+os.pathsep+os.environ['PATH']))
+            sample = c.probe(terminal, 'peer', 'dport = :3306')
+            self.assertEqual(len(sample['sockets']), 41)
+            self.assertTrue(any('超过 40 个' in warning for warning in sample['warnings']))
+
+
 @unittest.skipUnless(sys.platform == 'linux' and shutil.which('ss') and shutil.which('ps'), 'requires Linux ss/procps')
 class LinuxProbeTests(unittest.TestCase):
     def test_listener_only_probe_identifies_pid_after_the_client_has_closed(self):
@@ -163,6 +179,36 @@ class LinuxProbeTests(unittest.TestCase):
             self.assertTrue(captured, 'short socket must survive batch transfer')
             self.assertTrue(all(s['local']['port'] != ports[0] for s in batch['sockets']))
             self.assertTrue(all(frame['observationStart'] <= frame['observationEnd'] for frame in batch['observations']))
+
+    def test_later_frames_reuse_known_local_ports_for_the_ss_filter(self):
+        import shlex
+        with tempfile.TemporaryDirectory() as directory:
+            calls = Path(directory)/'ss-calls.log'
+            real_ss = shutil.which('ss')
+            wrapper = Path(directory)/'ss'
+            wrapper.write_text('#!/bin/bash\nprintf "%s\\n" "$*" >> '+shlex.quote(str(calls))+'\n'+
+                               shlex.quote(real_ss)+' "$@"\n')
+            wrapper.chmod(0o700)
+            server = socket.socket()
+            self.addCleanup(server.close)
+            server.bind(('127.0.0.1', 0))
+            server.listen()
+            client = socket.socket()
+            self.addCleanup(client.close)
+            client.connect(server.getsockname())
+            accepted, _ = server.accept()
+            self.addCleanup(accepted.close)
+            port = server.getsockname()[1]
+            terminal = LocalTerminal(dict(os.environ, PATH=directory+os.pathsep+os.environ['PATH']))
+            batch = c.probe(terminal, 'target', os.getpid(), batch=True)
+            invocations = calls.read_text().splitlines()
+            self.assertEqual(len(batch['observations']), c.BATCH_SAMPLES)
+            self.assertTrue(invocations[0].startswith('-antnie'))
+            # A stable inode set lets later frames read only the known ports.
+            self.assertTrue(any('sport = :'+str(port) in line for line in invocations[1:]))
+            captured = [row for frame in batch['observations'] for row in frame['sockets']
+                        if row['local']['port'] == port and row['peer']['port'] == client.getsockname()[1]]
+            self.assertTrue(captured, 'port-filtered frames must still prove ownership')
 
     def test_partial_fd_inventory_retains_only_verified_ownership_and_warns(self):
         import shlex

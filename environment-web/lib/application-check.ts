@@ -69,11 +69,12 @@ export type ApplicationCheckState = {
     downstream: CheckFlow[];
     configuration?: { status: string; roots?: string[]; endpoints: CheckConfigEndpoint[]; warnings: string[] };
     coverage: {
-      method: string; actualSeconds?: number; limitations: string[];
+      method: string; actualSeconds?: number; samplingElapsedSeconds?: number; limitations: string[];
       requestedSamplePeriodSeconds?: number; batchPauseSeconds?: number;
       samples?: number; averageIntervalSeconds?: number | null; maxIntervalSeconds?: number | null;
       firstObservedAt?: string | null; lastObservedAt?: string | null;
-      peers?: { serverIp: string; samples: number; averageIntervalSeconds: number | null; maxIntervalSeconds: number | null }[];
+      peers?: { serverIp: string; samples: number; averageIntervalSeconds: number | null; maxIntervalSeconds: number | null;
+        observationStart?: string | null; observationEnd?: string | null }[];
       listenerChecks?: { serverIp: string; status: string; samples: number; firstObservedAt: string | null; lastObservedAt: string | null }[];
     };
     warnings: string[];

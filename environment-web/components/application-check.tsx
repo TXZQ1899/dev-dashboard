@@ -169,7 +169,9 @@ export function ApplicationCheck({ asset, ip, pid, name }: {
     {state.job && <ApplicationCheckProgress job={state.job} lastSyncedAt={lastSyncedAt} syncError={syncError} />}
     {report && <>
       {report.target.application && <p>目标应用：<AppIdentity app={report.target.application} /></p>}
-      <p>实际观察 {report.coverage.actualSeconds ?? '未知'} 秒；服务类型与应用归属均保留各自的证据和置信度。</p>
+      <p>{report.coverage.samplingElapsedSeconds !== undefined ? '目标有效观察跨度' : '实际观察'} {report.coverage.actualSeconds ?? '未知'} 秒；
+        {report.coverage.samplingElapsedSeconds !== undefined && <>采样阶段耗时 {report.coverage.samplingElapsedSeconds} 秒；</>}
+        服务类型与应用归属均保留各自的证据和置信度。</p>
       {report.coverage.samples !== undefined && <p className="check-note">
         目标有效采样 {report.coverage.samples} 次；平均观察间隔 {report.coverage.averageIntervalSeconds ?? '未知'} 秒，最长 {report.coverage.maxIntervalSeconds ?? '未知'} 秒。
         {report.coverage.requestedSamplePeriodSeconds !== undefined && <>远端目标采样间隔 {report.coverage.requestedSamplePeriodSeconds} 秒，实际间隔包含查询与传输耗时。</>}

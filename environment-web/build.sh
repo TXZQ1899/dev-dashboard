@@ -9,6 +9,8 @@ cd "$(dirname "$0")"
 # 网络恢复后可用 NODE_IMAGE=node:22-bookworm-slim 覆盖。
 NODE_IMAGE="${NODE_IMAGE:-docker.1ms.run/library/node:22-bookworm-slim}"
 NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}"
+# runtime 阶段的 apt 源同样走国内镜像，避免 deb.debian.org 的低速长连接拖住构建。
+DEBIAN_MIRROR="${DEBIAN_MIRROR:-http://mirrors.tuna.tsinghua.edu.cn}"
 
 # 每次构建传入唯一 CACHEBUST 值，确保 COPY . . 和 npm run build 一定执行。
 # npm ci 层不受影响（依赖 package-lock.json），仍可复用 Docker Layer Cache。
@@ -17,6 +19,7 @@ CACHEBUST="${CACHEBUST:-$(date +%s)}"
 
 echo "Using NODE_IMAGE:   $NODE_IMAGE"
 echo "Using NPM_REGISTRY: $NPM_REGISTRY"
+echo "Using DEBIAN_MIRROR: $DEBIAN_MIRROR"
 echo "Using CACHEBUST:    $CACHEBUST"
 echo "Docker context:     $(docker context show 2>/dev/null || echo 'default')"
 
@@ -53,6 +56,7 @@ docker build \
   --build-context collectors=.. \
   --build-arg NODE_IMAGE="$NODE_IMAGE" \
   --build-arg NPM_REGISTRY="$NPM_REGISTRY" \
+  --build-arg DEBIAN_MIRROR="$DEBIAN_MIRROR" \
   --build-arg CACHEBUST="$CACHEBUST" \
   -t envscope:local \
   .

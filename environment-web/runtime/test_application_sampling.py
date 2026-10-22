@@ -18,6 +18,72 @@ def frame(seconds, rows, pid=123):
 
 
 class SamplingTests(unittest.TestCase):
+    def test_peer_history_is_consumed_once_and_application_matching_is_shared_per_frame(self):
+        inventory = [app('caller', 'orders', '10.0.0.2')]
+        buffer = c.PeerObservationBuffer()
+        flows = [c.update_flow({}, socket(peer=f'10.0.0.2:{50000+i}', cookie=str(i)), [], stamp(1))
+                 for i in range(13)]
+        rows = [socket(f'10.0.0.2:{50000+i}', '10.0.0.1:8080', 456, cookie=f'p{i}')
+                for i in range(13)]
+        for seconds in (2, 3):
+            sample = frame(seconds, rows, 456)
+            buffer.extend((sample, row, sample['observedAt']) for row in rows)
+        with patch.object(c, 'match_application', wraps=c.match_application) as matching, \
+             patch.object(c, 'same_connection', wraps=c.same_connection) as tuples:
+            for _ in range(5):
+                for flow in flows:
+                    c.attach_peer_observations(flow, buffer, {'ip':'10.0.0.2'}, inventory, None)
+            # Three environment candidates plus one final match, per frame.
+            self.assertEqual(matching.call_count, 8)
+            self.assertEqual(tuples.call_count, 26)
+            for flow in flows:
+                self.assertEqual([p['pid'] for p in flow['remoteProcesses']], [456])
+                self.assertEqual(flow['remoteProcesses'][0]['application']['appId'], 'caller')
+                self.assertEqual(len(flow['remoteProcesses'][0]['_observations']), 2)
+            # A new observation with the same timestamp is still fresh evidence.
+            changed = frame(3, rows, 789)
+            changed['sockets'] = [dict(row, pids=[789]) for row in rows]
+            buffer.extend((changed, row, changed['observedAt']) for row in changed['sockets'])
+            for flow in flows:
+                c.attach_peer_observations(flow, buffer, {'ip':'10.0.0.2'}, inventory, None)
+                self.assertEqual([p['pid'] for p in flow['remoteProcesses']], [456, 789])
+            self.assertEqual(matching.call_count, 12)
+            self.assertEqual(tuples.call_count, 39)
+
+    def test_buffer_rechecks_application_environment_without_reusing_other_frame_identity(self):
+        inventory = [app('caller', 'orders', '10.0.0.2', env='PRODUCT')]
+        flow = c.update_flow({}, socket(), [], stamp(1))
+        row = socket('10.0.0.2:50000', '10.0.0.1:8080', 456)
+        sample = frame(2, [row], 456)
+        buffer = c.PeerObservationBuffer(limit=1)
+        buffer.extend([(sample, row, sample['observedAt'])])
+        c.attach_peer_observations(flow, buffer, {'ip':'10.0.0.2'}, inventory, 'TEST')
+        self.assertEqual(flow['remoteProcesses'][0]['application']['confidence'], 'UNKNOWN')
+        c.attach_peer_observations(flow, buffer, {'ip':'10.0.0.2'}, inventory, 'PRODUCT')
+        self.assertEqual(flow['remoteProcesses'][0]['application']['appId'], 'caller')
+        later = frame(3, [row], 456)
+        later['processes'][456] = process(456, 'java -jar unrelated.jar')
+        later['processes'][456]['startedAt'] = stamp(2.5)
+        buffer.extend([(later, row, later['observedAt'])])
+        c.attach_peer_observations(flow, buffer, {'ip':'10.0.0.2'}, inventory, 'PRODUCT')
+        self.assertEqual(len(list(buffer.for_flow(flow))), 1)
+        self.assertEqual(len(flow['remoteProcesses']), 2)
+        self.assertIsNone(flow['remoteProcesses'][-1]['application']['appId'])
+
+    def test_observed_span_excludes_slow_result_processing_and_transport(self):
+        class Terminal:
+            def close(self): pass
+        samples = [frame(1, [socket()]), frame(9, [socket()])]
+        def sample(*_):
+            return {**samples[-1], 'observations':samples}
+        with patch.object(c.time, 'monotonic', side_effect=[0, 207, 207, 207]):
+            report = c.inspect_application({'id':'target', 'ip':'10.0.0.1'}, process(), [], [],
+                {}, {}, 'TEST', duration=60, terminal_opener=lambda *_:(Terminal(), 'root'),
+                sample_probe=sample, config_collector=lambda *_:{'status':'complete', 'endpoints':[], 'warnings':[]})
+        self.assertEqual(report['coverage']['actualSeconds'], 8)
+        self.assertEqual(report['coverage']['samplingElapsedSeconds'], 207)
+        self.assertEqual(report['coverage']['samples'], 2)
+
     def test_live_activity_precedes_remote_wait_and_reports_only_returned_frames(self):
         events = []
         class Terminal:
@@ -260,6 +326,7 @@ class SamplingTests(unittest.TestCase):
         self.assertEqual(report['coverage']['peers'][0]['samples'], 1)
         self.assertEqual(report['upstream'][0]['remoteProcesses'], [])
         self.assertEqual(report['upstream'][0]['resolution'], 'UNKNOWN')
+        self.assertIn('未重叠', report['upstream'][0]['reason'])
         self.assertTrue(all(terminal.closed for terminal in opened))
 
     def test_same_host_application_and_all_remote_hosts_are_checked_independently(self):

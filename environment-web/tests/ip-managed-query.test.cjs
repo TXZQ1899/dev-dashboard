@@ -895,3 +895,20 @@ test('汇总-formatUsagePercent与formatCategories工具函数', () => {
   assert.equal(lib.formatCategories([['Tomcat', 2], ['Nginx', 1]]), 'Tomcat 2, Nginx 1');
   assert.equal(lib.formatCategories([]), '-');
 });
+
+test('长命令格式化为参数逐行并拆开超长 classpath', () => {
+  assert.equal(serverProcesses.COMMAND_COLLAPSE_THRESHOLD, 256);
+  const cmd = '/bin/java -server -Xms512m "-Dfoo=a b" -jar /opt/app.jar';
+  assert.equal(
+    serverProcesses.formatCommand(cmd),
+    ['/bin/java', '-server', '-Xms512m', '"-Dfoo=a b"', '-jar', '/opt/app.jar'].join('\n'),
+  );
+  const classpath = '-classpath .:' + '/opt/lib/' + 'a'.repeat(120) + '.jar:/opt/lib/b.jar';
+  const lines = serverProcesses.formatCommand(classpath).split('\n');
+  assert.equal(lines[0], '-classpath');
+  assert.equal(lines[1], '.:');
+  assert.equal(lines[2], '  /opt/lib/' + 'a'.repeat(120) + '.jar:');
+  assert.equal(lines[3], '  /opt/lib/b.jar');
+  // 短命令保持原样，不做额外拆行。
+  assert.equal(serverProcesses.formatCommand('redis-server'), 'redis-server');
+});

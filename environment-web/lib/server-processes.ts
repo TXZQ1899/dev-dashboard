@@ -109,6 +109,24 @@ export function matchesDuration(seconds: number, filter: Duration) {
 export function formatDuration(seconds: number) {
   return `${Math.floor(seconds/86400)}天 ${Math.floor(seconds%86400/3600)}小时 ${Math.floor(seconds%3600/60)}分钟`;
 }
+// 表格中超过该字符数的进程命令折叠展示，完整内容放到弹窗中查看。
+export const COMMAND_COLLAPSE_THRESHOLD = 256;
+// 把单行启动命令格式化为便于阅读的多行文本：按空白拆成参数（引号内空白保留），
+// 每个参数占一行；超长的冒号分隔参数（如 classpath）按冒号拆行并缩进续行。
+export function formatCommand(command: string): string {
+  const tokens=command.match(/"[^"]*"|'[^']*'|\S+/g)??[];
+  const lines:string[]=[];
+  for(const token of tokens) {
+    if(token.length>120 && token.includes(':/') && !token.includes('://')) {
+      const segments=token.split(':');
+      lines.push(segments[0]+':');
+      segments.slice(1).forEach((segment,i)=>lines.push('  '+segment+(i<segments.length-2?':':'')));
+    } else {
+      lines.push(token);
+    }
+  }
+  return lines.join('\n');
+}
 export type ProcessRow = { asset: Asset; process: Process; type: ProcessType; name: string; seconds: number; workerCount?: number };
 function isNginxWorker(process: Process): boolean {
   return processType(process)==='Nginx' && /worker process/i.test(process.command);

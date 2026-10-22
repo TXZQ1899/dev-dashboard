@@ -34,6 +34,11 @@ PORT_HINTS = {3306: 'MySQL', 5432: 'PostgreSQL', 6379: 'Redis', 6380: 'Redis',
 SAMPLE_PERIOD = 0.2
 BATCH_SAMPLES = 5
 LISTENER_CHECK_WORKERS = 4
+# The remote wrapper ends the probe before the local hard deadline, so an
+# unresponsive asset cannot leave a read-only script running after we stop
+# waiting (or hold the PTY for the next command).
+PROBE_TIMEOUT = 35
+PROBE_REMOTE_TIMEOUT = 30
 
 
 class ProbeError(RuntimeError):
@@ -131,6 +136,30 @@ def decode(value):
 def section(body, name):
     match = re.search(r'(?m)^CHECK_'+name+r'_BEGIN\n(.*?)^CHECK_'+name+r'_END\s*$', body, re.S)
     return match[1] if match else ''
+
+
+TRANSFER_BLOB = re.compile(r'(?ms)^CHECK_BLOB_BEGIN\t([\w:.-]+)\n(.*?)^CHECK_BLOB_END\s*$')
+
+
+def expand_transfer(body, stage='socket_probe'):
+    """Restore the compressed frame/catalog sections sent by the remote probe.
+
+    The probe compresses each completed section to bound console transfer. A
+    successful exit guarantees complete blocks; a corrupt block means the batch
+    cannot be trusted and is rejected rather than parsed partially.
+    """
+    if 'CHECK_BLOB_BEGIN' not in body:
+        return body
+
+    def restore(match):
+        try:
+            payload = base64.b64decode(re.sub(r'\s+', '', match[2]), validate=True)
+            return gzip.decompress(payload).decode('utf-8', 'replace') if payload else ''
+        except (ValueError, OSError, UnicodeError):
+            raise ProbeError('PROBE_OUTPUT_INCOMPLETE', stage,
+                             '连续采样的压缩数据传输不完整，未使用残缺结果') from None
+
+    return TRANSFER_BLOB.sub(restore, body)
 
 
 def parse_process_record(parts):
@@ -236,6 +265,13 @@ def parse_observations(body, stage, sent_at, received_at):
         frame.update(observedAt=iso_stamp((first+last)/2),
                      observationStart=iso_stamp(first), observationEnd=iso_stamp(math.ceil(last*1000)/1000))
         frames.append(frame)
+    truncation = re.search(r'(?m)^CHECK_TRUNCATED\t([\w-]+)\t(\d+)\t(\d+)$', body)
+    if truncation:
+        labels = {'sample-budget': '采样预算', 'transfer-budget': '传输预算'}
+        reason, done, requested = truncation[1], truncation[2], truncation[3]
+        frames[-1]['warnings'].append(
+            '连续采样因'+labels.get(reason, '时间')+'用尽提前结束，仅完成 '+done+'/'+requested+
+            ' 帧，对端观测窗口被截断')
     return {**frames[-1], 'observations': frames,
             'warnings': list(dict.fromkeys(w for frame in frames for w in frame['warnings']))}
 
@@ -255,36 +291,43 @@ def probe(terminal, mode, selector, batch=False):
     # Koko's interactive PTY must not parse the probe's nested quotes/newlines.
     # Bound script input lines too, not just a potentially long ss filter.
     if isinstance(terminal, ProbeTerminal):
-        command = terminal.probe_command(script, args)
+        command = terminal.probe_command(script, args, 'timeout '+str(PROBE_REMOTE_TIMEOUT))
     else:
         encoded_script = quote_probe_argument(base64.b64encode(script.encode()).decode())
-        command = 'bash -c "$(printf %s '+encoded_script+' | base64 -d)" _ '+\
+        command = 'timeout '+str(PROBE_REMOTE_TIMEOUT)+' bash -c "$(printf %s '+encoded_script+' | base64 -d)" _ '+\
                   ' '.join(quote_probe_argument(arg) for arg in args)
     retried = False
     for attempt in range(2):
         try:
             sent_at = time.time()
-            options = {'timeout': 35}
+            options = {'timeout': PROBE_TIMEOUT}
             if isinstance(terminal, si.Terminal):
                 options['wait_for_prompt'] = True
             rc, body = terminal.run(command, **options)
             received_at = time.time()
             break
         except TimeoutError:
-            if attempt:
-                raise ProbeError('SOCKET_PROBE_TIMEOUT', mode+'_probe',
-                    '等待远端 socket 探针返回超时，单次等待上限 35 秒，重试一次后仍未完成',
+            aborted = bool(getattr(terminal, '_aborted', False))
+            if attempt or aborted:
+                if aborted:
+                    detail = '等待远端 socket 探针返回超时，终端已关闭，未在同一会话上重试'
+                else:
+                    detail = '等待远端 socket 探针返回超时，单次等待上限 35 秒，重试一次后仍未完成'
+                raise ProbeError('SOCKET_PROBE_TIMEOUT', mode+'_probe', detail,
                     diagnostics=['通过 JumpServer 等待只读探针结束标记超时；无法仅据此区分命令执行与终端传输延迟']) from None
-            # Terminal.run sends Ctrl+C on timeout; retry only this read-only probe.
+            # A non-aborted terminal (for example a test double) may still be in
+            # sync. Real Terminal.run() marks the session aborted on timeout.
             retried = True
     if rc:
         reasons = {3: '进程已退出或身份发生变化，请重新采集', 4: '无法读取进程身份',
                    5: '应用处于其他网络命名空间，远端缺少 nsenter', 6: '远端缺少 ss 或 timeout',
                    7: '无法读取所选进程的 socket 文件描述符归属',
-                   8: '对端 socket 结果处理失败，未将错误视为空连接'}
+                   8: '对端 socket 结果处理失败，未将错误视为空连接',
+                   124: '远端探针超过 '+str(PROBE_REMOTE_TIMEOUT)+' 秒被终止，未返回完整样本',
+                   137: '远端探针超过 '+str(PROBE_REMOTE_TIMEOUT)+' 秒被终止，未返回完整样本'}
         raise ProbeError('PROBE_COMMAND_FAILED', mode+'_probe', reasons.get(rc, '远端连接检查失败'),
                          rc, safe_diagnostics(body))
-    sample = parse_observations(body, mode+'_probe', sent_at, received_at)
+    sample = parse_observations(expand_transfer(body, mode+'_probe'), mode+'_probe', sent_at, received_at)
     if retried:
         sample['warnings'].append('socket 探针等待终端返回超时，重试一次后成功')
     return sample
@@ -488,7 +531,7 @@ class ProbeTerminal(si.Terminal):
             self._socket_probe_digest = digest
         return self._socket_probe_path
 
-    def probe_command(self, script, args):
+    def probe_command(self, script, args, wrapper=None):
         path = self.prepare_probe(script)
         arguments = []
         assignments = []
@@ -505,7 +548,10 @@ class ProbeTerminal(si.Terminal):
                 variable = '_envscope_probe_arg_'+str(index)
                 assignments.append(variable+'="$(cat '+shlex.quote(cache[index][1])+'; printf .)"')
                 arguments.append('"${'+variable+'%.}"')
-        return '; '.join(assignments+['bash '+shlex.quote(path)+' '+' '.join(arguments)])
+        invocation = 'bash '+shlex.quote(path)+' '+' '.join(arguments)
+        # Only the script itself is wrapped: argument assignments must run
+        # outside `timeout`, or they would be parsed as its command name.
+        return '; '.join(assignments+[wrapper+' '+invocation if wrapper else invocation])
 
     def close(self):
         directory = getattr(self, '_socket_probe_dir', None)
@@ -897,6 +943,7 @@ class PeerObservationBuffer:
     """Bound discovery memory and index by the complete reversed TCP tuple."""
     def __init__(self, limit=2000):
         self.limit, self.records, self.by_tuple = limit, deque(), {}
+        self.sequence = 0
 
     @staticmethod
     def key(local, peer):
@@ -911,11 +958,25 @@ class PeerObservationBuffer:
                 self.by_tuple[old_key].popleft()
                 if not self.by_tuple[old_key]:
                     del self.by_tuple[old_key]
-            self.records.append((key, observation))
-            self.by_tuple.setdefault(key, deque()).append(observation)
+            self.sequence += 1
+            record = (self.sequence, observation)
+            self.records.append((key, record))
+            self.by_tuple.setdefault(key, deque()).append(record)
 
     def for_flow(self, flow):
-        return self.by_tuple.get(self.key(flow['peer'], flow['local']), ())
+        return (observation for _, observation in self.by_tuple.get(self.key(flow['peer'], flow['local']), ()))
+
+    def new_for_flow(self, flow, apps, environment):
+        # Every target frame used to replay the entire peer history under the
+        # shared lock. Revisit history only if the attribution context changes;
+        # final confidence is still evaluated against the latest target bounds.
+        context = (id(self), id(apps), environment)
+        previous, sequence = flow.get('_peerCursor', (None, 0))
+        if previous != context:
+            sequence = 0
+        flow['_peerCursor'] = (context, self.sequence)
+        return (observation for number, observation in
+                self.by_tuple.get(self.key(flow['peer'], flow['local']), ()) if number > sequence)
 
 
 def possible_observation(flow, first, last):
@@ -931,7 +992,7 @@ def confirmed_observation(flow, first, last):
 
 def attach_peer_observations(flow, observations, peer_asset, apps, environment):
     if isinstance(observations, PeerObservationBuffer):
-        observations = observations.for_flow(flow)
+        observations = observations.new_for_flow(flow, apps, environment)
     for sample, socket, stamp in observations:
         if not same_connection(flow, socket):
             continue
@@ -951,10 +1012,17 @@ def attach_peer_observations(flow, observations, peer_asset, apps, environment):
                                     'processName': process['name'], 'observedAt': stamp})
                 continue
             peer_ips = ips(peer_asset.get('ip')) | {flow['peer']['ip']}
-            peer_environment = environment
-            if peer_environment is None:
-                peer_environment = infer_environment(process, peer_ips, sample['listeners'], apps)
-            app = match_application(process, peer_ips, sample['listeners'], apps, peer_environment)
+            # A frame is immutable evidence. All sockets owned by this PID in
+            # that frame share its host, process and listener evidence; compute
+            # application matching once, without sharing connection ownership.
+            cache = sample.setdefault('_applicationMatches', {})
+            cache_key = (id(apps), environment, frozenset(peer_ips), pid)
+            if cache_key not in cache:
+                peer_environment = environment
+                if peer_environment is None:
+                    peer_environment = infer_environment(process, peer_ips, sample['listeners'], apps)
+                cache[cache_key] = match_application(process, peer_ips, sample['listeners'], apps, peer_environment)
+            app = cache[cache_key]
             owners.append({'serverIp': flow['peer']['ip'], 'pid': pid,
                 'startedAt': process['startedAt'], 'processName': si.app_name(process),
                 'application': app, 'service': middleware(process, flow['peer']['port']),
@@ -1100,6 +1168,7 @@ def inspect_application(asset, selected, apps, assets, saved, ip_map, environmen
         remote = None
         result = {'status': 'partial', 'processes': {}, 'sockets': {}, 'listeners': [], 'warnings': []}
         stamps = []
+        first_observation_start = last_observation_end = None
         def notify(message, stage):
             if progress:
                 progress(message, scope='peer', assetId=peer_asset['id'],
@@ -1127,6 +1196,9 @@ def inspect_application(asset, selected, apps, assets, saved, ip_map, environmen
                     for sample in observation_frames(batch):
                         stamp = sample.get('observedAt', now())
                         stamps.append(stamp)
+                        first, last = observation_bounds(sample, stamp)
+                        first_observation_start = min(first_observation_start or first, first)
+                        last_observation_end = max(last_observation_end or last, last)
                         # Bound the discovery buffer independently of the 100
                         # target-connection limit. Full tuples are kept intact.
                         if len(sample['sockets']) > 400:
@@ -1169,6 +1241,8 @@ def inspect_application(asset, selected, apps, assets, saved, ip_map, environmen
                 remote.close()
             with lock:
                 result['coverage'] = {'serverIp': peer_asset.get('ip'), **sampling_coverage(stamps)}
+                result['coverage'].update(observationStart=first_observation_start,
+                                          observationEnd=last_observation_end)
                 peer_results[peer_asset['id']] = result
             notify(f'对端采样结束，共 {len(stamps)} 帧' if not cancel.is_set() else '对端采样已取消',
                    'cancelled' if cancel.is_set() else result['status'])
@@ -1181,7 +1255,7 @@ def inspect_application(asset, selected, apps, assets, saved, ip_map, environmen
     stage = 'target_login'
     target_process = None
     listeners = []
-    last_successful_elapsed = 0.0
+    started = None
     last_observation_end = None
     def notify(message, stage, **stats):
         if progress:
@@ -1198,19 +1272,19 @@ def inspect_application(asset, selected, apps, assets, saved, ip_map, environmen
         notify('目标探针已就绪，开始观察 TCP 连接', 'sampling', samplingStartedAt=now())
         initial_ticks = None
         while not cancel.is_set():
+            if target_stamps and time.monotonic()-started >= duration:
+                break
             stage = 'target_probe'
             notify('正在等待目标连接采样返回', 'sampling')
             batch = sample_probe(terminal, 'target', selected['pid'])
             warnings[:] = list(dict.fromkeys(warnings+batch['warnings']))
-            for frame_index, sample in enumerate(observation_frames(batch)):
+            for sample in observation_frames(batch):
                 process = sample['processes'].get(selected['pid'])
                 if not process or (selected.get('startedAt') and process['startedAt'] != selected['startedAt']):
                     raise RuntimeError('所选进程已退出或 PID 已复用，请重新采集服务器')
                 if initial_ticks is not None and initial_ticks != process['startTicks']:
                     raise RuntimeError('检查期间进程已重启，结果仅保留已观察证据')
                 initial_ticks = process['startTicks']
-                if frame_index == 0:
-                    last_successful_elapsed = round(time.monotonic()-started, 1)
                 target_process = process
                 listeners = sample['listeners']
                 if environment is None:
@@ -1272,7 +1346,7 @@ def inspect_application(asset, selected, apps, assets, saved, ip_map, environmen
             if elapsed >= duration:
                 break
             cancel.wait(min(interval, max(0, duration-elapsed)))
-        report['coverage']['actualSeconds'] = round(time.monotonic()-started, 1)
+        report['coverage']['samplingElapsedSeconds'] = round(time.monotonic()-started, 1)
         done.set()
         notify('目标连接采样结束', 'sampling_complete', samplingFinishedAt=now())
         if target_process:
@@ -1302,8 +1376,8 @@ def inspect_application(asset, selected, apps, assets, saved, ip_map, environmen
             with lock:
                 for flow in flows.values():
                     flow.setdefault('_possibleEnd', last_observation_end)
-        # Do not count a failed terminal wait as additional observed coverage.
-        report['coverage'].setdefault('actualSeconds', last_successful_elapsed)
+        if 'samplingElapsedSeconds' not in report['coverage']:
+            report['coverage']['samplingElapsedSeconds'] = round(time.monotonic()-started, 1) if started is not None else 0
         if target_process:
             host_ips = ips(asset.get('ip')) | {x['local']['ip'] for x in flows.values()}
             report['target'].update(processName=si.app_name(target_process), startedAt=target_process['startedAt'],
@@ -1318,6 +1392,11 @@ def inspect_application(asset, selected, apps, assets, saved, ip_map, environmen
         pool.shutdown(wait=True)
     config = report.get('configuration', {})
     report['coverage'].update(sampling_coverage(target_stamps))
+    # Observation coverage ends at the last effective frame. Time spent
+    # matching, waiting for a lock or transporting results is not observation.
+    report['coverage']['actualSeconds'] = (round(max(0, (
+        datetime.fromisoformat(target_stamps[-1])-datetime.fromisoformat(target_stamps[0])
+    ).total_seconds()), 1) if target_stamps else 0)
     report['coverage']['peers'] = [result['coverage'] for result in peer_results.values()]
     for flow in flows.values():
         retained = []
@@ -1391,10 +1470,16 @@ def inspect_application(asset, selected, apps, assets, saved, ip_map, environmen
                 flow['reason'] = '匹配到 Docker 代理进程，但未确认其容器内服务连接'
         peer_result = peer_results.get(flow.get('_peerAssetId'), {})
         if not flow['remoteProcesses'] and flow.get('_peerAssetId'):
+            peer_coverage = peer_result.get('coverage', {})
             if any('未提权至 root' in w for w in peer_result.get('warnings', [])):
                 flow['reason'] = '对端未取得 root 权限，连接的进程归属可能不可见'
             elif peer_result.get('status') == 'partial' and not peer_result.get('coverage', {}).get('samples'):
                 flow['reason'] = '对端未完成有效 socket 采样，无法确认连接的进程归属'
+            elif (peer_coverage.get('observationStart') and flow.get('_possibleEnd') and
+                  peer_coverage['observationStart'] > flow['_possibleEnd']) or (
+                  peer_coverage.get('observationEnd') and
+                  peer_coverage['observationEnd'] < flow.get('_possibleStart', flow['firstSeenAt'])):
+                flow['reason'] = '对端有效采样与目标连接的可能存续窗口未重叠，未将窗口外 PID 归属到本连接'
         flow['warnings'].extend(peer_result.get('warnings', []))
         if flow.get('peerListeningProcesses') and not flow['remoteProcesses']:
             flow['reason'] += '；已获取对端端口监听进程，作为服务候选展示，连接所有者仍未确认'

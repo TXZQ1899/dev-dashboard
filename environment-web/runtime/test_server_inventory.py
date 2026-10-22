@@ -1,6 +1,7 @@
 import base64
 import json
 import re
+import time
 import unittest
 from unittest.mock import patch
 import server_inventory as inv
@@ -153,6 +154,37 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
             uid.return_value.hex='abc'
             chunks=iter(['echo INVabc _BEGIN\nINVabc_BEGIN\n','0\nINVabc_END:0\n'])
             self.assertEqual(terminal.run('id -u'),(0,'0'))
+
+    def test_run_rejects_multiline_commands(self):
+        terminal=object.__new__(inv.Terminal)
+        with self.assertRaises(ValueError):
+            terminal.run('echo A\necho B')
+
+    def test_run_timeout_is_bounded_and_aborts_the_terminal(self):
+        class Socket:
+            def __init__(self):
+                self.timeouts=[]; self.closed=False; self.sent=[]
+            def settimeout(self, value): self.timeouts.append(value)
+            def send(self, text): self.sent.append(text)
+            def close(self): self.closed=True
+        terminal=object.__new__(inv.Terminal)
+        terminal.ws=Socket(); terminal.tid=None
+        terminal._prompt_ready=True; terminal._prompt_tail=''
+        terminal.recv=lambda:''
+        started=time.monotonic()
+        with self.assertRaises(TimeoutError):
+            terminal.run('sleep 1', timeout=0.3)
+        self.assertLess(time.monotonic()-started, 2.0)
+        self.assertTrue(terminal._timed_out)
+        self.assertTrue(terminal._aborted)
+        self.assertTrue(terminal.ws.closed)
+        self.assertTrue(terminal.ws.timeouts and terminal.ws.timeouts[0] <= 0.3)
+
+    def test_run_refuses_a_terminal_aborted_by_timeout(self):
+        terminal=object.__new__(inv.Terminal)
+        terminal._aborted=True
+        with self.assertRaises(ConnectionError):
+            terminal.run('id -u')
 
     def test_probe_command_waits_until_the_interactive_prompt_is_ready(self):
         terminal=object.__new__(inv.Terminal)
