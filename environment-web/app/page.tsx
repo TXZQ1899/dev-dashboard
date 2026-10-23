@@ -37,7 +37,7 @@ import { SettingsLink } from '@/components/settings-link';
 import { fetchedAt as ecsDate } from '@/lib/ecs';
 import { fetchedAt as specsDate } from '@/lib/server-specs';
 import { clb } from '@/lib/clb';
-import { formatBeijingDate, formatBeijingMinute, formatBeijingTime } from '@/lib/datetime';
+import { formatBeijingDate, formatBeijingTime } from '@/lib/datetime';
 export function Shell({
   children,
   active = 'dashboard',
@@ -45,21 +45,6 @@ export function Shell({
   children: React.ReactNode;
   active?: string;
 }) {
-  // 侧栏「环境资产快照」时间：统一按北京时间展示（ecsDate 是 UTC，直接截断会差 8 小时）。
-  const snapshotMinute =
-    active === 'topology'
-      ? '实时查询'
-      : active === 'clb'
-        ? formatBeijingMinute(clb.collectedAt, '该版本未采集')
-        : active.startsWith('ecs-')
-          ? formatBeijingMinute(ecsDate)
-          : active === 'jumpserver'
-            ? formatBeijingMinute(jumpserver.collectedAt)
-            : active === 'datacenter'
-              ? formatBeijingMinute(specsDate, '未采集')
-              : active === 'repos'
-                ? formatBeijingMinute(repositorySnapshot.accessDate)
-                : formatBeijingMinute(inventoryDate);
   const snapshotDate =
     active === 'topology'
       ? '实时查询'
@@ -82,18 +67,11 @@ export function Shell({
             <Boxes size={23} />
           </span>
           <span>
-            EnvScope<small>应用环境管理</small>
+            App Atlas<small>应用架构图谱</small>
           </span>
         </a>
         <div className="nav-label">工作空间</div>
         <nav>
-          <a
-            className={active === 'resources' ? 'active' : ''}
-            href="/resources"
-          >
-            <Database size={18} />
-            服务器资源全景
-          </a>
           <a className={active === 'dashboard' ? 'active' : ''} href="/">
             <LayoutDashboard size={18} />
             环境总览
@@ -145,15 +123,14 @@ export function Shell({
             <Server size={18} />
             本地机房资源
           </a>
+          <a
+            className={active === 'resources' ? 'active' : ''}
+            href="/resources"
+          >
+            <Database size={18} />
+            IP 资源全景
+          </a>
         </nav>
-        <div className="side-note">
-          <Database size={18} />
-          <strong>环境资产快照</strong>
-          <span>{snapshotMinute}</span>
-          <small>
-            {active === 'topology' ? '按当前 Topology 版本实时遍历' : '基于导出清单的静态数据'}
-          </small>
-        </div>
         <div className="side-bottom">
           <span className="avatar">OP</span>
           <div>
@@ -169,7 +146,7 @@ export function Shell({
             {active === 'topology' ? '拓扑路径查询' : active === 'clb' ? 'CLB 全景' : active === 'dms'
               ? '阿里云DMS资源'
               : active === 'resources'
-              ? '服务器资源全景'
+              ? 'IP 资源全景'
               : active === 'settings'
                 ? 'Settings · 数据同步'
                 : active === 'jumpserver'

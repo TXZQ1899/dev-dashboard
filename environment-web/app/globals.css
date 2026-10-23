@@ -136,22 +136,8 @@ nav a.active {
 nav a:hover {
   background: #f0f5f2;
 }
-.side-note {
-  margin-top: auto;
-  padding: 24px 14px;
-  color: #809289;
-  display: grid;
-  gap: 9px;
-  font-size: 12px;
-}
-.side-note strong {
-  color: #52685e;
-  font-weight: 500;
-}
-.side-note small {
-  font-size: 10px;
-}
 .side-bottom {
+  margin-top: auto;
   border-top: 1px solid var(--border);
   padding: 23px 6px 0;
   display: flex;
@@ -613,7 +599,6 @@ h2 {
   }
   .brand > span:last-child,
   .nav-label,
-  .side-note,
   .side-bottom {
     display: none;
   }
