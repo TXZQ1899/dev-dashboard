@@ -145,11 +145,13 @@ http://localhost:3001/settings
 
 该页面负责：
 
-- Cookie 配置
+- Cookie / AccessKey 配置和阿里云租户管理
 - 一键同步
 - 北京时间每日定时
 - 同步历史
 - 数据版本切换
+
+每个启用的阿里云租户分别采集 ECS、CLB、DMS、NAT / DNAT；Codeup 固定使用原有租户。支持按租户独立同步，快照和资源页面保留租户信息，DNS / EIP 保持静态导入。配置、历史兼容与 API 约定见 [`environment-web/SETTINGS.md`](environment-web/SETTINGS.md#阿里云多租户采集)。
 
 持久化数据保存在 Docker 命名卷：
 

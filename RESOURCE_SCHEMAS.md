@@ -7,6 +7,21 @@
 
 ## 总览
 
+### 多租户增量契约（schemaVersion=2）
+
+以下是新采集版本的附加契约；后文无租户字段的示例是兼容的单账号旧结构。
+
+- ECS、CLB、DMS、NAT 每个启用租户均采集；Codeup 仅使用 `legacy-aliyun` 现有租户。DNS / EIP 保持静态来源，不能批量归属某个新租户。
+- ECS `instances[]` / `projects[]`、CLB `instances[]`、NAT `gateways[]` / `entries[]`、DMS `instances[]` 增加 `tenantId`（AppAtlas 稳定 ID）、`tenantName`、`accountId`（采集账号 UID）。资源行增加 `resourceKey`、`region`、`observedAt`。ECS / CLB 有来源字段时保留 `vpcId`、`vswitchId`。
+- `resourceKey` 是 `[tenantId, resourceType, region, nativeId]` 的规范 JSON 字符串，原生 `id` 保持不变。DNAT 的 nativeId 包含网关 ID 和条目 ID。资源组名称按租户 + 资源组 ID 查询。
+- DMS 的 `resourceKey` 在 nativeId 中包含 Tid + 实例地址；`sourceKeys[]` 保留 `[tenantId, "dms-record", dmsTenantId, 原生DMS记录ID]`。DMS `dmsTenantId` 是 DMS Tid，独立于 AppAtlas 租户 ID。旧版根 `tenantId` 表示 Tid，新版汇总根移除此字段。
+- DMS Cookie 记录的 `实例ID` 来源是控制台云产品实例 ID，AK 记录的同名字段来源是 DMS ListInstances 原生记录 ID；不要互换解释。新增 `cloudInstanceId` 仅在有明确云产品 ID 时填写，否则为空。`accountId` 表示采集账号，不证明被登记数据库的真实云账号所有权。
+- 四类快照根增加 `tenants[]`：`tenantId`、`tenantName`、`accountId`、`region`、`dmsTenantId?`、`collectedAt`、`complete`、`count`、`credentialVersion`、`scope: credential-visible`、`sourceVersion`。DMS 的范围 `region` 为空，表示按 DMS Tid 枚举，不随 ECS 地域重复。`regions[]` 汇总实际地域；旧根 `region` 仅在单一地域时有值。
+- 根 `fetchedAt` / `collectedAt` 为切片时间的最大值；独立同步保留其他切片时间，不能将该最大值解释为全部租户都已刷新。每次任务的非敏感 `cloudPlan` 保存在 `version.json`，验证缺失切片、配置版本和完整性后才允许原子激活。
+- 新采集原始输出在 `versions/<version>/sources/aliyun/<tenantId>/<source>/<region-or-all>/`，不共用输出目录或凭据上下文。独立同步的旧切片先复制到版本内 `base/`，采集成功后按租户替换；零条记录也会替换旧清单。
+- 旧快照保持可读，不原地重写；派生新版本并保留旧单账号切片时，仅将旧云资源标记为 `legacy-aliyun`，`tenants[].legacy=true`，账号 UID 留空，保留旧观察时间。静态 DNS / EIP 和独立 DevOps / JumpServer 不套用该映射。
+- IP 宽表仍按 IP 聚合，新增 `tenants[] = {id, name, accountId}[]`，只从云资源证据附加。拓扑沿用现有关联与置信度，云资源节点 identity / attributes 及 Evidence 保留租户 ID 和采集账号，不改变 UNKNOWN / AMBIGUOUS 等结论。当前前提是租户网段已规划为互不重叠。
+
 | 数据域 | 主要文件 | 主键 | 实体数量 | 与宽表的关联 |
 |---|---|---|---:|---|
 | DevOps 应用环境 | `environment-web/lib/snapshot.json` | `apps[].id`；部署记录建议 `appId + env + ip + deploy` | 545 app / 1947 环境部署记录 | 提供 `sources.devops`、应用/环境/端口/仓库关联 |
@@ -446,14 +461,20 @@
 
 > 当前 `lib/clb-snapshot.json` 是空占位；以下样本来自一次 CLB 控制台导出经 `normalize_clb()` 规范化后的结果。
 
+AccessKey 采集按 LB 隔离故障。列表或详情明确为 `inactive` / `locked` 的 LB 跳过；其他 LB 的详情、监听器、规则或服务器组请求持续超时、异常或缺少必要字段时，跳过整个 LB，避免输出虚假的空服务器组或不完整路由。证书元数据或后端 ECS IP 补查失败保留已知数据，未知 IP 不补造。实例枚举失败、枚举鉴权失败、前后清单不稳定仍使来源失败。
+
+此模式的原始结果及多租户快照中，`complete: true` 表示列表枚举和稳定性复核完成、所有 LB 已按跳过策略处理，允许任务成功并激活版本；它不保证所有实例详情齐全。存在跳过或补查失败时，根与对应 `tenants[]` 额外保存 `partial: true` 和 `warnings[]`。Warning 包含 `action`、`params`、`reason`、脱敏 `error`、`skipped`；实例 Warning 额外包含 `loadBalancerId` 和实际观察到的 `status`。规范化及汇总时附加 `tenantId` / `tenantName` / `accountId` / `region`，独立刷新替换当前租户 Warning 并保留其他租户 Warning。被跳过的 LB 不进入 `instances[]`，不将其当作已确认删除，也不复用旧详情伪装为本次成功采集。旧 Cookie 采集完整性规则不变。
+
 ### 根对象
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---:|---|
-| `available` | `boolean` | 是 | 是否有完整 CLB 快照 |
+| `available` | `boolean` | 是 | 是否有可用 CLB 快照；AccessKey 模式允许按上述策略跳过个别 LB |
 | `collectedAt` | `string` | 是 | 采集时间 |
 | `region` | `string` | 是 | 区域 |
 | `instances` | `ClbInstance[]` | 是 | CLB 实例 |
+| `partial` | `boolean` | 否 | 是否存在跳过或补查失败；旧快照可能缺少 |
+| `warnings` | `object[]` | 否 | 按实例/请求保留的 Warning，包含跳过原因与来源范围 |
 
 ### `ClbInstance`
 
@@ -1415,7 +1436,7 @@ STALE
 
 ## 阿里云 DMS 数据库实例（`dms-snapshot.json`）
 
-数据源：阿里云 DMS 控制台内部接口 `POST https://dms.aliyun.com/dms/metastore/instances/list`（复用统一阿里云 Cookie，无 OpenAPI AK）。采集器 `export_dms.py`，容器内随全量同步或「单独同步 DMS」写入版本目录，经 `OPTIONAL_FILES` 激活后由 `/aliyun/dms` 页面展示。
+数据源：Cookie 模式使用控制台内部接口 `POST https://dms.aliyun.com/dms/metastore/instances/list`（`export_dms.py`）；AccessKey 模式使用 DMS Enterprise OpenAPI `ListInstances`（`aliyun_openapi.py`）。多租户编排对 AK 模式明确传入配置或查询得到的 Tid。容器内随全量同步或「单独同步 DMS」写入版本目录，经 `OPTIONAL_FILES` 激活后由 `/aliyun/dms` 页面展示。
 
 ### 根对象
 
@@ -1449,7 +1470,7 @@ STALE
 
 ### 判定口径
 
-- 去重键为 `实例ID + 实例地址`：DMS 对同一实例存在多条记录时合并为一行，`dmsInstanceIds` 保留全部记录 ID，地址不同的副本集成员（如 MongoDB 多节点）各自保留。
+- 当前采集器在同一租户 / DMS Tid 的一次采集中按实例地址聚合展示，`dmsInstanceIds` 保留全部记录 ID，地址不同的副本集成员各自保留。不同 AppAtlas 租户分别采集再汇总，不跨租户按地址去重；该地址聚合不证明多个登记记录是同一个物理云实例。
 - `登录状态` 按 DMS 控制台实例列表逻辑还原：`controlMode = COMMON`（安全模式）或 `sellTrust = true` 时为 `免登录`；其余实例在采集会话没有登录凭据，记为 `未登录`。采集过程不执行任何数据库登录。
 - `实例IP` 只做 DNS 解析：本机 DNS 若处于代理 fake-IP 模式会返回 `198.18.0.0/15` 假地址，因此统一走 AliDNS DoH；解析为空表示该地址仅在 VPC 私网解析或实例已不存在。
 - 该快照目前不参与 `/resources` 宽表与拓扑构建，仅用于 DMS 资源页面。
