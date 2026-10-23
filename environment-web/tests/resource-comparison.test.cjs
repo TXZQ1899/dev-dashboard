@@ -3,7 +3,7 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const vm=require('node:vm');
 const ts=require('typescript');
-const snapshots=Object.fromEntries(['eip-snapshot.json','nat-snapshot.json','dns-snapshot.json','clb-snapshot.json','snapshot.json','ecs-snapshot.json','jumpserver-snapshot.json','repositories.json'].map(name=>[name,JSON.parse(fs.readFileSync(process.env.RESOURCE_SNAPSHOT_DIR && fs.existsSync(process.env.RESOURCE_SNAPSHOT_DIR+'/'+name) ? process.env.RESOURCE_SNAPSHOT_DIR+'/'+name : 'lib/'+name,'utf8'))]));
+const snapshots=Object.fromEntries(['eip-snapshot.json','nat-snapshot.json','dns-snapshot.json','cloud-dns-snapshot.json','clb-snapshot.json','snapshot.json','ecs-snapshot.json','jumpserver-snapshot.json','repositories.json'].map(name=>[name,JSON.parse(fs.readFileSync(process.env.RESOURCE_SNAPSHOT_DIR && fs.existsSync(process.env.RESOURCE_SNAPSHOT_DIR+'/'+name) ? process.env.RESOURCE_SNAPSHOT_DIR+'/'+name : 'lib/'+name,'utf8'))]));
 const compiled=ts.transpileModule(fs.readFileSync('lib/resource-comparison.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText;
 const loadModule=path=>{
   const code=ts.transpileModule(fs.readFileSync(path,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText;
@@ -22,6 +22,14 @@ vm.runInNewContext(compiled,sandbox);
 const c=sandbox.exports;
 const plain=value=>JSON.parse(JSON.stringify(value));
 const empty=()=>({apps:[],instances:[],projects:[],assets:[],jumpGroups:[],repos:[],codeGroups:[]});
+test('cloud DNS address inventory retains its collecting tenant while static records stay unassigned',()=>{
+ const input=empty();
+ input.dnsRecords=[{id:'cloud',tenantId:'b',tenantName:'账号 B',accountId:'2002',name:'api.example.cn',type:'A',value:'192.0.2.50',status:'启用'},
+  {id:'static',name:'external.example.cn',type:'A',value:'192.0.2.51',status:'启用'}];
+ const rows=c.buildComparison(input);
+ assert.equal(rows.find(r=>r.ip==='192.0.2.50').tenants[0].id,'b');
+ assert.equal(rows.find(r=>r.ip==='192.0.2.51').tenants.length,0);
+});
 test('cloud provenance and tenant filters include NAT while static DNS stays unassigned',()=>{
  const input=empty();
  input.instances=[{id:'same',tenantId:'a',tenantName:'账号 A',accountId:'1001',projectId:'',privateIps:['10.1.0.1'],publicIps:[]}];

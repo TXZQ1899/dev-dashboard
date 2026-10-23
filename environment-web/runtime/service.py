@@ -29,13 +29,14 @@ DATA = Path(os.environ.get('ENVSCOPE_DATA', '/data'))
 APP = Path(os.environ.get('ENVSCOPE_APP', '/app'))
 ALLOWED_HOSTS = tuple(h for h in os.environ.get('ENVSCOPE_ALLOWED_HOSTS', '').replace(' ', '').split(',') if h)
 FILES = ('snapshot.json', 'repositories.json', 'jumpserver-snapshot.json', 'ecs-snapshot.json')
-OPTIONAL_FILES = ('clb-snapshot.json', 'nat-snapshot.json', 'server-specs.json', 'dms-snapshot.json')
+OPTIONAL_FILES = ('clb-snapshot.json', 'nat-snapshot.json', 'server-specs.json', 'dms-snapshot.json', 'cloud-dns-snapshot.json')
 EMPTY_CLB = {'collectedAt': None, 'instances': [], 'available': False}
 EMPTY_NAT = {'collectedAt': None, 'gateways': [], 'available': False, 'region': 'cn-shanghai'}
 EMPTY_SPECS = {'collectedAt': None, 'specs': [], 'available': False}
+EMPTY_DNS = {'schemaVersion': 2, 'collectedAt': None, 'zones': [], 'tenants': [], 'available': False}
 EMPTY_DMS = {'collectedAt': None, 'instances': [], 'available': False}
 OPTIONAL_DEFAULTS = {'clb-snapshot.json': EMPTY_CLB, 'nat-snapshot.json': EMPTY_NAT,
-                     'server-specs.json': EMPTY_SPECS, 'dms-snapshot.json': EMPTY_DMS}
+                     'server-specs.json': EMPTY_SPECS, 'dms-snapshot.json': EMPTY_DMS, 'cloud-dns-snapshot.json': EMPTY_DNS}
 TOPOLOGY_DYNAMIC_FILES = FILES + OPTIONAL_FILES
 TOPOLOGY_STATIC_FILES = ('dns-snapshot.json', 'eip-snapshot.json')
 PATH_KINDS = ('domain', 'application', 'host')
@@ -44,7 +45,7 @@ PATH_ENVIRONMENTS = ('PRODUCT','TEST','SIMULATION','GLOBAL','UNKNOWN')
 REQUEST_ENVIRONMENTS = ('PRODUCT','TEST','SIMULATION')
 # Single-source sync kinds that may run concurrently with a primary job, mapped
 # to the display names used by collect.py's parallel_collect() source states.
-SOURCE_LABELS = {'ecs':'ECS','clb':'CLB','nat':'NAT','dms':'DMS','jumpserver':'JumpServer',
+SOURCE_LABELS = {'ecs':'ECS','clb':'CLB','nat':'NAT','dms':'DMS','cloud-dns':'CLOUD-DNS','jumpserver':'JumpServer',
                  'codeup':'Codeup','local_gitlab':'Local GitLab','devops':'DevOps'}
 TZ = ZoneInfo('Asia/Shanghai')
 
@@ -109,27 +110,27 @@ def validate(folder):
     if {i for g in jump['groups'] for i in g['assetIds']} != ids:
         raise ValueError('分组与资产不一致')
     clb = read(folder/'clb-snapshot.json', EMPTY_CLB)
-    for source in ('ecs', 'clb', 'nat', 'dms'):
+    for source in tenancy.CLOUD_SOURCES:
         snapshot = read(folder/f'{source}-snapshot.json', {})
         planned = read(folder/'version.json', {}).get('cloudPlan', [])
         if any(source in t['sources'] for t in planned) and snapshot.get('schemaVersion') != 2:
             raise ValueError(f'{source.upper()} 未生成本次多租户快照')
-        field = 'gateways' if source == 'nat' else 'instances'
+        field = 'zones' if source == 'cloud-dns' else 'gateways' if source == 'nat' else 'instances'
         if source == 'ecs' or snapshot.get('available'):
             rows = snapshot.get(field, [])
             keys = [(r.get('tenantId', tenancy.LEGACY_TENANT), r.get('region', ''),
-                     r.get('id') if source != 'dms' else r.get('实例地址')) for r in rows]
+                     (r.get('visibility'), r.get('id')) if source == 'cloud-dns' else r.get('id') if source != 'dms' else r.get('实例地址')) for r in rows]
             if len(keys) != len(set(keys)): raise ValueError(f'{source.upper()} 存在重复资源')
-        if snapshot.get('schemaVersion') == 2:
+        if snapshot.get('schemaVersion') == 2 and (snapshot.get('available') or any(source in t['sources'] for t in planned)):
             scopes = snapshot.get('tenants', [])
             if not scopes or any(s.get('complete') is not True for s in scopes):
                 raise ValueError(f'{source.upper()} 租户采集范围不完整')
             expected = {(t['tenantId'], region) for t in planned if source in t['sources']
-                        for region in ([''] if source == 'dms' else t['regions'])}
+                        for region in ([''] if source in ('dms', 'cloud-dns') else t['regions'])}
             actual = {(s['tenantId'], s.get('region', '')) for s in scopes}
             if not expected.issubset(actual): raise ValueError(f'{source.upper()} 缺少计划中的租户数据')
             for row in snapshot.get(field, []):
-                scope_key = (row.get('tenantId'), '' if source == 'dms' else row.get('region', ''))
+                scope_key = (row.get('tenantId'), '' if source in ('dms', 'cloud-dns') else row.get('region', ''))
                 if scope_key not in actual or not row.get('resourceKey'):
                     raise ValueError(f'{source.upper()} 资源缺少租户来源身份')
             for tenant in planned:
@@ -156,9 +157,24 @@ def validate(folder):
         rows = dms['instances']
         if len({(r.get('tenantId',''),r.get('dmsTenantId',''),r.get('实例地址')) for r in rows}) != len(rows):
             raise ValueError('DMS 实例存在重复的记录')
+    cloud_dns = read(folder/'cloud-dns-snapshot.json', EMPTY_DNS)
+    if cloud_dns.get('available'):
+        for zone in cloud_dns.get('zones', []):
+            records = zone.get('records')
+            if (zone.get('visibility') not in ('public', 'private') or not isinstance(records, list)
+                    or zone.get('recordCount') != len(records) or not zone.get('name')):
+                raise ValueError('DNS 域名或记录清单不完整')
+            keys = [r.get('resourceKey') for r in records]
+            if any(not key for key in keys) or len(set(keys)) != len(keys):
+                raise ValueError('DNS 解析记录身份缺失或重复')
+            if any(r.get('tenantId') != zone.get('tenantId') or r.get('zoneId') != zone.get('id')
+                   or r.get('visibility') != zone.get('visibility') for r in records):
+                raise ValueError('DNS 解析记录与域名范围不一致')
     return {'applications': len(inventory['apps']), 'repositories': len(repos['repos']), 'servers': len(ids),
             'ecs': len(data[FILES[3]].get('instances', [])), 'clb': len(clb['instances']) if clb.get('available') else None,
             'dms': len(dms['instances']) if dms.get('available') else None,
+            'dnsZones': len(cloud_dns['zones']) if cloud_dns.get('available') else None,
+            'dnsRecords': sum(z['recordCount'] for z in cloud_dns['zones']) if cloud_dns.get('available') else None,
             'nat': len(nat['gateways']) if nat.get('available') else None,
             'dnat': sum(len(g['entries']) for g in nat['gateways']) if nat.get('available') else None}
 
@@ -671,12 +687,14 @@ class Service:
             identifier='topology-'+datetime.now(TZ).strftime('%Y%m%d-%H%M%S-%f')
             output=DATA/'topology'/identifier;output.mkdir(parents=True)
             report={'id':identifier,'createdAt':now(),'status':'generating','kind':'topology','sourceVersion':current['id'],
-                    'note':'基于当前激活数据版本生成 Topology；DNS 和 EIP 使用镜像内静态快照'}
+                    'note':'基于当前激活数据版本生成 Topology；DNS 保留静态导入并补充当前版本公网云 DNS；EIP 使用静态快照'}
             write(output/'version.json',report)
             try:
                 with tempfile.TemporaryDirectory(prefix='envscope-topology-') as tmp:
                     source=Path(tmp)/'lib';source.mkdir()
-                    for name in TOPOLOGY_DYNAMIC_FILES:shutil.copyfile(folder/name,source/name)
+                    for name in TOPOLOGY_DYNAMIC_FILES:
+                        if (folder/name).exists(): shutil.copyfile(folder/name, source/name)
+                        else: write(source/name, OPTIONAL_DEFAULTS[name])
                     for name in TOPOLOGY_STATIC_FILES:shutil.copyfile(APP/'lib'/name,source/name)
                     with (output/'topology.log').open('w') as log:
                         proc=subprocess.run(['node',str(APP/'scripts/generate-topology.mjs'),str(Path(tmp))],cwd=APP,stdout=log,stderr=subprocess.STDOUT,timeout=300)
@@ -1017,7 +1035,7 @@ class Service:
                     if success.get('status') != 'ready': continue
                     planned = any(t.get('tenantId') == tenant_id and source in t.get('sources', []) and
                                   t.get('credentialVersion') == alert.get('credentialVersion') and
-                                  failure['region'] in ([''] if source == 'dms' else t.get('regions', []))
+                                  failure['region'] in ([''] if source in ('dms', 'cloud-dns') else t.get('regions', []))
                                   for t in success.get('cloudPlan', []))
                     if planned:
                         del alerts[tenant_id]
@@ -1182,7 +1200,7 @@ class Service:
             if self.archive_job and self.archive_job.get('status') == 'running': raise ValueError('请等待日志下载结束后再采集或切换版本')
             if self.check_job and self.check_job.get('status') == 'running': raise ValueError('请等待应用核验任务结束后再采集或切换版本')
             if self.backend is None: raise ValueError('应用正在恢复当前版本，请稍后重试')
-            source_modes = ('local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'aliyun', 'jumpserver', 'devops', 'jumpserver_asset', 'devops_app')
+            source_modes = ('local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'cloud-dns', 'aliyun', 'jumpserver', 'devops', 'jumpserver_asset', 'devops_app')
             # While a job is running only a single-source retry whose source already
             # failed in the running full sync may start, and it runs concurrently.
             is_extra = False
@@ -1206,7 +1224,7 @@ class Service:
                         raise ValueError('请先保存四个平台的 Cookie' if missing_other else aliyun_hint)
                     tenancy.select(saved)
                     tenancy.select(saved, 'codeup')
-                elif kind in ('ecs','clb','nat','dms','codeup','aliyun'):
+                elif kind in ('ecs','clb','nat','dms','cloud-dns','codeup','aliyun'):
                     tenancy.select(saved, None if kind == 'aliyun' else kind, tenant_id)
                 elif kind == 'jumpserver_asset':
                     if not saved.get('jumpserver',{}).get('value'):
@@ -1231,7 +1249,7 @@ class Service:
                 else: raise ValueError('无法创建版本目录，请重试')
                 note = '单独重新采集一台服务器的进程与 Nginx' if kind == 'jumpserver_asset' else \
                     f'单独重新采集 DevOps 应用 {app_id} 的部署记录' if kind == 'devops_app' else \
-                    f'单独同步 {kind}' if kind in source_modes else '同步全部启用租户的 ECS、CLB、DMS、NAT 及现有平台'
+                    f'单独同步 {kind}' if kind in source_modes else '同步全部启用租户的 ECS、CLB、DMS、NAT、DNS 及现有平台'
                 write(folder/'version.json',{'id':identifier,'createdAt':now(),'status':'collecting','kind':kind,
                       'note':note,'tenantId':tenant_id})
                 frozen = deepcopy(saved)
@@ -1269,10 +1287,10 @@ class Service:
         if job is None: job = self.job
         frozen = self.collection_inputs.pop(identifier, None)
         try:
-            if kind in ('sync', 'local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'aliyun', 'jumpserver', 'devops', 'jumpserver_asset', 'devops_app'):
+            if kind in ('sync', 'local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'cloud-dns', 'aliyun', 'jumpserver', 'devops', 'jumpserver_asset', 'devops_app'):
                 self._set_job(job, phase='正在采集数据')
                 current_folder = self.version(read(DATA/'current.json')['id'])
-                if kind in ('local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'aliyun', 'jumpserver', 'devops', 'jumpserver_asset', 'devops_app'):
+                if kind in ('local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'cloud-dns', 'aliyun', 'jumpserver', 'devops', 'jumpserver_asset', 'devops_app'):
                     for name in FILES: shutil.copyfile(current_folder/name, folder/name)
                     for name in OPTIONAL_FILES: write(folder/name, read(current_folder/name, OPTIONAL_DEFAULTS[name]))
                     # A source sync must produce fresh data, not accidentally retain the copied snapshot.
@@ -1302,7 +1320,7 @@ class Service:
                     if p.returncode:
                         detail=self.collection_error(folder)
                         raise ValueError(f'{kind} 采集失败：{detail}；当前版本未改变')
-                    if kind in ('clb', 'nat', 'dms') and not read(folder/f'{kind}-snapshot.json', {}).get('available'):
+                    if kind in ('clb', 'nat', 'dms', 'cloud-dns') and not read(folder/f'{kind}-snapshot.json', {}).get('available'):
                         raise ValueError(f'缺少本次 {kind.upper()} 采集数据')
                     counts=validate(folder)
                     # Defer marking the version ready until activate() swaps in the
@@ -1574,7 +1592,7 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path=='/api/settings/sync/local-gitlab':service.start('local_gitlab')
             elif self.path.startswith('/api/settings/sync/'):
                 source = self.path.rsplit('/', 1)[-1]
-                if source not in ('ecs', 'clb', 'nat', 'dms', 'aliyun', 'jumpserver', 'devops', 'codeup'): return self.json(404,{'error':'不支持的数据源'})
+                if source not in ('ecs', 'clb', 'nat', 'dms', 'cloud-dns', 'aliyun', 'jumpserver', 'devops', 'codeup'): return self.json(404,{'error':'不支持的数据源'})
                 service.start(source, tenant_id=payload.get('tenantId'))
                 return self.json(200, service.status())
             elif self.path=='/api/settings/jumpserver-inspect':

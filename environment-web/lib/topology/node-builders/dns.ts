@@ -19,7 +19,13 @@ export type DnsBuildResult = {
 
 export function buildDnsNodes(graph: GraphCollector, input: SnapshotInput, hosts: HostIndex, knownIps: Set<string>): DnsBuildResult {
   const root = asRecord(input.dns);
-  const records = asArray(root.records);
+  const cloud = asRecord(input.cloudDns);
+  // PrivateZone visibility requires VPC context. Keep those records in the DNS
+  // inventory rather than adding global DOMAIN edges from private evidence.
+  const zones = cloud.available === true ? asArray(cloud.zones).filter(z => z.visibility === 'public') : [];
+  const publicZones = new Set(zones.map(z => normalizeDomain(z.name)));
+  const records = [...asArray(root.records).filter(r => !publicZones.has(normalizeDomain(r.zone))),
+    ...zones.flatMap(z => asArray(z.records))];
   const names = new Set(records.map(record => normalizeDomain(record.name)));
   const recordsInfo: DnsRecordInfo[] = [];
 
@@ -39,13 +45,15 @@ export function buildDnsNodes(graph: GraphCollector, input: SnapshotInput, hosts
     if (type !== 'A' && type !== 'AAAA' && type !== 'CNAME') continue;
     const name = normalizeDomain(record.name);
     const value = text(record.value);
-    const status = text(record.status) === '暂停' ? 'paused' : 'active';
+    const status = text(record.status) === '暂停' ? 'paused' : text(record.status) === '启用' ? 'active' : 'unknown';
     const evidence: Evidence = {
       source: 'dns',
-      sourceId: text(record.id),
-      reference: `environment-web/lib/dns-snapshot.json (${text(record.source)} row ${text(record.row)})`,
+      sourceId: text(record.resourceKey) || text(record.id),
+      ...(record.tenantId ? { tenantId: text(record.tenantId), accountId: text(record.accountId) } : {}),
+      reference: record.tenantId ? `cloud-dns-snapshot.json (${text(record.tenantId)}/public/${text(record.zoneId)}/${text(record.id)})`
+        : `environment-web/lib/dns-snapshot.json (${text(record.source)} row ${text(record.row)})`,
       detail: `DNS ${type} ${name} -> ${value}, line ${text(record.line)}, status ${text(record.status)}`,
-      observedAt: toIso(root.collectedAt) ?? toIso(root.snapshotDate),
+      observedAt: toIso(record.observedAt) ?? toIso(root.collectedAt) ?? toIso(root.snapshotDate),
     };
     const source = domainNode(name, status, evidence, {
       zone: text(record.zone),
@@ -54,12 +62,13 @@ export function buildDnsNodes(graph: GraphCollector, input: SnapshotInput, hosts
       weight: record.weight ?? null,
       policy: text(record.policy),
       remark: text(record.remark),
+      ...(record.tenantId ? { tenantId: text(record.tenantId), tenantName: text(record.tenantName), visibility: 'public' } : {}),
     });
     recordsInfo.push({ recordId: text(record.id), name, type, value, status: text(record.status), sourceNode: source, evidence });
 
     if (type === 'CNAME') {
       const target = normalizeDomain(value);
-      const targetStatus = names.has(target) ? 'active' : isManagedDomain(target) ? 'unresolved' : 'external';
+      const targetStatus = names.has(target) ? 'active' : isManagedDomain(target) || [...publicZones].some(z => target === z || target.endsWith('.' + z)) ? 'unresolved' : 'external';
       domainNode(target, targetStatus, evidence, { unresolvedReason: targetStatus === 'unresolved' ? '目标域名存在记录但未形成有效链路' : undefined });
     } else {
       const ip = normalizeIp(value);

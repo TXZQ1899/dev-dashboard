@@ -7,7 +7,8 @@ import { clb, certificatesFromClb, filterClb, referencedGroups, summarizeClb, ty
 import { instances as ecsInstances, fetchedAt as ecsFetchedAt } from '@/lib/ecs';
 import { jumpserver } from '@/lib/jumpserver';
 import './clb.css';
-import { dns, integrateDns, type DnsView } from '@/lib/dns';
+import { dns, staticDns, integrateDns, type DnsView } from '@/lib/dns';
+import { cloudDns, type DnsZone } from '@/lib/cloud-dns';
 import { eip, integrateEip, type Eip, type EipView } from '@/lib/eip';
 import { nat, portLabel, type DnatEntry, type NatGateway } from '@/lib/nat';
 import { TenantFilter, resourceTenantId } from '@/components/tenant-filter';
@@ -53,8 +54,8 @@ function InstanceEips({ instance }: { instance: Clb }) {
 }
 function InstanceDns({ instance }: { instance: Clb }) {
   const records = dnsIntegration.filter(row => row.matches.some(match => match.instance.id === instance.id));
-  return <section className="clb-group"><strong>静态 DNS 关联（{records.length} 条）</strong>
-    {records.length ? records.map(({ record, matches }) => <div key={record.id}><p><strong><a href={viewLink('dns', record.name)}>{record.name}</a></strong> · {record.type} · {record.line} · TTL {record.ttl} 秒</p><small>{matches.find(match => match.instance.id === instance.id)?.paths.map(path => `${path.chain.join(' → ')}${path.via ? `；经 ${path.via}` : ''}`).join('；')}</small></div>) : <p className="clb-note">这两份 DNS 导出中暂无启用记录指向此实例；保留全部监听器与后端配置。</p>}
+  return <section className="clb-group"><strong>DNS 快照关联（{records.length} 条）</strong>
+    {records.length ? records.map(({ record, matches }) => <div key={record.id}><p><strong><a href={viewLink('dns', record.name)}>{record.name}</a></strong> · {record.type} · {record.line} · TTL {record.ttl} 秒</p><small>{matches.find(match => match.instance.id === instance.id)?.paths.map(path => `${path.chain.join(' → ')}${path.via ? `；经 ${path.via}` : ''}`).join('；')}</small></div>) : <p className="clb-note">当前 DNS 快照中暂无启用记录指向此实例；保留全部监听器与后端配置。</p>}
   </section>;
 }
 
@@ -92,7 +93,7 @@ function Toolbar({ label, placeholder, query, onQuery, onExpand, onCollapse }: {
 function InstanceView({ rows, query, expanded, toggle, onQuery, onExpand, onCollapse }: { rows: Clb[]; query: string; expanded: Record<string, boolean>; toggle: (key: string, open: boolean) => void; onQuery: (value: string) => void; onExpand: () => void; onCollapse: () => void }) {
   const stats = summarizeClb(rows);
   return <><div className="clb-stats">{[['CLB 实例', stats.instances], ['监听入口', stats.listeners], ['去重后端', stats.backends], ['已关联后端', stats.used], ['后端关联记录', stats.memberships], ['无后端监听器', stats.empty]].map(([name,count]) => <section className="panel" key={name}><small>{name}</small><strong>{count}</strong></section>)}</div>
-    <Toolbar label="搜索 CLB" placeholder="搜索实例名称、IP、端口、域名或服务器组" query={query} onQuery={onQuery} onExpand={onExpand} onCollapse={onCollapse} /><p className="clb-note">CLB 实例页展示全部采集到的 CLB，不要求实例必须配置证书。DNS 为两份静态导出的补充关联，无 DNS 匹配的实例仍完整展示。</p>
+    <Toolbar label="搜索 CLB" placeholder="搜索实例名称、IP、端口、域名或服务器组" query={query} onQuery={onQuery} onExpand={onExpand} onCollapse={onCollapse} /><p className="clb-note">CLB 实例页展示全部采集到的 CLB，不要求实例必须配置证书。DNS 使用静态导出与云采集快照的补充关联，无 DNS 匹配的实例仍完整展示。</p>
     {!rows.length && <p>没有匹配的实例</p>}{rows.map(instance => { const used = referencedGroups(instance); const unused = instance.groups.filter(g => !used.has(g.id) && (g.id !== 'default' || g.servers.length)); return <details className="panel clb-instance" key={resourceIdentity(instance)} open={!!expanded[resourceIdentity(instance)]} onToggle={e => toggle(resourceIdentity(instance), e.currentTarget.open)}>
       <summary><strong>{instance.name} · {tenantLabel(instance)}</strong><code>{instance.ip}</code><span>{instance.addressType === 'intranet' ? '内网' : '公网'} · {instance.status} · {instance.listeners.length} 个监听器</span></summary><small className="clb-id">{instance.id}</small><div className="clb-branches">
         <InstanceEips instance={instance} /><InstanceDns instance={instance} />{instance.listeners.map(listener => <ListenerDetails key={`${listener.protocol}-${listener.port}`} instance={instance} listener={listener} keyPrefix={resourceIdentity(instance)} expanded={expanded} toggle={toggle} />)}
@@ -113,13 +114,13 @@ function CertificateView({ tenant, query, expanded, onQuery, onExpand, onCollaps
 }
 function DnsDomains({ rows, query, expanded, onQuery, onExpand, onCollapse, toggle }: { rows: DnsView[]; query: string; expanded: Record<string, boolean>; onQuery: (value: string) => void; onExpand: () => void; onCollapse: () => void; toggle: (key: string, open: boolean) => void }) {
   return <>
-    <p className="clb-note">仅整合 folidaymall.com、fosunholiday.com 两份静态导出，共 {dns.records.length} 条记录。按启用 A / AAAA 的地址及表内 CNAME 链匹配 CLB IP、EIP，并通过 EIP 静态绑定 ID 关联 CLB。保留线路、权重和暂停状态；未执行实时 DNS 查询。监听端口与路径需结合下方配置判断。</p>
+    <p className="clb-note">按启用 A / AAAA 地址及同一来源、同一公网/内网范围的 CNAME 链匹配 CLB、EIP。保留线路、权重和暂停状态；未执行实时 DNS 查询。内网地址关联还需核对实际 VPC 可见范围；监听端口与路径需结合下方配置判断。</p>
     <div className="clb-stats">{[['筛选记录', rows.length], ['已关联 CLB 记录', rows.filter(r => r.matches.length).length], ['已关联 EIP 记录', rows.filter(r => r.eipMatches.length).length], ['关联 EIP', new Set(rows.flatMap(r => r.eipMatches.map(m => m.eip.key))).size], ['关联 CLB', new Set(rows.flatMap(r => r.matches.map(m => m.instance.id))).size], ['未启用', rows.filter(r => r.record.status !== '启用').length]].map(([label, count]) => <section className="panel" key={label}><small>{label}</small><strong>{count}</strong></section>)}</div>
     <Toolbar label="搜索 DNS 域名" placeholder="搜索域名、解析值、CLB、状态或线路" query={query} onQuery={onQuery} onExpand={onExpand} onCollapse={onCollapse} />
     {!rows.length && <p>没有匹配的 DNS 记录</p>}
     {rows.map(({ record, matches, eipMatches, status }) => <details className="panel clb-instance" key={record.id} open={!!expanded[record.id]} onToggle={e => toggle(record.id, e.currentTarget.open)}>
       <summary><strong>{record.name}</strong><code>{record.type} → {record.value}</code><span>{record.line} · {record.status} · {status}</span></summary>
-      <p className="clb-note">TTL：{record.ttl ?? '未提供'} 秒 · 策略：{record.policy || '未提供'} · 权重：{record.weight ?? '未提供'} · 来源：{record.source} 第 {record.row} 行{record.remark ? ` · 备注：${record.remark}` : ''}</p>
+      <p className="clb-note">TTL：{record.ttl ?? '未提供'} 秒 · 策略：{record.policy || '未提供'} · 权重：{record.weight ?? '未提供'} · 来源：{record.source}{record.row ? ` 第 ${record.row} 行` : ` · 记录 ID：${record.nativeId || record.id} · ${record.tenantName}`} · {record.observedAt ? formatBeijingTime(record.observedAt) : '静态导入'}{record.priority != null ? ` · 优先级：${record.priority}` : ''}{record.remark ? ` · 备注：${record.remark}` : ''}</p>
       {record.name.startsWith('*.') && <p className="clb-note">通配符记录，仅展示导出中的配置，不展开为具体子域名。</p>}
       {eipMatches.map(({ eip, paths }) => <section key={eip.key}><EipSummary record={eip} />{paths.map((path, index) => <p className="clb-note" key={index}>解析链：{path.chain.join(' → ')}</p>)}</section>)}
       {matches.map(({ instance, paths }) => <section key={resourceIdentity(instance)} className="clb-certificate-clb">
@@ -131,9 +132,45 @@ function DnsDomains({ rows, query, expanded, onQuery, onExpand, onCollapse, togg
     </details>)}
   </>;
 }
+function DnsBrowser(props: Parameters<typeof DnsDomains>[0] & { tenant: string; scope?: 'public' | 'private' }) {
+  const [chosenVisibility, setVisibility] = useState<'public' | 'private' | null>(null);
+  const visibility = chosenVisibility ?? props.scope ?? 'public';
+  const [selected, setSelected] = useState('');
+  const staticZones: DnsZone[] = staticDns.zones.map(name => ({ id: `static:${name}`, name, visibility: 'public', recordCount: staticDns.records.filter(r => r.zone === name).length, recordsCollected: true, skipReason: '', records: staticDns.records.filter(r => r.zone === name) }));
+  const zones = [...cloudDns.zones, ...staticZones];
+  const available = zones.filter(zone => zone.visibility === visibility && (!props.tenant || zone.tenantId === props.tenant));
+  const query = props.query.trim().toLowerCase();
+  const zoneKey = (zone: DnsZone) => zone.resourceKey || zone.id;
+  const zoneRows = (zone: DnsZone) => props.rows.filter(row => zone.tenantId
+    ? row.record.tenantId === zone.tenantId && row.record.zoneId === zone.id && row.record.visibility === zone.visibility
+    : !row.record.tenantId && row.record.zone === zone.name);
+  const visible = available.filter(zone => !query || JSON.stringify({name: zone.name, tenantName: zone.tenantName, source: zone.tenantId ? '云采集' : '静态导入'}).toLowerCase().includes(query) || zoneRows(zone).length)
+    .sort((a, b) => b.recordCount - a.recordCount);
+  const populated = visible.filter(zone => zone.recordCount > 0);
+  const empty = visible.filter(zone => zone.recordCount === 0);
+  const zoneTable = (items: DnsZone[]) => <div className="panel dns-zone-list"><table><thead><tr><th>域名</th><th>租户 / 来源</th><th>解析记录数</th><th>采集时间</th><th>详情</th></tr></thead><tbody>{items.map(zone => <tr key={zoneKey(zone)}><td><button className="dns-zone-link" onClick={() => setSelected(zoneKey(zone))}>{zone.name}</button></td><td>{zone.tenantName || '静态导入 · 租户未归属'}</td><td>{zone.recordCount}</td><td>{formatBeijingTime(zone.observedAt, '静态导入')}</td><td>{zone.recordCount === 0 ? '已跳过（0 条记录）' : <button className="dns-zone-link" onClick={() => setSelected(zoneKey(zone))}>查看解析记录</button>}</td></tr>)}</tbody></table></div>;
+  const current = available.find(zone => zoneKey(zone) === selected);
+  return <>
+    <p className="clb-note">云 DNS 按租户采集域名和解析记录。两份静态导出独立保留，共 {staticDns.records.length} 条，未归属当前租户。公网同名域名的云采集与静态导入分别展示。</p>
+    <nav className="panel clb-tabs" aria-label="DNS 解析范围">{(['public', 'private'] as const).map(scope => <button key={scope} className={visibility === scope ? 'active' : ''} onClick={() => { setVisibility(scope); setSelected(''); }}>{scope === 'public' ? '公网权威解析' : '内网域名解析'}（{zones.filter(z => z.visibility === scope && (!props.tenant || z.tenantId === props.tenant)).length}）</button>)}</nav>
+    {!cloudDns.available && <p className="clb-note">该版本尚未采集云 DNS，可在 Settings 单独同步 DNS。</p>}
+    {current ? <><Button variant="outline" onClick={() => setSelected('')}>返回域名列表</Button><h2>{current.name}</h2><p className="clb-note">{current.tenantName || '静态导入 · 租户未归属'} · {current.recordCount} 条记录 · {formatBeijingTime(current.observedAt, '静态导入')}</p>{current.recordCount === 0 ? <p className="panel">解析记录数为 0，已跳过解析详情采集。</p> : <DnsDomains {...props} rows={zoneRows(current)} />}</> : <>
+      <div className="panel clb-toolbar"><label htmlFor="dns-zone-search">搜索 DNS 域名<Input id="dns-zone-search" aria-label="搜索 DNS 域名" placeholder="搜索域名、租户或解析记录" value={props.query} onChange={event => props.onQuery(event.target.value)} /></label></div>
+      {populated.length > 0 && zoneTable(populated)}
+      {empty.length > 0 && <>
+        {populated.length > 0 && <hr className="dns-zone-divider" />}
+        <details key={`${props.tenant}/${visibility}`} className="panel dns-empty-zones">
+          <summary>无解析记录的域名（{empty.length}）</summary>
+          {zoneTable(empty)}
+        </details>
+      </>}
+      {!visible.length && <p className="panel dns-zone-list">没有匹配的域名</p>}
+    </>}
+  </>;
+}
 function EipDomains({ rows, query, expanded, onQuery, onExpand, onCollapse, toggle }: { rows: EipView[]; query: string; expanded: Record<string, boolean>; onQuery: (value: string) => void; onExpand: () => void; onCollapse: () => void; toggle: (key: string, open: boolean) => void }) {
   return <>
-    <p className="clb-note">EIP 为 {eip.snapshotDate} 静态导出，{eip.sources.map(source => `${source.owner} ${source.count} 条`).join('、')}。CLB 按绑定实例 ID 或相同公网 IP 关联；域名按两份 DNS 表中的启用地址及 CNAME 链关联。历史绑定与当前 CLB 快照可能不同；ECS 按绑定实例 ID 查找实例 IP，NAT 按采集到的 DNAT 规则匹配后端 IP 与端口；补充备注不作为映射依据。</p>
+    <p className="clb-note">EIP 为 {eip.snapshotDate} 静态导出，{eip.sources.map(source => `${source.owner} ${source.count} 条`).join('、')}。CLB 按绑定实例 ID 或相同公网 IP 关联；域名按 DNS 快照中的启用地址及同一来源范围的 CNAME 链关联。历史绑定与当前 CLB 快照可能不同；ECS 按绑定实例 ID 查找实例 IP，NAT 按采集到的 DNAT 规则匹配后端 IP 与端口；补充备注不作为映射依据。</p>
     <div className="clb-stats">{[['筛选 EIP', rows.length], ['已关联 CLB 的 EIP', rows.filter(row => row.matches.length).length], ['已关联 DNS 的 EIP', rows.filter(row => row.domains.length).length], ['关联 DNS 记录', new Set(rows.flatMap(row => row.domains.map(domain => domain.record.id))).size], ['NAT 网关 EIP', rows.filter(row => row.record.bindingType === 'NAT网关').length], ['未匹配当前 CLB', rows.filter(row => !row.matches.length).length]].map(([label, count]) => <section className="panel" key={label}><small>{label}</small><strong>{count}</strong></section>)}</div>
     <Toolbar label="搜索 EIP" placeholder="搜索来源、EIP、绑定实例、域名或备注" query={query} onQuery={onQuery} onExpand={onExpand} onCollapse={onCollapse} />
     {!rows.length && <p>没有匹配的 EIP</p>}
@@ -144,7 +181,7 @@ function EipDomains({ rows, query, expanded, onQuery, onExpand, onCollapse, togg
       <p className="clb-note">安全防护：{record.protection || '未提供'} · 标签：{record.tags || '无'} · IP 地址池：{record.poolId || '未提供'}</p>
       <p className="clb-note">来源：{record.source} 第 {record.row} 行 · 快照日期：{eip.snapshotDate}</p>
       {record.notes.length > 0 && <section className="clb-group"><strong>原始补充备注（未命名列，未验证）</strong>{record.notes.map(note => <p className="eip-source-note" key={note.column}>第 {note.column} 列：{note.value}</p>)}</section>}
-      <section className="clb-group"><strong>关联 DNS 域名（{domains.length} 条）</strong>{domains.length ? domains.map(domain => <div key={domain.record.id}><p><a href={viewLink('dns', domain.record.name)}>{domain.record.name}</a> · {domain.record.type} · {domain.record.line}</p><small>{domain.eipMatches.find(match => match.eip.key === record.key)?.paths.map(path => path.chain.join(' → ')).join('；')}</small></div>) : <p className="clb-note">两份静态 DNS 导出中暂无启用记录指向此 EIP。</p>}</section>
+      <section className="clb-group"><strong>关联 DNS 域名（{domains.length} 条）</strong>{domains.length ? domains.map(domain => <div key={domain.record.id}><p><a href={viewLink('dns', domain.record.name)}>{domain.record.name}</a> · {domain.record.type} · {domain.record.line}</p><small>{domain.eipMatches.find(match => match.eip.key === record.key)?.paths.map(path => path.chain.join(' → ')).join('；')}</small></div>) : <p className="clb-note">当前 DNS 快照中暂无启用记录指向此 EIP。</p>}</section>
       {!matches.length && <p className="clb-note">未匹配当前 CLB 快照；保留原始绑定信息。ECS 绑定不推断为 CLB；NAT 仅通过可用 DNAT 规则的后端 IP 匹配 CLB。</p>}
       {matches.map(({ instance, evidence }) => <section key={resourceIdentity(instance)} className="clb-certificate-clb"><div className="clb-clb-heading"><strong><a href={viewLink('instances', instance.id)}>{instance.name}</a></strong><code>{instance.ip}</code><small>{instance.id} · {evidence.join('、')}</small></div>{instance.listeners.map(listener => <ListenerDetails key={`${listener.protocol}-${listener.port}`} instance={instance} listener={listener} keyPrefix={`${record.key}-${instance.id}`} expanded={expanded} toggle={toggle} />)}</section>)}
     </details>)}
@@ -186,9 +223,10 @@ type View = 'dns' | 'certificates' | 'instances' | 'eip' | 'nat';
 export default function ClbPage() {
   const [query, setQuery] = useState('');
   const [tenant, setTenant] = useState('');
+  const [dnsScope, setDnsScope] = useState<'public' | 'private'>('public');
   const [tab, setTab] = useState<View>('certificates');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  useEffect(() => { const params = new URLSearchParams(window.location.search); setQuery(params.get('q') ?? ''); setTenant(params.get('tenant') ?? ''); const view = params.get('view'); setTab(view === 'instances' || view === 'dns' || view === 'eip' || view === 'nat' ? view : 'certificates'); }, []);
+  useEffect(() => { const params = new URLSearchParams(window.location.search); setQuery(params.get('q') ?? ''); setTenant(params.get('tenant') ?? ''); setDnsScope(params.get('dnsScope') === 'private' ? 'private' : 'public'); const view = params.get('view'); setTab(view === 'instances' || view === 'dns' || view === 'eip' || view === 'nat' ? view : 'certificates'); }, []);
   const normalizedQuery = query.trim().toLowerCase();
   const directlyMatched = new Set(filterClb(clb.instances, query).map(resourceIdentity));
   const rows = clb.instances.filter(instance => (!tenant || resourceTenantId(instance) === tenant) && (directlyMatched.has(resourceIdentity(instance))
@@ -196,15 +234,15 @@ export default function ClbPage() {
     || dnsIntegration.some(row => row.matches.some(match => match.instance.id === instance.id) && JSON.stringify(row.record).toLowerCase().includes(normalizedQuery))));
   const eipRows = eipIntegration.filter(row => !normalizedQuery || JSON.stringify(row).toLowerCase().includes(normalizedQuery));
   const natRows = filterNat(query).filter(gateway => !tenant || resourceTenantId(gateway) === tenant);
-  const dnsRows = dnsIntegration.filter(row => !query.trim() || JSON.stringify(row).toLowerCase().includes(query.trim().toLowerCase()));
+  const dnsRows = dnsIntegration.filter(row => (!tenant || row.record.tenantId === tenant) && (!query.trim() || JSON.stringify(row).toLowerCase().includes(query.trim().toLowerCase())));
   const allKeys = tab === 'nat' ? natRows.map(resourceIdentity) : tab === 'eip' ? eipRows.flatMap(row => [row.record.key, ...row.matches.flatMap(match => match.instance.listeners.map(listener => `${row.record.key}-${match.instance.id}-${listener.protocol}-${listener.port}`))]) : tab === 'dns' ? dnsRows.flatMap(r => [r.record.id, ...r.matches.flatMap(m => m.instance.listeners.map(l => `${r.record.id}-${m.instance.id}-${l.protocol}-${l.port}`))]) : tab === 'instances' ? rows.flatMap(i => [resourceIdentity(i), ...i.listeners.map(l => `${resourceIdentity(i)}-${l.protocol}-${l.port}`)]) : certificatesFromClb(clb.instances.filter(i => !tenant || resourceTenantId(i) === tenant), query).flatMap(c => [c.key, ...c.instances.flatMap(i => i.listeners.map(l => `${c.key}-${i.instance.id}-${l.protocol}-${l.port}`))]);
   const onQuery = (value: string) => { setQuery(value); const params = new URLSearchParams(window.location.search); if (value) params.set('q', value); else params.delete('q'); window.history.replaceState(null, '', `${window.location.pathname}?${params}`); };
   const toggle = (key: string, open: boolean) => setExpanded(prev => ({ ...prev, [key]: open }));
   const expandAll = () => setExpanded(Object.fromEntries(allKeys.map(key => [key, true])));
   const changeTab = (next: View) => { setTab(next); setExpanded({}); const params = new URLSearchParams(window.location.search); params.set('view', next); window.history.replaceState(null, '', `${window.location.pathname}?${params}`); };
   return <Shell active="clb"><main className="clb-page"><div className="page-heading"><div><h1>CLB 全景</h1><p>已配置地域 · 全部 {clb.instances.length} 个 CLB · DNS / EIP / ECS / NAT 数据联动</p></div></div>
-    <TenantFilter rows={[...clb.instances, ...nat.gateways]} value={tenant} onChange={value => { setTenant(value); setExpanded({}); const params = new URLSearchParams(window.location.search); if (value) params.set('tenant', value); else params.delete('tenant'); window.history.replaceState(null, '', `${window.location.pathname}?${params}`); }} />
-    {(tab === 'nat' ? nat.tenants ?? [] : tab === 'instances' || tab === 'certificates' ? clb.tenants ?? [] : []).filter(t => !tenant || t.tenantId === tenant).map(t => <p key={`${t.tenantId}/${t.region}`} className="clb-note">{t.tenantName} · {t.region} · 采集：{formatBeijingTime(t.collectedAt, '时间未知')}</p>)}
-    {!clb.available && <section className="panel clb-empty"><h2>该版本尚未采集 CLB</h2><p>在 Settings 配置租户凭据并同步，或切换到包含 CLB 的版本。</p><a href="/settings">打开 Settings</a></section>}<><nav className="panel clb-tabs" aria-label="CLB 视图"><button className={tab === 'certificates' ? 'active' : ''} onClick={() => changeTab('certificates')}>域名证书</button><button className={tab === 'instances' ? 'active' : ''} onClick={() => changeTab('instances')}>CLB 实例（{clb.instances.length}）</button><button className={tab === 'dns' ? 'active' : ''} onClick={() => changeTab('dns')}>DNS 域名（{dns.records.length}）</button><button className={tab === 'eip' ? 'active' : ''} onClick={() => changeTab('eip')}>弹性公网 IP（{eip.records.length}）</button><button className={tab === 'nat' ? 'active' : ''} onClick={() => changeTab('nat')}>NAT 网关（{nat.available ? nat.gateways.length : '未采集'}）</button></nav>{tab === 'nat' ? <NatView rows={natRows} query={query} expanded={expanded} onQuery={onQuery} onExpand={expandAll} onCollapse={() => setExpanded({})} toggle={toggle} /> : tab === 'eip' ? <EipDomains rows={eipRows} query={query} expanded={expanded} onQuery={onQuery} onExpand={expandAll} onCollapse={() => setExpanded({})} toggle={toggle} /> : tab === 'dns' ? <DnsDomains rows={dnsRows} query={query} expanded={expanded} onQuery={onQuery} onExpand={expandAll} onCollapse={() => setExpanded({})} toggle={toggle} /> : tab === 'certificates' ? <CertificateView tenant={tenant} query={query} expanded={expanded} onQuery={onQuery} onExpand={expandAll} onCollapse={() => setExpanded({})} toggle={toggle} /> : <InstanceView rows={rows} query={query} expanded={expanded} onQuery={onQuery} onExpand={expandAll} onCollapse={() => setExpanded({})} toggle={toggle} />}</>
+    <TenantFilter rows={[...clb.instances, ...nat.gateways, ...cloudDns.zones]} value={tenant} onChange={value => { setTenant(value); setExpanded({}); const params = new URLSearchParams(window.location.search); if (value) params.set('tenant', value); else params.delete('tenant'); window.history.replaceState(null, '', `${window.location.pathname}?${params}`); }} />
+    {(tab === 'nat' ? nat.tenants ?? [] : tab === 'dns' ? cloudDns.tenants ?? [] : tab === 'instances' || tab === 'certificates' ? clb.tenants ?? [] : []).filter(t => !tenant || t.tenantId === tenant).map(t => <p key={`${t.tenantId}/${t.region}`} className="clb-note">{t.tenantName} · {t.region} · 采集：{formatBeijingTime(t.collectedAt, '时间未知')}</p>)}
+    {!clb.available && <section className="panel clb-empty"><h2>该版本尚未采集 CLB</h2><p>在 Settings 配置租户凭据并同步，或切换到包含 CLB 的版本。</p><a href="/settings">打开 Settings</a></section>}<><nav className="panel clb-tabs" aria-label="CLB 视图"><button className={tab === 'certificates' ? 'active' : ''} onClick={() => changeTab('certificates')}>域名证书</button><button className={tab === 'instances' ? 'active' : ''} onClick={() => changeTab('instances')}>CLB 实例（{clb.instances.length}）</button><button className={tab === 'dns' ? 'active' : ''} onClick={() => changeTab('dns')}>DNS 域名（{dns.records.length}）</button><button className={tab === 'eip' ? 'active' : ''} onClick={() => changeTab('eip')}>弹性公网 IP（{eip.records.length}）</button><button className={tab === 'nat' ? 'active' : ''} onClick={() => changeTab('nat')}>NAT 网关（{nat.available ? nat.gateways.length : '未采集'}）</button></nav>{tab === 'nat' ? <NatView rows={natRows} query={query} expanded={expanded} onQuery={onQuery} onExpand={expandAll} onCollapse={() => setExpanded({})} toggle={toggle} /> : tab === 'eip' ? <EipDomains rows={eipRows} query={query} expanded={expanded} onQuery={onQuery} onExpand={expandAll} onCollapse={() => setExpanded({})} toggle={toggle} /> : tab === 'dns' ? <DnsBrowser scope={dnsScope} tenant={tenant} rows={dnsRows} query={query} expanded={expanded} onQuery={onQuery} onExpand={expandAll} onCollapse={() => setExpanded({})} toggle={toggle} /> : tab === 'certificates' ? <CertificateView tenant={tenant} query={query} expanded={expanded} onQuery={onQuery} onExpand={expandAll} onCollapse={() => setExpanded({})} toggle={toggle} /> : <InstanceView rows={rows} query={query} expanded={expanded} onQuery={onQuery} onExpand={expandAll} onCollapse={() => setExpanded({})} toggle={toggle} />}</>
   </main></Shell>;
 }

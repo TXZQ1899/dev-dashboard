@@ -12,6 +12,7 @@ const files = {
   devops: 'snapshot.json',
   repositories: 'repositories.json',
   dns: 'dns-snapshot.json',
+  cloudDns: 'cloud-dns-snapshot.json',
   eip: 'eip-snapshot.json',
   nat: 'nat-snapshot.json',
   ecs: 'ecs-snapshot.json',
@@ -21,7 +22,12 @@ const files = {
 
 const input = {};
 for (const [key, file] of Object.entries(files)) {
-  input[key] = JSON.parse(await readFile(path.join(lib, file), 'utf8'));
+  try {
+    input[key] = JSON.parse(await readFile(path.join(lib, file), 'utf8'));
+  } catch (error) {
+    if (key !== 'cloudDns' || error.code !== 'ENOENT') throw error;
+    input[key] = { available: false, zones: [] };
+  }
 }
 
 const { topology, validation } = buildValidatedTopology(input, new Date().toISOString());

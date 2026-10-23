@@ -7,7 +7,7 @@ const ts=require('typescript');
 const snapshot=JSON.parse(fs.readFileSync('lib/dns-snapshot.json','utf8'));
 const eipSandbox={exports:{},require:()=>JSON.parse(fs.readFileSync('lib/eip-snapshot.json','utf8'))};
 vm.runInNewContext(ts.transpileModule(fs.readFileSync('lib/eip.ts','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,esModuleInterop:true}}).outputText,eipSandbox);
-const sandbox={exports:{},require:id=>id==='./eip'?eipSandbox.exports:snapshot};
+const sandbox={exports:{},require:id=>id==='./eip'?eipSandbox.exports:id==='./cloud-dns'?{cloudDnsRecords:[]}:snapshot};
 vm.runInNewContext(ts.transpileModule(fs.readFileSync('lib/dns.ts','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,esModuleInterop:true}}).outputText,sandbox);
 const {integrateDns}=sandbox.exports;
 const lb={id:'lb',ip:'1.2.3.4',listeners:[],groups:[]};
@@ -23,6 +23,21 @@ test('CNAME chains cross the two zones, preserve paths, and exclude other lines'
 test('cycles, external targets and paused targets stay unresolved',()=>{
  const rows=integrateDns([lb],[record('1','a.folidaymall.com','CNAME','b.folidaymall.com'),record('2','b.folidaymall.com','CNAME','a.folidaymall.com'),record('3','c.folidaymall.com','CNAME','cdn.example.com'),record('4','d.folidaymall.com','CNAME','e.folidaymall.com'),record('5','e.folidaymall.com','A',lb.ip,{status:'暂停'})]);
  assert.ok(rows.every(r=>r.matches.length===0));
+});
+test('cloud records support other domains and isolate CNAME chains by tenant and visibility',()=>{
+ const rows=integrateDns([lb],[
+  record('1','api.example.cn','CNAME','target.example.cn',{tenantId:'a',visibility:'private'}),
+  record('2','target.example.cn','A',lb.ip,{tenantId:'b',visibility:'private'}),
+  record('3','target.example.cn','A',lb.ip,{tenantId:'a',visibility:'public'}),
+  record('4','unknown.example.cn','A',lb.ip,{tenantId:'a',visibility:'public',status:'未知'}),
+ ]);
+ assert.equal(rows.length,4);assert.equal(rows[0].resolutions.length,0);assert.equal(rows[3].matches.length,0);
+ const privateRows=integrateDns([{...lb,tenantId:'a'}],[
+  record('1','api.example.cn','CNAME','target.example.cn',{tenantId:'a',visibility:'private',line:'telecom'}),
+  record('2','target.example.cn','A',lb.ip,{tenantId:'a',visibility:'private',line:'default'}),
+ ]);
+ assert.equal(privateRows[0].matches.length,1);
+ assert.equal(integrateDns([{...lb,tenantId:'b'}],privateRows.map(r=>r.record))[0].matches.length,0);
 });
 test('imports reconcile to both source workbooks and preserve separate lines and status',()=>{
  assert.equal(snapshot.records.length,481);

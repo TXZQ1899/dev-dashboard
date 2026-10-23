@@ -111,19 +111,20 @@ class TenantCollectionTests(unittest.TestCase):
              patch.object(cloud, 'collect_nat_ak', return_value={}), \
              patch.object(cloud, 'normalize_nat', return_value={'available': True, 'collectedAt': '2026-10-23T01:00:00Z', 'gateways': []}), \
              patch.object(cloud, 'collect_dms_ak', side_effect=dms), \
+             patch.object(cloud, 'collect_dns_ak', return_value={'collectedAt': '2026-10-23T01:00:00Z', 'zones': [], 'available': True}), \
              patch.object(cloud.RpcClient, 'call', return_value={'Success': True, 'Tenant': {'Tid': 10}}):
             tasks, contexts, selected = cloud.build_tasks(self.saved, self.folder, source, tenant_id)
             results = parallel_collect(tasks, self.folder/'progress.json', contexts=contexts)
             return tasks, contexts, selected, results
 
-    def test_two_accounts_collect_four_sources_and_zero_is_a_success(self):
+    def test_two_accounts_collect_five_sources_and_zero_is_a_success(self):
         tasks, contexts, selected, results = self.run_tasks()
-        self.assertEqual(len(tasks), 8)
-        self.assertEqual({c['source'] for c in contexts.values()}, {'ECS', 'CLB', 'NAT', 'DMS'})
+        self.assertEqual(len(tasks), 10)
+        self.assertEqual({c['source'] for c in contexts.values()}, {'ECS', 'CLB', 'NAT', 'DMS', 'CLOUD-DNS'})
         self.assertTrue(all(r['complete'] for r in results.values()))
         self.assertTrue(all(r['tenants'][0]['count'] == 0 for r in results.values()))
         progress = json.loads((self.folder/'progress.json').read_text())
-        self.assertEqual(len(progress['tasks']), 8)
+        self.assertEqual(len(progress['tasks']), 10)
         self.assertEqual(set(progress['sources'].values()), {'完成'})
         self.assertNotIn('secret-', json.dumps(progress))
 
@@ -134,12 +135,12 @@ class TenantCollectionTests(unittest.TestCase):
         self.assertEqual(selected[0]['id'], tenant_id)
         self.assertEqual(list(contexts.values())[0]['source'], 'NAT')
 
-    def test_one_account_collects_four_sources_and_dms_is_not_repeated_per_region(self):
+    def test_account_global_sources_are_not_repeated_per_region(self):
         self.saved['aliyunTenants']['tenants'][1]['enabled'] = False
-        self.assertEqual(len(self.run_tasks()[0]), 4)
+        self.assertEqual(len(self.run_tasks()[0]), 5)
         self.saved['aliyunTenants']['tenants'][0]['regions'].append('cn-hangzhou')
         tasks, contexts, _, _ = self.run_tasks()
-        self.assertEqual(len(tasks), 7)
+        self.assertEqual(len(tasks), 8)
         self.assertEqual(sum(c['source'] == 'DMS' for c in contexts.values()), 1)
 
     def test_full_entry_collects_both_accounts_but_calls_codeup_only_with_original_key(self):
@@ -160,6 +161,7 @@ class TenantCollectionTests(unittest.TestCase):
             stack.enter_context(patch.object(cloud, 'collect_nat_ak', return_value={}))
             stack.enter_context(patch.object(cloud, 'normalize_nat', side_effect=cloud_result))
             stack.enter_context(patch.object(cloud, 'collect_dms_ak', side_effect=cloud_result))
+            stack.enter_context(patch.object(cloud, 'collect_dns_ak', return_value={'available': True, 'collectedAt': '2026-10-23T00:00:00Z', 'zones': []}))
             stack.enter_context(patch.object(cloud.RpcClient, 'call', return_value={'Success': True, 'Tenant': {'Tid': 10}}))
             stack.enter_context(patch.object(collect, 'jumpserver', return_value={}))
             stack.enter_context(patch.object(collect.daily, 'ROOT', self.folder))

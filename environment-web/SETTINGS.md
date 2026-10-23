@@ -6,21 +6,21 @@ Settings 顶部的「阿里云租户管理」支持新增租户、修改名称�
 
 阿里云配置统一通过顶部「管理租户」维护。标记为「Codeup 绑定租户」的编辑区额外提供采集方式、Cookie 兼容入口和 Codeup 企业 ID（留空自动识别）；其他租户只配置各自的 AccessKey。下方「凭据与每日同步」仅保留 DevOps、JumpServer、Local GitLab Cookie、服务器密码及同步调度，保存时不再提交旧阿里云字段，避免覆盖已保存的租户配置。原 Cookie、AccessKey、企业 ID 及旧客户端 API 保持兼容。
 
-每个启用租户都采集 ECS、CLB、DMS、NAT / DNAT。ECS、CLB、NAT 按配置地域采集（默认 `cn-shanghai`），DMS 按 Tid 采集一次；Tid 留空时通过 GetUserActiveTenant 获取。原有 Cookie 方式仅适用于现有租户的上海地域。Codeup 固定绑定现有租户，新增账号不调用 Codeup；全量及每日任务仍需要现有租户启用且原有平台凭据完整。DNS、EIP 仍使用静态导入。
+每个启用租户都采集 ECS、CLB、DMS、NAT / DNAT、DNS。ECS、CLB、NAT 按配置地域采集（默认 `cn-shanghai`），DMS 按 Tid 采集一次；Tid 留空时通过 GetUserActiveTenant 获取。原有 Cookie 方式仅适用于现有租户的上海地域。Codeup 固定绑定现有租户，新增账号不调用 Codeup；全量及每日任务仍需要现有租户启用且原有平台凭据完整。DNS 保留两份静态导入，新增独立 `cloud-dns-snapshot.json`；EIP 仍使用静态导入。云 DNS 必须使用租户 AccessKey，分别采集公网域名与内网 PrivateZone，每个账号只采集一次，不按地域重复。域名记录数为 0 时保留列表项并跳过详情请求。
 
-「一键同步」和每日任务覆盖所有启用租户及现有平台，沿用总计三个采集槽位。「ECS / CLB / DMS / NAT 独立同步范围」可选全部启用租户或一个租户；「同步所选租户全部云资源」只更新四类云资源，不调用 Codeup、DevOps 或 JumpServer。独立任务按租户替换切片，保留其他租户、其他来源及其观察时间。任务启动后固定配置和凭据版本，运行中保存设置只影响后续任务。
+「一键同步」和每日任务覆盖所有启用租户及现有平台，沿用总计三个采集槽位。「ECS / CLB / DMS / NAT / DNS 独立同步范围」可选全部启用租户或一个租户；「同步所选租户全部云资源」只更新五类云资源，不调用 Codeup、DevOps 或 JumpServer。独立任务按租户替换切片，保留其他租户、其他来源及其观察时间。任务启动后固定配置和凭据版本，运行中保存设置只影响后续任务。
 
 任一计划任务失败均不启用新版本；合法空清单可成功。进度、日志槽位及错误显示租户和数据源。失败来源可按现有互斥规则重试，恢复判定区分租户。停用停止后续采集，不修改当前快照或删除历史文件；下一次全量同步的采集范围仅包含启用租户。
 
 租户管理中的采集错误保存在数据卷 `tenant-alerts.json`，记录租户、数据源、地域、凭据版本和失败任务版本。相同范围、相同凭据的后续同步成功并激活后自动清除；其他来源同步成功或仅继承旧快照不算恢复。服务启动时也会核对当前版本，兼容旧错误记录，从原始 `collection-error.json` 还原来源后清除已恢复的提示。历史失败版本和日志保留。
 
-为使旧客户端和租户更新在一次原子写入中保持一致，租户配置及凭据统一保存在原 `/data/secrets/cookies.json` 的 `aliyunTenants` 对象中（0600），现有租户保留旧字段兼容别名。`/api/settings/state` 只返回脱敏租户列表；`POST /api/settings/config` 的 `aliyunTenants` 是单租户或多租户增量 upsert 数组，更新携带 `id` 和 `credentialVersion`，省略的租户不删除。`POST /api/settings/sync/{ecs|clb|dms|nat|aliyun}` 可传 `{ "tenantId": "..." }`，省略则处理全部启用租户。`aliyun` 表示四类云资源。
+为使旧客户端和租户更新在一次原子写入中保持一致，租户配置及凭据统一保存在原 `/data/secrets/cookies.json` 的 `aliyunTenants` 对象中（0600），现有租户保留旧字段兼容别名。`/api/settings/state` 只返回脱敏租户列表；`POST /api/settings/config` 的 `aliyunTenants` 是单租户或多租户增量 upsert 数组，更新携带 `id` 和 `credentialVersion`，省略的租户不删除。`POST /api/settings/sync/{ecs|clb|dms|nat|cloud-dns|aliyun}` 可传 `{ "tenantId": "..." }`，省略则处理全部启用租户。`aliyun` 表示五类云资源。
 
-快照保持原文件入口，增加 schemaVersion=2、逐资源租户信息及逐租户/地域的观察元数据。ECS、CLB、NAT、DMS 和 IP 全景支持租户筛选；DMS CSV 附加租户 ID、名称、采集账号 UID。按预先规划的不重叠网段沿用 IP 关联，拓扑增加租户来源信息，不增加 DNS 采集。历史快照文件不重写。
+快照保持原文件入口，增加 schemaVersion=2、逐资源租户信息及逐租户/地域的观察元数据。ECS、CLB、NAT、DMS 和 IP 全景支持租户筛选；DMS CSV 附加租户 ID、名称、采集账号 UID。按预先规划的不重叠网段沿用 IP 关联，拓扑增加租户来源信息，云 DNS 同步支持全部启用租户或单租户。历史快照文件不重写。
 
 ## Topology 版本生成与下载
 
-Settings 页面提供“Topology 数据”区域。点击“基于当前数据版本生成 Topology”后，服务读取 `/data/current.json` 指向的当前激活版本，使用其中 DevOps、Codeup/仓库、JumpServer、ECS、CLB 和 NAT 数据；DNS 与 EIP 是静态导入数据，继续取自应用镜像。生成结果写入 `envscope-data` 卷的 `topology/<topology-id>/topology.json`，并保存 `version.json` 与 `topology.log`。每次点击都会创建新的 `topology-*` ID，不覆盖历史结果；`topology/latest.json` 只指向最近一次成功版本。
+Settings 页面提供“Topology 数据”区域。点击“基于当前数据版本生成 Topology”后，服务读取 `/data/current.json` 指向的当前激活版本，使用其中 DevOps、Codeup/仓库、JumpServer、ECS、CLB 和 NAT 数据；DNS 使用当前版本的公网云采集快照补充镜像内静态导入（同 Zone 优先云采集）；内网解析保留在 DNS 页面，不添加全局域名边。EIP 继续取自应用镜像内静态导入。生成结果写入 `envscope-data` 卷的 `topology/<topology-id>/topology.json`，并保存 `version.json` 与 `topology.log`。每次点击都会创建新的 `topology-*` ID，不覆盖历史结果；`topology/latest.json` 只指向最近一次成功版本。
 
 页面显示拓扑节点数、边数、待确认边、未解析或外部节点，并提供“查看 JSON”和“下载当前 Topology”链接。`/topology.json` 仅返回最近一次成功生成的数据卷版本；如果没有生成记录，会提示先到 Settings 生成，不会回退到镜像内旧拓扑。生成失败会保留 failed 版本目录和日志，且不改变 latest 指针。
 
@@ -67,6 +67,10 @@ MySQL 持久数据独立保存于 `envscope-mysql:/var/lib/mysql`，不发布宿
 `python3 -m unittest discover -s runtime -p 'test_*.py'` 检查凭据保护、无效版本拒绝、完整性、任务互斥、启动中断与失败回退。前端使用现有 `npm test` 和 TypeScript 检查。Docker 部署包含 Python 运行时和固定的采集脚本，不需要宿主机 Python 或 Codex 才能执行定时任务。
 
 宿主机日常调度（旧 `run_daily_collection.py --update-web` 及其 `publish_daily.py` 发布流程）已移除，采集只通过本服务的 Settings 调度执行，避免与容器内调度重复。数据版本完全以 `envscope-data` 卷中的当前版本指针为准。
+
+## DNS 域名
+
+CLB 全景的「DNS 域名」先展示域名列表，分「公网权威解析」「内网域名解析」两个 Tab；点击域名查看解析记录。列表显示租户 / 静态来源、记录数和采集时间，零记录域名明确显示已跳过。两份 Excel 的 481 条静态记录继续保留，不强行归属现有租户；公网同名的静态与云采集分别展示。CNAME 不跨租户或公网/内网范围补齐，暂停和未知状态不参与当前关联。
 
 ## CLB 全景
 

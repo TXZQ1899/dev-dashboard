@@ -51,6 +51,24 @@ class TenantServiceTests(unittest.TestCase):
         self.assertEqual(report['cloudPlan'][0]['sources'], ['ecs'])
         self.assertNotIn('secret-b', json.dumps(report))
 
+    def test_dns_validation_checks_nested_records_and_planned_tenants(self):
+        from tenant_collection import scoped_snapshot
+        tenant = tenancy.select(service.credentials(), 'cloud-dns')[0]
+        folder = self.data/'versions'/service.read(self.data/'current.json')['id']
+        raw = {'collectedAt': '2026-10-23T01:00:00Z', 'zones': [
+            {'id': 'zone', 'name': 'example.cn', 'visibility': 'public', 'recordCount': 1, 'records': [{'id': 'record', 'visibility': 'public'}]}]}
+        snapshot = scoped_snapshot(raw, tenant, 'cloud-dns', '')
+        service.write(folder/'cloud-dns-snapshot.json', snapshot)
+        plan = {'tenantId': tenant['id'], 'sources': ['cloud-dns'], 'regions': tenant['regions'],
+                'credentialVersion': tenant['credentialVersion']}
+        service.write(folder/'version.json', {'cloudPlan': [plan]})
+        self.assertEqual(service.validate(folder)['dnsRecords'], 1)
+        snapshot['zones'][0]['records'][0]['tenantId'] = 'wrong-account'
+        service.write(folder/'cloud-dns-snapshot.json', snapshot)
+        with self.assertRaisesRegex(ValueError, '范围不一致'): service.validate(folder)
+        service.write(folder/'version.json', {'cloudPlan': [plan, {**plan, 'tenantId': 'missing'}]})
+        with self.assertRaisesRegex(ValueError, '缺少计划'): service.validate(folder)
+
     def test_tenant_editor_connection_is_preserved_when_general_settings_are_saved(self):
         original = self.svc.status()['aliyunTenants'][0]
         with patch.object(tenancy, 'identity', return_value='1001'):

@@ -6,6 +6,7 @@ from aliyun import collect_ecs, collect_clb, ecs_snapshot, normalize_clb
 from export_nat import collect as collect_nat, normalize_nat
 from export_dms import collect as collect_dms
 from aliyun_openapi import RpcClient, collect_ecs_ak, collect_clb_ak, collect_nat_ak, collect_dms_ak
+from cloud_dns import collect_dns_ak
 from aliyun_tenants import CLOUD_SOURCES, LEGACY_TENANT, select, verify, resource_key
 from export_devops import AuthenticationError, ExportError
 
@@ -30,13 +31,18 @@ def tenant_error(exc, tenant, source, region=''):
 
 def scoped_snapshot(snapshot, tenant, source, region):
     result = deepcopy(snapshot)
-    field = 'gateways' if source == 'nat' else 'instances'
+    field = 'zones' if source == 'cloud-dns' else 'gateways' if source == 'nat' else 'instances'
     at = result.get('fetchedAt') or result.get('collectedAt')
     meta = {'tenantId': tenant['id'], 'tenantName': tenant['name'], 'accountId': tenant.get('accountId', '')}
     for row in result.get(field, []):
         native = row.get('id') if source != 'dms' else f"{tenant.get('dmsTenantId') or snapshot.get('tenantId') or ''}/{row.get('实例地址', '')}"
         row.update(meta, resourceKey=resource_key(tenant['id'], source, region, native),
                    region=row.get('region') or row.get('regionId') or region, observedAt=at)
+        if source == 'cloud-dns':
+            row['resourceKey'] = resource_key(tenant['id'], f"dns-zone-{row['visibility']}", '', native)
+            for record in row['records']:
+                record.update(meta, zoneId=row['id'], observedAt=at,
+                              resourceKey=resource_key(tenant['id'], f"dns-record-{row['visibility']}", '', f"{native}/{record['id']}"))
         if source == 'dms':
             row['dmsTenantId'] = tenant.get('dmsTenantId') or snapshot.get('tenantId')
             row.setdefault('cloudInstanceId', row.get('实例ID', '') if tenant['auth']['mode'] == 'cookie' else '')
@@ -63,7 +69,7 @@ def scoped_snapshot(snapshot, tenant, source, region):
 
 def merge_snapshots(previous, slices, source, replace_all=False, selected_ids=()):
     """Replace only selected tenants, including their now-empty or removed regions."""
-    field = 'gateways' if source == 'nat' else 'instances'
+    field = 'zones' if source == 'cloud-dns' else 'gateways' if source == 'nat' else 'instances'
     old = deepcopy(previous or {})
     if old and old.get('schemaVersion') != 2 and (source == 'ecs' or old.get('available')):
         # The existing collector had exactly one account. Attribute only this legacy
@@ -92,6 +98,9 @@ def merge_snapshots(previous, slices, source, replace_all=False, selected_ids=()
     if source == 'dms':
         result['totalCount'] = len(rows)
         result['rawRecordCount'] = sum(1 + r.get('重复记录', 0) for r in rows)
+    if source == 'cloud-dns':
+        result['zoneCount'] = len(rows)
+        result['recordCount'] = sum(z['recordCount'] for z in rows)
     if source == 'clb':
         result['warnings'] = [warning for scope in scopes for warning in scope.get('warnings', [])]
         result['partial'] = any(scope.get('partial', False) for scope in scopes)
@@ -107,7 +116,7 @@ def build_tasks(saved, folder, source=None, tenant_id=None):
         except Exception as exc:
             raise tenant_error(exc, tenant, source or 'ecs') from None
         for kind in ((source,) if source else CLOUD_SOURCES):
-            for region in ([''] if kind == 'dms' else tenant['regions']):
+            for region in ([''] if kind in ('dms', 'cloud-dns') else tenant['regions']):
                 key = task_key(tenant['id'], kind, region)
                 contexts[key] = {'tenantId': tenant['id'], 'tenantName': tenant['name'],
                                  'source': kind.upper(), 'region': region,
@@ -119,7 +128,9 @@ def build_tasks(saved, folder, source=None, tenant_id=None):
                         out.mkdir(parents=True, exist_ok=True)
                         if auth['mode'] == 'accesskey':
                             args = (auth['accessKeyId'], auth['accessKeySecret'])
-                            if kind == 'dms':
+                            if kind == 'cloud-dns':
+                                raw = collect_dns_ak(*args, out=out)
+                            elif kind == 'dms':
                                 tid = tenant.get('dmsTenantId')
                                 if not tid:
                                     data = RpcClient(*args, 'dms-enterprise.aliyuncs.com', '2018-11-01').call('GetUserActiveTenant')
@@ -131,6 +142,8 @@ def build_tasks(saved, folder, source=None, tenant_id=None):
                             else:
                                 raw = {'ecs': collect_ecs_ak, 'clb': collect_clb_ak, 'nat': collect_nat_ak}[kind](*args, out=out, region=region)
                         else:
+                            if kind == 'cloud-dns':
+                                raise ExportError('DNS 采集需要租户的 AccessKey，请在租户管理中配置')
                             if region and region != 'cn-shanghai':
                                 raise ExportError('Cookie 采集仅支持上海地域，请使用 AccessKey')
                             raw = {'ecs': collect_ecs, 'clb': collect_clb, 'nat': collect_nat, 'dms': collect_dms}[kind](auth['cookie'], out)

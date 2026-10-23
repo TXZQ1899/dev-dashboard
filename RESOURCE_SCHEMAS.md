@@ -11,12 +11,12 @@
 
 以下是新采集版本的附加契约；后文无租户字段的示例是兼容的单账号旧结构。
 
-- ECS、CLB、DMS、NAT 每个启用租户均采集；Codeup 仅使用 `legacy-aliyun` 现有租户。DNS / EIP 保持静态来源，不能批量归属某个新租户。
+- ECS、CLB、DMS、NAT、云 DNS 每个启用租户均采集；Codeup 仅使用 `legacy-aliyun` 现有租户。静态 DNS / EIP 保持原来源，不能批量归属某个新租户。云 DNS 独立保存为 `cloud-dns-snapshot.json`。
 - ECS `instances[]` / `projects[]`、CLB `instances[]`、NAT `gateways[]` / `entries[]`、DMS `instances[]` 增加 `tenantId`（AppAtlas 稳定 ID）、`tenantName`、`accountId`（采集账号 UID）。资源行增加 `resourceKey`、`region`、`observedAt`。ECS / CLB 有来源字段时保留 `vpcId`、`vswitchId`。
 - `resourceKey` 是 `[tenantId, resourceType, region, nativeId]` 的规范 JSON 字符串，原生 `id` 保持不变。DNAT 的 nativeId 包含网关 ID 和条目 ID。资源组名称按租户 + 资源组 ID 查询。
 - DMS 的 `resourceKey` 在 nativeId 中包含 Tid + 实例地址；`sourceKeys[]` 保留 `[tenantId, "dms-record", dmsTenantId, 原生DMS记录ID]`。DMS `dmsTenantId` 是 DMS Tid，独立于 AppAtlas 租户 ID。旧版根 `tenantId` 表示 Tid，新版汇总根移除此字段。
 - DMS Cookie 记录的 `实例ID` 来源是控制台云产品实例 ID，AK 记录的同名字段来源是 DMS ListInstances 原生记录 ID；不要互换解释。新增 `cloudInstanceId` 仅在有明确云产品 ID 时填写，否则为空。`accountId` 表示采集账号，不证明被登记数据库的真实云账号所有权。
-- 四类快照根增加 `tenants[]`：`tenantId`、`tenantName`、`accountId`、`region`、`dmsTenantId?`、`collectedAt`、`complete`、`count`、`credentialVersion`、`scope: credential-visible`、`sourceVersion`。DMS 的范围 `region` 为空，表示按 DMS Tid 枚举，不随 ECS 地域重复。`regions[]` 汇总实际地域；旧根 `region` 仅在单一地域时有值。
+- 云资源快照根增加 `tenants[]`：`tenantId`、`tenantName`、`accountId`、`region`、`dmsTenantId?`、`collectedAt`、`complete`、`count`、`credentialVersion`、`scope: credential-visible`、`sourceVersion`。DMS 与云 DNS 的范围 `region` 为空，分别按 DMS Tid / 账号枚举，不随 ECS 地域重复。`regions[]` 汇总实际地域；旧根 `region` 仅在单一地域时有值。
 - 根 `fetchedAt` / `collectedAt` 为切片时间的最大值；独立同步保留其他切片时间，不能将该最大值解释为全部租户都已刷新。每次任务的非敏感 `cloudPlan` 保存在 `version.json`，验证缺失切片、配置版本和完整性后才允许原子激活。
 - 新采集原始输出在 `versions/<version>/sources/aliyun/<tenantId>/<source>/<region-or-all>/`，不共用输出目录或凭据上下文。独立同步的旧切片先复制到版本内 `base/`，采集成功后按租户替换；零条记录也会替换旧清单。
 - 旧快照保持可读，不原地重写；派生新版本并保留旧单账号切片时，仅将旧云资源标记为 `legacy-aliyun`，`tenants[].legacy=true`，账号 UID 留空，保留旧观察时间。静态 DNS / EIP 和独立 DevOps / JumpServer 不套用该映射。
@@ -27,6 +27,7 @@
 | DevOps 应用环境 | `environment-web/lib/snapshot.json` | `apps[].id`；部署记录建议 `appId + env + ip + deploy` | 545 app / 1947 环境部署记录 | 提供 `sources.devops`、应用/环境/端口/仓库关联 |
 | Codeup / Local GitLab 仓库 | `environment-web/lib/repositories.json` | `repos[].id`（Git URL 哈希） | 556 repo / 15 group | 提供仓库 URL 与代码组归属 |
 | DNS 解析 | `environment-web/lib/dns-snapshot.json` | `records[].id = zone:row` | 481 | A/AAAA 地址进入宽表 `sources.dns` |
+| 云 DNS | 版本目录 `cloud-dns-snapshot.json` | `tenantId + visibility + zoneId`；记录增加 RecordId | 按版本采集 | 公网 / 内网独立域名列表；A/AAAA 进入宽表 |
 | EIP | `environment-web/lib/eip-snapshot.json` | `records[].id` | 53 | EIP 地址进入宽表 `sources.eip` |
 | NAT 网关 / DNAT | `environment-web/lib/nat-snapshot.json` | `gateways[].id`；`gateways[].entries[].id` | 当前 checked-in 为空占位 | 外网/内网 IP 均进入宽表 `sources.nat` |
 | ECS | `environment-web/lib/ecs-snapshot.json` | `instances[].id` | 204 | 私网/公网 IP 进入宽表 `sources.aliyun` |
@@ -272,6 +273,21 @@
   "row": 2
 }
 ```
+
+### 云 DNS（独立增量来源）
+
+两份静态 Excel 及 `dns-snapshot.json` 保留原样（481 条），不为其补造租户。两个启用租户分别调用公网 AliDNS 与内网 PrivateZone 的只读接口；不执行实时 DNS 查询。
+
+- `cloud-dns-snapshot.json` 根：`schemaVersion: 2`、`available`、`complete`、`collectedAt`、`tenants[]`、`zones[]`、`zoneCount`、`recordCount`、`scope: credential-visible`、`realtimeDns: false`。
+- `zones[]`：`id`（DomainId / ZoneId）、`name`、`visibility: public | private`、`recordCount`、`recordsCollected`、`skipReason`、`records[]`、`raw`；附加租户、账号、resourceKey、observedAt。公网与内网同名域名，以及不同租户的同名域名分别保存。
+- `records[]`：保留旧 DnsRecord 的 name/type/value/line/status/ttl/weight/policy/remark/source 字段（无 Excel row），增加原始 `id`、`zoneId`、`visibility`、`providerStatus`、`priority`、`raw` 及租户、账号、resourceKey、observedAt。`ENABLE` / `DISABLE` 映射为启用 / 暂停，缺失或其他状态为未知，不参与当前链路。未返回的线路、权重和策略不补造；原始字段保存在 raw。
+- zone resourceKey 为 `[tenantId, dns-zone-public|dns-zone-private, "", nativeId]`；record resourceKey 为 `[tenantId, dns-record-public|dns-record-private, "", zoneId/recordId]`。UI 使用 resourceKey 区分记录，原始 ID 不改写。
+- 列表中的 `RecordCount === 0` 时，保留域名，`records: []`、`recordsCollected: false`、`skipReason: zero-records`，不调用该域名解析详情。未知条数不能当作零条。非空域名核对详情分页及总数；缺失、重复、计数变化或域名清单变化导致来源失败，不激活新版本。
+- `sources/aliyun/<tenantId>/cloud-dns/all/cloud-dns-raw.json` 保留单租户原始结果。同步按租户替换，包括零域名/零记录的合法结果；不改写其他租户观察时间。旧版本缺文件时使用未采集占位，不借用其他版本的结果。
+- DNS 页面先展示域名列表，点击进入记录；公网权威解析 / 内网域名解析分 Tab，静态来源在公网列表中单独保留。CNAME 仅在同租户、同公网/内网来源范围内匹配，不借用静态来源补齐云采集链。内网 IP 与 CLB 的候选关联仍需结合 VPC 可见范围确认。
+- IP 宽表同时保留静态和云 DNS 地址证据，云记录附加采集租户；静态记录不归属租户。Topology 仅追加公网云记录，同 Zone 的云采集证据替代静态证据参与派生，原文件保留；未采集到的其他静态 Zone 继续使用。PrivateZone 缺少 VPC 查询上下文，暂不添加全局 DOMAIN 边，避免把不同内网视图拼成链路。
+
+接口依据：[公网域名列表](https://www.alibabacloud.com/help/en/dns/api-alidns-2015-01-09-describedomains)、[公网解析记录](https://help.aliyun.com/en/dns/api-alidns-2015-01-09-describedomainrecords)、[PrivateZone 列表](https://www.alibabacloud.com/help/en/dns/api-pvtz-2018-01-01-describezones)、[PrivateZone 记录](https://www.alibabacloud.com/help/en/dns/api-pvtz-2018-01-01-describezonerecords)。
 
 ## 4. EIP
 

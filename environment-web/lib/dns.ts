@@ -2,19 +2,23 @@ import snapshot from './dns-snapshot.json';
 import type { Clb } from './clb';
 import { eip, eipClbEvidence, type Eip } from './eip';
 import type { NatSnapshot } from './nat';
+import { cloudDnsRecords } from './cloud-dns';
+import type { TenantResource } from './tenants';
 
-export type DnsRecord = { id: string; zone: string; name: string; type: string; value: string; line: string; status: string; ttl: number | null; weight: number | null; policy: string; remark: string; source: string; row: number };
-export const dns = snapshot as { zones: string[]; sources: { file: string; zone: string }[]; records: DnsRecord[] };
+export type DnsRecord = TenantResource & { id: string; zone: string; name: string; type: string; value: string; line: string; status: string; ttl: number | null; weight: number | null; policy: string; remark: string; source: string; row?: number; zoneId?: string; visibility?: 'public' | 'private'; observedAt?: string; nativeId?: string; priority?: number | null; providerStatus?: string };
+export const staticDns = snapshot as { zones: string[]; sources: { file: string; zone: string }[]; records: DnsRecord[] };
+export const dns = { ...staticDns, records: [...staticDns.records, ...cloudDnsRecords] };
 const normalize = (value: string) => value.trim().toLowerCase().replace(/\.$/, '');
 const inScope = (name: string) => ['folidaymall.com', 'fosunholiday.com'].some(zone => name === zone || name.endsWith('.' + zone));
 export function integrateDns(instances: Clb[], records: DnsRecord[] = dns.records, eips: Eip[] = eip.records, nat?: NatSnapshot) {
-  const scoped = records.filter(r => inScope(normalize(r.name)));
+  const scoped = records.filter(r => r.tenantId || inScope(normalize(r.name)));
   const resolve = (record: DnsRecord, seen: Set<string>): { ip: string; chain: string[] }[] => {
     if (record.status !== '启用' || seen.has(record.id)) return [];
     if (record.type === 'A' || record.type === 'AAAA') return [{ ip: normalize(record.value), chain: [record.name, record.value] }];
     if (record.type !== 'CNAME') return [];
     const next = new Set(seen).add(record.id);
-    return scoped.filter(r => normalize(r.name) === normalize(record.value) && (r.line === record.line || r.line === '默认'))
+    return scoped.filter(r => r.tenantId === record.tenantId && r.visibility === record.visibility
+      && normalize(r.name) === normalize(record.value) && (r.line === record.line || r.line === '默认' || r.line === 'default'))
       .flatMap(r => resolve(r, next).map(result => ({ ...result, chain: [record.name, ...result.chain] })));
   };
   return scoped.map(record => {
@@ -24,6 +28,7 @@ export function integrateDns(instances: Clb[], records: DnsRecord[] = dns.record
       return paths.length ? [{ eip, paths }] : [];
     });
     const matches = instances.flatMap(instance => {
+      if (record.visibility === 'private' && (instance.tenantId || 'legacy-aliyun') !== record.tenantId) return [];
       const paths = resolutions.flatMap(result => {
         if (result.ip === normalize(instance.ip)) return [{ ...result, via: '' }];
         const bound = eipMatches.filter(match => match.eip.ip === result.ip && eipClbEvidence(match.eip, instance, nat).length);
@@ -35,7 +40,7 @@ export function integrateDns(instances: Clb[], records: DnsRecord[] = dns.record
       : !['A', 'AAAA', 'CNAME'].includes(record.type) ? '非地址记录'
       : matches.length ? '已关联 CLB'
       : eipMatches.length ? '已关联 EIP，未匹配当前 CLB'
-      : !resolutions.length ? 'CNAME 未能在静态数据内解析（外部目标、暂停或循环）' : '未匹配当前 CLB IP';
+      : !resolutions.length ? 'CNAME 未能在同一来源及解析范围内解析（外部目标、暂停或循环）' : '未匹配当前 CLB IP';
     return { record, resolutions, matches, eipMatches, status };
   });
 }

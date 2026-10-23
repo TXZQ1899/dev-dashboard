@@ -147,7 +147,7 @@ export default function SettingsPage() {
       rootPasswordAlt2,
     };
   }
-  async function syncSource(source: 'local-gitlab' | 'codeup' | 'devops' | 'ecs' | 'clb' | 'nat' | 'dms' | 'aliyun' | 'jumpserver') {
+  async function syncSource(source: 'local-gitlab' | 'codeup' | 'devops' | 'ecs' | 'clb' | 'nat' | 'dms' | 'cloud-dns' | 'aliyun' | 'jumpserver') {
     setBusy(true);
     setError('');
     try {
@@ -156,7 +156,7 @@ export default function SettingsPage() {
       setRootPasswordAlt1('');
       setRootPasswordAlt2('');
       setCookies({ devops: '', jumpserver: '', local_gitlab: '' });
-      const data = await post(`sync/${source}`, ['ecs', 'clb', 'nat', 'dms', 'aliyun'].includes(source) && cloudTenant ? { tenantId: cloudTenant } : {});
+      const data = await post(`sync/${source}`, ['ecs', 'clb', 'nat', 'dms', 'cloud-dns', 'aliyun'].includes(source) && cloudTenant ? { tenantId: cloudTenant } : {});
       setMessage(`${source} 独立同步任务已启动`);
       setState(data);
     } catch (e) {
@@ -218,6 +218,7 @@ export default function SettingsPage() {
     clb: 'CLB',
     nat: 'NAT',
     dms: 'DMS',
+    'cloud-dns': 'DNS',
     jumpserver: 'JumpServer',
     codeup: '云效',
     local_gitlab: 'Local GitLab',
@@ -326,7 +327,7 @@ export default function SettingsPage() {
                 <span>北京时间；Docker 需运行且可访问公司内网</span>
               </div>
               <div className="settings-field">
-                <label htmlFor="cloud-sync-tenant">ECS / CLB / DMS / NAT 独立同步范围</label>
+                <label htmlFor="cloud-sync-tenant">ECS / CLB / DMS / NAT / DNS 独立同步范围</label>
                 <select id="cloud-sync-tenant" value={cloudTenant} onChange={e => setCloudTenant(e.target.value)}>
                   <option value="">全部启用租户</option>
                   {(state.aliyunTenants ?? []).filter(t => t.enabled).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
@@ -347,6 +348,7 @@ export default function SettingsPage() {
                 <Button disabled={busy || anyRunning} variant="outline" onClick={() => syncSource('aliyun')}>同步所选租户全部云资源</Button>
                 <Button disabled={busy || !sourceEnabled('clb')} variant="outline" title={sourceReason('clb')} onClick={() => syncSource('clb')}>单独同步 CLB</Button>
                 <Button disabled={busy || !sourceEnabled('nat')} variant="outline" title={sourceReason('nat')} onClick={() => syncSource('nat')}>单独同步 NAT</Button>
+                <Button disabled={busy || !sourceEnabled('cloud-dns')} variant="outline" title={sourceReason('cloud-dns')} onClick={() => syncSource('cloud-dns')}>单独同步 DNS</Button>
                 <Button disabled={busy || !sourceEnabled('dms')} variant="outline" title={sourceReason('dms')} onClick={() => syncSource('dms')}>单独同步 DMS</Button>
                 <Button disabled={busy || !sourceEnabled('jumpserver')} variant="outline" title={sourceReason('jumpserver')} onClick={() => syncSource('jumpserver')}>单独同步 JumpServer</Button>
                 <Button disabled={busy || !sourceEnabled('devops')} variant="outline" title={sourceReason('devops')} onClick={() => syncSource('devops')}>单独同步 DevOps</Button>

@@ -5,7 +5,7 @@ import re
 import uuid
 
 LEGACY_TENANT = 'legacy-aliyun'
-CLOUD_SOURCES = ('ecs', 'clb', 'nat', 'dms')
+CLOUD_SOURCES = ('ecs', 'clb', 'nat', 'dms', 'cloud-dns')
 
 
 def stamp():

@@ -5,6 +5,7 @@ export type SnapshotInput = {
   devops: unknown;
   repositories: unknown;
   dns: unknown;
+  cloudDns?: unknown;
   eip: unknown;
   nat: unknown;
   ecs: unknown;

@@ -6,6 +6,7 @@ import clbSnapshot from './clb-snapshot.json';
 import eipSnapshot from './eip-snapshot.json';
 import natSnapshot from './nat-snapshot.json';
 import dnsSnapshot from './dns-snapshot.json';
+import cloudDnsSnapshot from './cloud-dns-snapshot.json';
 import { isLocalDatacenterIp } from './datacenter-networks';
 import type { TenantResource } from './tenants';
 
@@ -40,7 +41,7 @@ export type ComparisonInput = {
   clbInstances?: (TenantResource & { id: string; ip: string; groups?: { servers: { ip: string }[] }[] })[];
   eips?: { ip: string; id: string; name: string; owner: string; notes: { value: string }[] }[];
   natGateways?: (TenantResource & { id: string; name: string; entries: { externalIp: string; internalIp: string; id: string }[] })[];
-  dnsRecords?: { id: string; name: string; type: string; value: string; status: string }[];
+  dnsRecords?: (TenantResource & { id: string; name: string; type: string; value: string; status: string; visibility?: string })[];
   apps: Application[];
   instances: CloudInstance[];
   projects: (TenantResource & { id: string; name: string })[];
@@ -246,7 +247,8 @@ export function buildComparison(input: ComparisonInput): ResourceRow[] {
       if (!row) continue;
       // Paused records remain searchable, without claiming they currently route traffic.
       row.sources.dns = true;
-      row.references.push({label:`DNS · ${record.name}（${record.status}）`,href:`/aliyun/clb?view=dns&q=${encodeURIComponent(record.id)}`});
+      if (record.tenantId) attachTenant(row, record);
+      row.references.push({label:`DNS · ${record.name}（${record.status}）`,href:`/aliyun/clb?view=dns&q=${encodeURIComponent(record.id)}${record.visibility ? `&dnsScope=${record.visibility}` : ''}`});
       row.searchTerms.push(record.name, record.type, record.status);
     }
   }
@@ -315,7 +317,7 @@ export const comparisonRows = buildComparison({
   clbInstances: clbSnapshot.available ? clbSnapshot.instances : [],
   eips: eipSnapshot.records,
   natGateways: natSnapshot.available ? natSnapshot.gateways : [],
-  dnsRecords: dnsSnapshot.records,
+  dnsRecords: [...dnsSnapshot.records, ...(cloudDnsSnapshot.zones as { records: NonNullable<ComparisonInput['dnsRecords']> }[]).flatMap(z => z.records.filter(r => ['A', 'AAAA'].includes(r.type)).map(r => ({ ...r, id: r.resourceKey || r.id })))],
   apps: inventory.apps,
   instances: cloud.instances,
   projects: cloud.projects,

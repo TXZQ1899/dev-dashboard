@@ -6,6 +6,7 @@ import type { DnsBuildResult } from '../node-builders/dns.ts';
 
 export function buildDnsEdges(graph: GraphCollector, dns: DnsBuildResult, cloud: CloudBuildResult, hosts: HostIndex): void {
   for (const record of dns.records) {
+    if (record.status !== '启用' && record.status !== '暂停') continue;
     if (record.type === 'CNAME') {
       const target = normalizeDomain(record.value);
       graph.edge({

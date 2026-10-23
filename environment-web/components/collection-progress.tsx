@@ -22,12 +22,13 @@ export type JobView = {
 };
 
 export const slotCount = 3;
-export const sourceOrder = ['ECS', 'CLB', 'NAT', 'DMS', 'JumpServer', 'Codeup', 'Local GitLab', 'DevOps'];
+export const sourceOrder = ['ECS', 'CLB', 'NAT', 'DMS', 'CLOUD-DNS', 'JumpServer', 'Codeup', 'Local GitLab', 'DevOps'];
 export const sourceLabels: Record<string, string> = {
   ECS: '阿里云 ECS',
   CLB: '阿里云 CLB',
   NAT: '阿里云 NAT',
   DMS: '阿里云 DMS',
+  'CLOUD-DNS': '阿里云 DNS',
   JumpServer: 'JumpServer',
   Codeup: 'Codeup（云效）',
   'Local GitLab': 'Local GitLab',
