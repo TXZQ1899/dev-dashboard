@@ -1025,12 +1025,12 @@ class Service:
             states[kind] = {'busy': busy, 'retryable': retryable, 'reason': reason}
         return states
 
-    def start(self, kind, identifier=None, asset_id=None):
+    def start(self, kind, identifier=None, asset_id=None, app_id=None):
         with self.lock:
             if self.archive_job and self.archive_job.get('status') == 'running': raise ValueError('请等待日志下载结束后再采集或切换版本')
             if self.check_job and self.check_job.get('status') == 'running': raise ValueError('请等待应用核验任务结束后再采集或切换版本')
             if self.backend is None: raise ValueError('应用正在恢复当前版本，请稍后重试')
-            source_modes = ('local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'jumpserver', 'devops', 'jumpserver_asset')
+            source_modes = ('local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'jumpserver', 'devops', 'jumpserver_asset', 'devops_app')
             # While a job is running only a single-source retry whose source already
             # failed in the running full sync may start, and it runs concurrently.
             is_extra = False
@@ -1055,12 +1055,18 @@ class Service:
                 elif kind == 'jumpserver_asset':
                     if not saved.get('jumpserver',{}).get('value'):
                         raise ValueError('请先保存 JumpServer Cookie')
+                elif kind == 'devops_app':
+                    if not saved.get('devops',{}).get('value'):
+                        raise ValueError('请先保存 DevOps Cookie')
                 elif not saved.get(kind,{}).get('value'):
                     raise ValueError('请先保存 Local GitLab Cookie' if kind == 'local_gitlab'
                                      else '请先保存对应平台的 Cookie')
                 if kind == 'jumpserver_asset':
                     if not isinstance(asset_id, str) or not re.fullmatch(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}', asset_id):
                         raise ValueError('无效的资产 ID')
+                if kind == 'devops_app':
+                    if not isinstance(app_id, str) or not re.fullmatch(r'\d{1,20}', app_id):
+                        raise ValueError('无效的应用 ID')
                 for _ in range(5):
                     identifier = datetime.now(TZ).strftime('%Y%m%d-%H%M%S-%f')
                     folder = DATA/'versions'/identifier
@@ -1068,6 +1074,7 @@ class Service:
                     except FileExistsError: continue
                 else: raise ValueError('无法创建版本目录，请重试')
                 note = '单独重新采集一台服务器的进程与 Nginx' if kind == 'jumpserver_asset' else \
+                    f'单独重新采集 DevOps 应用 {app_id} 的部署记录' if kind == 'devops_app' else \
                     f'单独同步 {kind}' if kind in source_modes else '同步 DevOps、Codeup、JumpServer、上海 ECS、CLB 和 NAT'
                 write(folder/'version.json',{'id':identifier,'createdAt':now(),'status':'collecting','kind':kind,
                       'note':note})
@@ -1085,19 +1092,19 @@ class Service:
             if self.extra_jobs:
                 self.extra_jobs = [j for j in self.extra_jobs if j.get('status') == 'running']
                 write(DATA/'extra-jobs.json', self.extra_jobs)
-            self.job={'id':identifier,'kind':kind,'status':'running','startedAt':now(),'phase':'任务准备中','assetId':asset_id}
+            self.job={'id':identifier,'kind':kind,'status':'running','startedAt':now(),'phase':'任务准备中','assetId':asset_id,'appId':app_id}
             write(DATA/'job.json',self.job)
-            threading.Thread(target=self.work,args=(kind,identifier,asset_id),daemon=True).start()
+            threading.Thread(target=self.work,args=(kind,identifier,asset_id,None,app_id),daemon=True).start()
             return identifier
 
-    def work(self,kind,identifier,asset_id=None,job=None):
+    def work(self,kind,identifier,asset_id=None,job=None,app_id=None):
         folder=DATA/'versions'/identifier
         if job is None: job = self.job
         try:
-            if kind in ('sync', 'local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'jumpserver', 'devops', 'jumpserver_asset'):
+            if kind in ('sync', 'local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'jumpserver', 'devops', 'jumpserver_asset', 'devops_app'):
                 self._set_job(job, phase='正在采集数据')
                 current_folder = self.version(read(DATA/'current.json')['id'])
-                if kind in ('local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'jumpserver', 'devops', 'jumpserver_asset'):
+                if kind in ('local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'jumpserver', 'devops', 'jumpserver_asset', 'devops_app'):
                     for name in FILES: shutil.copyfile(current_folder/name, folder/name)
                     for name in OPTIONAL_FILES: write(folder/name, read(current_folder/name, OPTIONAL_DEFAULTS[name]))
                     # A source sync must produce fresh data, not accidentally retain the copied snapshot.
@@ -1108,6 +1115,7 @@ class Service:
                         write(creds, creds_data)
                         command=['python3',str(APP/'runtime/collect.py'),str(folder),str(creds),kind]
                         if kind == 'jumpserver_asset': command.append(asset_id)
+                        if kind == 'devops_app': command.append(app_id)
                         with (folder/'collection.log').open('w') as log:
                             p=subprocess.run(command,stdout=log,stderr=log,timeout=7200)
                     if not p.returncode:
@@ -1401,6 +1409,9 @@ class Handler(BaseHTTPRequestHandler):
                 if root_password is not None:
                     service.update_asset_root_password(payload.get('asset'), root_password)
                 service.start('jumpserver_asset', asset_id=payload.get('asset'))
+                return self.json(200, service.status())
+            elif self.path=='/api/settings/devops-app':
+                service.start('devops_app', app_id=payload.get('appId'))
                 return self.json(200, service.status())
             elif self.path=='/api/settings/switch':service.start('switch',payload.get('id'))
             else:return self.json(404,{'error':'接口不存在'})

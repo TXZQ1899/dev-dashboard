@@ -107,7 +107,7 @@ export default function ResourcesPage() {
         <div className="page-heading">
           <div>
             <div className="eyebrow">RESOURCE COMPARISON</div>
-            <h1>服务器资源全景</h1>
+            <h1>IP 资源全景</h1>
             <p>DevOps × ECS / CLB / EIP / NAT × DNS × JumpServer · 搜索全部来源的 IP 并跳转详情</p>
           </div>
         </div>

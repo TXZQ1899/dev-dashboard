@@ -862,6 +862,14 @@ h2 {
   gap: 9px;
   align-items: center;
 }
+.app-refresh {
+  height: auto;
+  padding: 1px 5px;
+  font-family: Arial, sans-serif;
+  font-size: 9px;
+  line-height: 1.4;
+  color: #5b7264;
+}
 .single-badge {
   font-family: Arial, sans-serif;
   font-size: 9px;

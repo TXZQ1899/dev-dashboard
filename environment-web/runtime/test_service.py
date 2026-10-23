@@ -613,6 +613,30 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(calls[0][-1],'00000000-0000-0000-0000-000000000000')
         self.assertEqual(self.service.job['status'],'succeeded')
 
+    def test_devops_app_inspect_validates_input(self):
+        self.service.backend={'port':3101}
+        with self.assertRaisesRegex(ValueError,'Cookie'):
+            self.service.start('devops_app', app_id='1524')
+        self.service.save_settings({'cookies':{'devops':'cookie=private'}})
+        for invalid in ('abc', '', None, '123456789012345678901'):
+            with self.assertRaisesRegex(ValueError,'应用 ID'):
+                self.service.start('devops_app', app_id=invalid)
+
+    def test_devops_app_work_passes_app_id_to_collector(self):
+        identifier='devops-app'
+        folder=self.data/'versions'/identifier
+        s.write(folder/'version.json',{'id':identifier,'status':'collecting'})
+        self.service.job={'id':identifier,'kind':'devops_app','status':'running'}
+        calls=[]
+        def run(command,**kwargs):
+            calls.append(command)
+            return type('Result',(),{'returncode':0})()
+        with patch.object(s.subprocess,'run',side_effect=run),patch.object(self.service,'activate'):
+            self.service.work('devops_app',identifier,None,None,'1524')
+        self.assertEqual(calls[0][-2],'devops_app')
+        self.assertEqual(calls[0][-1],'1524')
+        self.assertEqual(self.service.job['status'],'succeeded')
+
     def test_traversal_and_failed_versions_cannot_activate(self):
         for identifier in ('../../secrets','unknown',None):
             with self.assertRaises(ValueError):self.service.version(identifier)

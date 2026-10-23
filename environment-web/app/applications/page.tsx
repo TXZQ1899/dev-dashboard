@@ -16,6 +16,7 @@ import {
   X,
   Download,
   ListFilter,
+  RefreshCw,
 } from 'lucide-react';
 import { Shell } from '../page';
 import { Button } from '@/components/ui/button';
@@ -225,6 +226,19 @@ function AppList() {
   const [publishPeriod, setPublishPeriod] = useState('');
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [appRefresh, setAppRefresh] = useState<Record<string,{busy:boolean;message:string;error:string}>>({});
+  // 单独重新采集一个应用在 DevOps 的部署记录，只替换该应用，不覆盖其他应用数据。
+  async function refreshDevopsApp(app: App) {
+    setAppRefresh(prev=>({...prev,[app.id]:{busy:true,message:'',error:''}}));
+    try {
+      const response=await fetch('/api/settings/devops-app',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({appId:app.id})});
+      const result=await response.json() as {error?:string};
+      if(!response.ok)throw new Error(result.error||'操作失败');
+      setAppRefresh(prev=>({...prev,[app.id]:{busy:false,message:'已启动该应用的单应用采集，完成后刷新页面查看最新部署记录',error:''}}));
+    } catch(e) {
+      setAppRefresh(prev=>({...prev,[app.id]:{busy:false,message:'',error:e instanceof Error?e.message:'操作失败'}}));
+    }
+  }
   useEffect(() => {
     setCombination(null);setPublishEnv('');setPublishPeriod('');setRepoQuery('');
     const f = params.get('filter');
@@ -616,7 +630,20 @@ function AppList() {
                           {info(a, 'PRODUCT').single && (
                             <span className="single-badge">生产单点</span>
                           )}
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="app-refresh"
+                            disabled={appRefresh[a.id]?.busy}
+                            onClick={() => refreshDevopsApp(a)}
+                            title="仅重新采集该应用在 DevOps 的部署记录，其他应用数据保持不变"
+                          >
+                            <RefreshCw size={12} className={appRefresh[a.id]?.busy?'animate-spin':undefined} />
+                            {appRefresh[a.id]?.busy?'采集中':'刷新 DevOps'}
+                          </Button>
                         </div>
+                        {appRefresh[a.id]?.message&&<output className="block text-xs text-green-700">{appRefresh[a.id].message}</output>}
+                        {appRefresh[a.id]?.error&&<p role="alert" className="text-xs text-red-600">{appRefresh[a.id].error}</p>}
                       </TableCell>
                       <TableCell>
                         <code className="port">{a.appType || '—'}</code>

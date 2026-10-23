@@ -408,7 +408,7 @@ def main():
             if key not in credentials: continue
             p = daily.ROOT / name
             p.write_text(credentials[key]['value']); p.chmod(0o600)
-        if mode in ('ecs', 'clb', 'nat', 'dms', 'jumpserver', 'devops', 'jumpserver_asset'):
+        if mode in ('ecs', 'clb', 'nat', 'dms', 'jumpserver', 'devops', 'jumpserver_asset', 'devops_app'):
             if mode == 'ecs':
                 daily.save_json(folder / 'progress.json', {'phase': '正在独立采集阿里云 ECS 实例'})
                 raw = aliyun_ecs(folder/'ecs')
@@ -443,6 +443,22 @@ def main():
                            credentials.get('rootAlt2',{}).get('value',''),
                            credentials.get('_ipPasswordMap',{}),
                            asset_id)
+            elif mode == 'devops_app':
+                app_id = sys.argv[4] if len(sys.argv) > 4 else ''
+                if not re.fullmatch(r'\d{1,20}', app_id):
+                    raise ExportError('单独采集需要有效的应用 ID')
+                daily.save_json(folder / 'progress.json', {'phase': f'正在单独采集 DevOps 应用 {app_id}', 'completed': 0, 'total': 1})
+                result = daily.collect_devops(folder, 1, app_id=app_id)
+                refreshed = result.get('apps') or []
+                if len(refreshed) != 1:
+                    raise ExportError('单应用采集未返回该应用数据')
+                # 只替换该应用，其他应用沿用当前版本快照，避免单应用采集覆盖全量数据。
+                snapshot = json.loads((folder / 'snapshot.json').read_text())
+                target = str(refreshed[0].get('id') or app_id)
+                app = {k: v for k, v in refreshed[0].items() if k not in ('csvRows', 'complete', 'errors')}
+                snapshot['apps'] = [a for a in snapshot.get('apps', []) if str(a.get('id')) != target] + [app]
+                snapshot['appRefreshedAt'] = {**(snapshot.get('appRefreshedAt') or {}), target: daily.now()}
+                daily.save_json(folder / 'snapshot.json', snapshot)
             else:
                 daily.save_json(folder / 'progress.json', {'phase': '正在独立采集 DevOps 应用、环境和发布记录'})
                 result = daily.collect_devops(folder, 4)
