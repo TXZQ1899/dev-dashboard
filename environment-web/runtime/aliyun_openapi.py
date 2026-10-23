@@ -18,6 +18,7 @@ import hashlib
 import hmac
 import json
 import os
+import random
 import re
 import threading
 import time
@@ -256,21 +257,56 @@ def collect_clb_ak(access_key_id, access_key_secret, out=None, region=DEFAULT_RE
     out = Path(out) if out is not None else Path('slb-export') / datetime.now().strftime('%Y%m%d-%H%M%S')
     out.mkdir(parents=True, exist_ok=True)
     result = {'region': region, 'source': f'https://slb.{region}.aliyuncs.com (AccessKey)',
-              'collectedAt': _now(), 'instances': [], 'errors': []}
+              'collectedAt': _now(), 'instances': [], 'errors': [], 'warnings': []}
+    last_request = ('DescribeLoadBalancers', {})
 
-    def read(action, params=None):
-        try:
-            return client.call(action, {'RegionId': region, **(params or {})})
-        except AuthenticationError:
-            raise
-        except Exception as exc:
-            result['errors'].append({'action': action, 'params': params, 'error': str(exc)})
-            return {}
+    def call(api, action, params=None):
+        # Retry the whole signed call so every attempt gets a fresh nonce.
+        for attempt in range(3):
+            try:
+                return api.call(action, params)
+            except (OSError, OpenApiError) as exc:
+                status = (exc.status if isinstance(exc, OpenApiError) else
+                          exc.code if isinstance(exc, urllib.error.HTTPError) else None)
+                if status is not None and status not in (408, 429, 500, 502, 503, 504):
+                    raise
+                if attempt == 2:
+                    raise
+                delay = 2 ** attempt + random.uniform(0, 0.5)
+                reason = f'HTTP {status}' if status is not None else '网络超时或连接异常'
+                print(f'CLB OpenAPI：{action} {reason}，{delay:.1f} 秒后重试'
+                      f'（第 {attempt + 2}/3 次请求）', flush=True)
+                time.sleep(delay)
+
+    def read(action, params=None, api=None):
+        nonlocal last_request
+        last_request = (action, params or {})
+        return call(api or client, action, {'RegionId': region, **(params or {})})
+
+    def warn(action, params, row=None, exc=None, skipped=False, reason='request_failed'):
+        # Never log raw transport exceptions: they can contain signed URLs.
+        if exc is None:
+            message = '实例已停止或锁定，跳过详情采集'
+        elif isinstance(exc, AuthenticationError):
+            message = '接口认证或权限异常'
+        elif isinstance(exc, OpenApiError):
+            message = f'接口错误（HTTP {exc.status}，{exc.code}）'
+        elif isinstance(exc, OSError):
+            message = '网络超时或连接异常'
+        else:
+            message = f'响应数据异常（{type(exc).__name__}）'
+        warning = {'action': action, 'params': params, 'reason': reason,
+                   'error': message, 'skipped': skipped}
+        if row:
+            warning.update(loadBalancerId=row['LoadBalancerId'],
+                           status=row.get('LoadBalancerStatus', ''))
+        result['warnings'].append(warning)
+        print('Warning: CLB OpenAPI ' + json.dumps(warning, ensure_ascii=False), flush=True)
 
     def listing():
         rows, page, total = [], 1, None
         while True:
-            data = client.call('DescribeLoadBalancers', {'RegionId': region, 'PageNumber': page, 'PageSize': 100})
+            data = call(client, 'DescribeLoadBalancers', {'RegionId': region, 'PageNumber': page, 'PageSize': 100})
             total = data.get('TotalCount') if total is None else total
             if data.get('TotalCount') != total:
                 raise ExportError('CLB 采集期间实例总数发生变化')
@@ -286,22 +322,34 @@ def collect_clb_ak(access_key_id, access_key_secret, out=None, region=DEFAULT_RE
         _page_guard(total, rows, 'LoadBalancerId', 'CLB DescribeLoadBalancers')
         return rows
 
-    rows = listing()
-    result['serverCertificates'] = read('DescribeServerCertificates')
-    result['caCertificates'] = read('DescribeCACertificates')
-    for index, row in enumerate(rows):
+    def collect_instance(row, detail):
+        def check_backends(attributes):
+            backends = (_items(attributes, 'BackendServers', 'BackendServer') +
+                        _items(attributes, 'MasterSlaveBackendServers', 'MasterSlaveBackendServer'))
+            if any(not isinstance(server, dict) for server in backends):
+                raise ExportError('CLB 后端记录格式异常')
+
         lb = row['LoadBalancerId']
         params = {'LoadBalancerId': lb}
-        detail = read('DescribeLoadBalancerAttribute', params)
+        if (detail.get('LoadBalancerId') != lb or any(key not in detail for key in
+                ('LoadBalancerName', 'Address', 'AddressType', 'LoadBalancerStatus'))):
+            raise ExportError('CLB 实例详情缺失或身份不匹配')
+        check_backends(detail)
         entry = {'listAttributes': row, 'attributes': detail, 'listeners': [],
                  'health': read('DescribeHealthStatus', params), 'serverGroups': []}
+        check_backends(entry['health'])
         for listener in _items(detail, 'ListenerPortsAndProtocol', 'ListenerPortAndProtocol'):
             protocol = listener['ListenerProtocol'].upper()
             lp = {**params, 'ListenerPort': listener['ListenerPort']}
             value = {'protocol': protocol,
                      'attributes': read('DescribeLoadBalancer' + protocol + 'ListenerAttribute', lp)}
+            if value['attributes'].get('ListenerPort') != listener['ListenerPort']:
+                raise ExportError('CLB 监听器详情缺失或端口不匹配')
             if protocol in ('HTTP', 'HTTPS'):
                 value['rules'] = read('DescribeRules', lp)
+                for rule in _items(value['rules'], 'Rules', 'Rule'):
+                    if not rule.get('RuleId') or not rule.get('VServerGroupId'):
+                        raise ExportError('CLB 转发规则缺少身份或服务器组')
             entry['listeners'].append(value)
         for kind, action, outer, inner, key, attr in [
             ('virtual', 'DescribeVServerGroups', 'VServerGroups', 'VServerGroup',
@@ -317,12 +365,40 @@ def collect_clb_ak(access_key_id, access_key_secret, out=None, region=DEFAULT_RE
                         groups.append({key: ref[key]})
                         ids.add(ref[key])
             for group in groups:
+                attributes = read(attr, {key: group[key]})
+                if attributes.get(key) != group[key]:
+                    raise ExportError('CLB 服务器组详情缺失或身份不匹配')
+                check_backends(attributes)
                 entry['serverGroups'].append({'kind': kind, 'listAttributes': group,
-                                              'attributes': read(attr, {key: group[key]})})
-        result['instances'].append(entry)
+                                              'attributes': attributes})
+        return entry
+
+    rows = listing()
+    for field, action in [('serverCertificates', 'DescribeServerCertificates'),
+                          ('caCertificates', 'DescribeCACertificates')]:
+        result[field] = {}
+        try:
+            result[field] = read(action)
+        except Exception as exc:
+            warn(action, {}, exc=exc)
+    for index, row in enumerate(rows):
+        params = {'LoadBalancerId': row['LoadBalancerId']}
+        context = row
+        if str(row.get('LoadBalancerStatus', '')).lower() in ('inactive', 'locked'):
+            warn('DescribeLoadBalancers', params, row, skipped=True, reason='non_active_status')
+        else:
+            try:
+                detail = read('DescribeLoadBalancerAttribute', params)
+                context = {**row, 'LoadBalancerStatus': detail.get('LoadBalancerStatus') or row.get('LoadBalancerStatus', '')}
+                if str(context['LoadBalancerStatus']).lower() in ('inactive', 'locked'):
+                    warn('DescribeLoadBalancerAttribute', params, context, skipped=True, reason='non_active_status')
+                else:
+                    result['instances'].append(collect_instance(row, detail))
+            except Exception as exc:
+                warn(*last_request, row=context, exc=exc, skipped=True)
         _save(out / 'slb-all.json', result)
-        print(f'CLB OpenAPI：{index + 1}/{len(rows)} {row.get("LoadBalancerName")}: '
-              f'{len(entry["listeners"])} listeners, {len(entry["serverGroups"])} groups', flush=True)
+        print(f'CLB OpenAPI：{index + 1}/{len(rows)} {row["LoadBalancerId"]} '
+              f'{row.get("LoadBalancerName", "")}', flush=True)
 
     # 补全默认组后端 IP（与控制台采集相同的两条证据链）。
     missing = set()
@@ -337,14 +413,19 @@ def collect_clb_ak(access_key_id, access_key_secret, out=None, region=DEFAULT_RE
                 if len(ips) == 1:
                     server['ResolvedServerIp'] = ips.pop()
                     server['ResolvedIpSource'] = 'DescribeHealthStatus'
-                elif server.get('Type') == 'ecs':
+                elif server.get('Type') == 'ecs' and server.get('ServerId'):
                     missing.add(server['ServerId'])
     result['backendEcsInstances'] = []
     for start in range(0, len(missing), 100):
-        value = ecs.call('DescribeInstances', {'RegionId': region,
-                                               'InstanceIds': json.dumps(sorted(missing)[start:start + 100]),
-                                               'PageSize': 100})
-        result['backendEcsInstances'].extend(_items(value, 'Instances', 'Instance'))
+        params = {'InstanceIds': json.dumps(sorted(missing)[start:start + 100]), 'PageSize': 100}
+        try:
+            value = read('DescribeInstances', params, api=ecs)
+            instances = _items(value, 'Instances', 'Instance')
+            if any(not isinstance(instance, dict) or not instance.get('InstanceId') for instance in instances):
+                raise ExportError('CLB 后端 ECS 记录缺少身份')
+            result['backendEcsInstances'].extend(instances)
+        except Exception as exc:
+            warn('DescribeInstances', params, exc=exc)
     for entry in result['instances']:
         for attrs in [entry['attributes']] + [g['attributes'] for g in entry['serverGroups']]:
             for server in _items(attrs, 'BackendServers', 'BackendServer'):
@@ -360,11 +441,19 @@ def collect_clb_ak(access_key_id, access_key_secret, out=None, region=DEFAULT_RE
     result['instanceSetStable'] = {x['LoadBalancerId'] for x in listing()} == {x['LoadBalancerId'] for x in rows}
     result['completedAt'] = _now()
     result['complete'] = not result['errors'] and result['instanceSetStable']
+    result['partial'] = bool(result['warnings'])
     _save(out / 'slb-all.json', result)
     print(json.dumps({'output': str(out), 'complete': result['complete'],
-                      'errors': result['errors']}, ensure_ascii=False), flush=True)
+                      'partial': result['partial'], 'errors': result['errors'],
+                      'warnings': result['warnings']}, ensure_ascii=False), flush=True)
     if not result['complete']:
-        raise ExportError('CLB 采集不完整，请检查 AccessKey 的 SLB 只读权限')
+        reasons = []
+        if result['errors']:
+            actions = '、'.join(sorted({error['action'] for error in result['errors']}))
+            reasons.append(f'{len(result["errors"])} 项接口请求失败（{actions}），详见采集日志')
+        if not result['instanceSetStable']:
+            reasons.append('采集期间实例清单发生变化')
+        raise ExportError('CLB 采集不完整：' + '；'.join(reasons))
     return result
 
 
@@ -435,7 +524,7 @@ def collect_nat_ak(access_key_id, access_key_secret, out=None, region=DEFAULT_RE
 
 def _dms_login_status(row):
     mode = ((row.get('StandardGroup') or {}).get('GroupMode') or '').upper()
-    return '免登录' if (mode == 'COMMON' or row.get('SellTrust')) else '未登录'
+    return '免登录' if (mode == 'COMMON' or str(row.get('SellTrust', '')).lower() == 'true') else '未登录'
 
 
 def _normalize_dms(row, ip):
@@ -458,7 +547,8 @@ def _normalize_dms(row, ip):
         '实例IP': ip,
         '登录状态': _dms_login_status(row),
         'controlMode': mode or 'NONE_CONTROL',
-        'sellTrust': bool(row.get('SellTrust')),
+        'sellTrust': str(row.get('SellTrust', '')).lower() == 'true',
+        'cloudInstanceId': '', 'vpcId': row.get('VpcId') or '',
         '实例来源': row.get('InstanceSource') or '',
         '环境': ENV_TYPES.get(row.get('EnvType'), row.get('EnvType') or ''),
         'envType': row.get('EnvType') or '',
@@ -468,12 +558,14 @@ def _normalize_dms(row, ip):
     }
 
 
-def collect_dms_ak(access_key_id, access_key_secret, out=None):
+def collect_dms_ak(access_key_id, access_key_secret, out=None, tid=None):
     """通过 DMS Enterprise OpenAPI 采集数据库实例，输出与 export_dms.collect 一致。"""
     client = RpcClient(access_key_id, access_key_secret, 'dms-enterprise.aliyuncs.com', '2018-11-01')
     rows, expected, page = [], None, 1
     while True:
-        value = client.call('ListInstances', {'PageNumber': page, 'PageSize': 100})
+        value = client.call('ListInstances', {'PageNumber': page, 'PageSize': 100, **({'Tid': tid} if tid is not None else {})})
+        if value.get('Success') is False:
+            raise ExportError('DMS ListInstances 返回失败')
         total = value.get('TotalCount')
         if type(total) is not int or total < 0:
             raise ExportError('DMS ListInstances 缺少有效总数')
@@ -503,7 +595,7 @@ def collect_dms_ak(access_key_id, access_key_secret, out=None):
         print(f'DMS 解析 IP {index}/{len(rows)} {row.get("Host")} -> {ip or "未解析"}', flush=True)
     instances = merge_duplicates(normalized)
     result = {'available': True, 'source': 'https://dms-enterprise.aliyuncs.com (AccessKey)',
-              'collectedAt': _now(), 'tenantId': None, 'rawRecordCount': len(normalized),
+              'collectedAt': _now(), 'tenantId': tid, 'rawRecordCount': len(normalized),
               'totalCount': len(instances), 'instances': instances}
     _save(out / 'dms-instances.json', result)
     fields = ['实例名称', '实例地址', '类型', '实例地区', '实例IP', '登录状态', '实例ID']

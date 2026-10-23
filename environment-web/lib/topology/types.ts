@@ -45,6 +45,8 @@ export type EvidenceSource =
   | 'repository';
 
 export type Evidence = {
+  tenantId?: string;
+  accountId?: string;
   /** Stable identifier in the source snapshot. */
   sourceId: string;
   /** Short source location, e.g. file name or asset/application name. */

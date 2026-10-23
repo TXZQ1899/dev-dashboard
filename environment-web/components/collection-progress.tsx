@@ -9,6 +9,7 @@ export type JobProgress = {
   total?: number;
   current?: string;
   sources?: Record<string, string>;
+  tasks?: Record<string, { label?: string; tenantId?: string; source?: string; status: string }>;
   slots?: Record<string, { source: string | null; status: string }>;
   slotHistory?: Record<string, { source: string; status: string }[]>;
   jumpServer?: { phase?: string; completed?: number; total?: number };
@@ -21,11 +22,12 @@ export type JobView = {
 };
 
 export const slotCount = 3;
-export const sourceOrder = ['ECS', 'CLB', 'NAT', 'JumpServer', 'Codeup', 'Local GitLab', 'DevOps'];
+export const sourceOrder = ['ECS', 'CLB', 'NAT', 'DMS', 'JumpServer', 'Codeup', 'Local GitLab', 'DevOps'];
 export const sourceLabels: Record<string, string> = {
   ECS: '阿里云 ECS',
   CLB: '阿里云 CLB',
   NAT: '阿里云 NAT',
+  DMS: '阿里云 DMS',
   JumpServer: 'JumpServer',
   Codeup: 'Codeup（云效）',
   'Local GitLab': 'Local GitLab',
@@ -38,8 +40,6 @@ const stateLabels: Record<string, string> = {
   失败: '失败',
 };
 const mark = (status: string) => (status === '完成' ? ' ✓' : status === '失败' ? ' ✗' : ' …');
-const step = (entry: { source: string; status: string }) =>
-  `${sourceLabels[entry.source] ?? entry.source}${mark(entry.status)}`;
 
 function orderedSources(sources: Record<string, string>) {
   const known = sourceOrder.filter((name) => name in sources);
@@ -49,6 +49,8 @@ function orderedSources(sources: Record<string, string>) {
 
 export function CollectionProgress({ job }: { job: JobView }) {
   const progress = job.progress;
+  const taskLabel = (name: string) => progress?.tasks?.[name]?.label ?? sourceLabels[name] ?? name;
+  const taskStep = (entry: { source: string; status: string }) => `${taskLabel(entry.source)}${mark(entry.status)}`;
   const [activeTab, setActiveTab] = useState('');
   // Only a full sync runs the three-slot pool; single-source syncs show no slots.
   const hasCollectors = Boolean(progress?.sources || progress?.slots);
@@ -61,14 +63,13 @@ export function CollectionProgress({ job }: { job: JobView }) {
     .map((key) => {
       const slot = slotState[key];
       const history = progress?.slotHistory?.[key] ?? [];
-      const past = history.map(step).join(' → ');
       // Prefer the slot's current source; when idle show its last one, not the
       // whole hand-off chain, so the tab labels stay short.
       const last = history[history.length - 1];
       const label = slot?.source
-        ? `槽位 ${key} · ${sourceLabels[slot.source] ?? slot.source}`
+        ? `槽位 ${key} · ${taskLabel(slot.source)}`
         : last
-          ? `槽位 ${key} · ${sourceLabels[last.source] ?? last.source}${mark(last.status)}`
+          ? `槽位 ${key} · ${taskLabel(last.source)}${mark(last.status)}`
           : `槽位 ${key}`;
       return { key, label, text: logs[key] ?? '' };
     })
@@ -92,6 +93,12 @@ export function CollectionProgress({ job }: { job: JobView }) {
           );
         })}
       </div>
+      {progress?.tasks && <div className="settings-sources">
+        {Object.entries(progress.tasks).filter(([, task]) => task.tenantId).map(([key, task]) =>
+          <span key={key} className={`source-chip ${task.status === '失败' ? 'failed' : task.status === '完成' ? 'done' : 'waiting'}`}>
+            <b>{task.label ?? key}</b><em>{task.status}</em>
+          </span>)}
+      </div>}
       <h3 className="settings-subhead">并发槽位（{slotCount} 个）</h3>
       <div className="settings-slots">
         {Array.from({ length: slotCount }, (_, index) => {
@@ -100,8 +107,8 @@ export function CollectionProgress({ job }: { job: JobView }) {
           const history = progress?.slotHistory?.[key] ?? [];
           return (
             <div key={key} className={`slot-card ${slot?.source ? 'active' : ''}`}>
-              <strong>{slot?.source ? (sourceLabels[slot.source] ?? slot.source) : `槽位 ${key} · 空闲`}</strong>
-              <small>{history.length ? history.map(step).join(' → ') : '尚未分配任务'}</small>
+              <strong>{slot?.source ? taskLabel(slot.source) : `槽位 ${key} · 空闲`}</strong>
+              <small>{history.length ? history.map(taskStep).join(' → ') : '尚未分配任务'}</small>
             </div>
           );
         })}

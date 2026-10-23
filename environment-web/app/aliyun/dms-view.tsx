@@ -1,4 +1,6 @@
 'use client';
+import { TenantFilter } from '@/components/tenant-filter';
+import { tenantLabel } from '@/lib/tenants';
 import { useState } from 'react';
 import {
   ArrowUpRight,
@@ -105,6 +107,9 @@ export default function DmsView() {
   return (
     <Shell active="dms">
       <main className="dms-page">
+        <TenantFilter rows={instances} value={filters.tenant || ''} onChange={tenant => set({ tenant })} />
+        {(dms.tenants ?? []).filter(t => !filters.tenant || t.tenantId === filters.tenant).map(t =>
+          <p key={t.tenantId} className="settings-hint">{t.tenantName} · 采集：{formatBeijingTime(t.collectedAt, '时间未知')}</p>)}
         <div className="page-heading">
           <div>
             <div className="eyebrow">ALIYUN · DMS</div>
@@ -128,7 +133,7 @@ export default function DmsView() {
           <section className="panel dms-empty">
             <h2>该版本尚未采集 DMS 实例</h2>
             <p>
-              在 Settings 使用统一阿里云 Cookie 单独同步 DMS，或执行全量同步。
+              在 Settings 配置租户凭据并单独同步 DMS，或执行全量同步。
             </p>
             <a href="/settings">打开 Settings</a>
           </section>
@@ -224,6 +229,7 @@ export default function DmsView() {
                 <TableRow>
                   {[
                     '实例名称',
+                    '租户',
                     '实例地址',
                     '类型',
                     '实例地区',
@@ -237,10 +243,11 @@ export default function DmsView() {
               </TableHeader>
               <TableBody>
                 {shown.map((row) => (
-                  <TableRow key={`${row.id}:${row.address}`}>
+                  <TableRow key={row.resourceKey || `${row.tenantId}:${row.id}:${row.address}`}>
                     <TableCell>
                       {row.name || <span className="dms-missing">未命名</span>}
                     </TableCell>
+                    <TableCell>{tenantLabel(row)}<small>{row.accountId}</small></TableCell>
                     <TableCell>
                       <code>{row.address}</code>
                     </TableCell>

@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { Shell } from '@/app/page';
 import { CollectionProgress } from '@/components/collection-progress';
+import { AliyunTenantSettings, type AliyunTenant } from '@/components/aliyun-tenant-settings';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -14,7 +15,7 @@ import {
 } from '@/components/ui/table';
 import { formatBeijingTime } from '@/lib/datetime';
 
-type Source = 'devops' | 'aliyun' | 'jumpserver' | 'local_gitlab';
+type Source = 'devops' | 'jumpserver' | 'local_gitlab';
 type Version = {
   id: string;
   createdAt: string;
@@ -60,17 +61,9 @@ type Job = {
   failures?: { source: string; type: string; credential?: string; message: string; credentialUpdatedAt?: string }[];
 };
 type SourceState = { busy: boolean; retryable: boolean; reason?: string };
-type AliyunAccessKey = {
-  configured: boolean;
-  mode: 'cookie' | 'accesskey';
-  accessKeyId?: string;
-  updatedAt?: string;
-  organizationId?: string;
-  alert?: { message: string; detectedAt: string };
-};
 type State = {
+  aliyunTenants?: AliyunTenant[];
   topology?: Topology | null;
-  aliyunAccessKey?: AliyunAccessKey;
   folidev?: { configured: boolean; updatedAt?: string };
   rootAlt1?: { configured: boolean; updatedAt?: string };
   rootAlt2?: { configured: boolean; updatedAt?: string };
@@ -85,7 +78,6 @@ type State = {
 };
 const sources: [Source, string][] = [
   ['devops', 'DevOps 平台'],
-  ['aliyun', '阿里云（ECS / Codeup / CLB / NAT 共用）'],
   ['jumpserver', 'JumpServer'],
   ['local_gitlab', 'Local GitLab（http://gitlab.dev.thomascook.com.cn/）'],
 ];
@@ -97,7 +89,6 @@ export default function SettingsPage() {
   const [state, setState] = useState<State | null>(null);
   const [cookies, setCookies] = useState({
     devops: '',
-    aliyun: '',
     jumpserver: '',
     local_gitlab: '',
   });
@@ -105,11 +96,8 @@ export default function SettingsPage() {
   const [rootPasswordAlt1, setRootPasswordAlt1] = useState('');
   const [rootPasswordAlt2, setRootPasswordAlt2] = useState('');
   const [schedule, setSchedule] = useState({ enabled: false, time: '18:00' });
-  const [aliyunAuthMode, setAliyunAuthMode] = useState<'cookie' | 'accesskey'>('cookie');
-  const [aliyunAccessKeyId, setAliyunAccessKeyId] = useState('');
-  const [aliyunAccessKeySecret, setAliyunAccessKeySecret] = useState('');
-  const [codeupOrganizationId, setCodeupOrganizationId] = useState('');
   const [busy, setBusy] = useState(false);
+  const [cloudTenant, setCloudTenant] = useState('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   useEffect(() => {
@@ -126,8 +114,6 @@ export default function SettingsPage() {
         setState(data);
         if (first) {
           setSchedule(data.schedule);
-          setAliyunAuthMode(data.aliyunAccessKey?.mode === 'accesskey' ? 'accesskey' : 'cookie');
-          setCodeupOrganizationId(data.aliyunAccessKey?.organizationId ?? '');
           first = false;
         }
       } catch (e) {
@@ -159,15 +145,9 @@ export default function SettingsPage() {
       folidevPassword,
       rootPasswordAlt1,
       rootPasswordAlt2,
-      aliyunAccessKey: {
-        mode: aliyunAuthMode,
-        accessKeyId: aliyunAccessKeyId,
-        accessKeySecret: aliyunAccessKeySecret,
-        organizationId: codeupOrganizationId,
-      },
     };
   }
-  async function syncSource(source: 'local-gitlab' | 'codeup' | 'devops' | 'ecs' | 'clb' | 'nat' | 'dms' | 'jumpserver') {
+  async function syncSource(source: 'local-gitlab' | 'codeup' | 'devops' | 'ecs' | 'clb' | 'nat' | 'dms' | 'aliyun' | 'jumpserver') {
     setBusy(true);
     setError('');
     try {
@@ -175,9 +155,8 @@ export default function SettingsPage() {
       setFolidevPassword('');
       setRootPasswordAlt1('');
       setRootPasswordAlt2('');
-      setCookies({ devops: '', aliyun: '', jumpserver: '', local_gitlab: '' });
-      setAliyunAccessKeySecret('');
-      const data = await post(`sync/${source}`, {});
+      setCookies({ devops: '', jumpserver: '', local_gitlab: '' });
+      const data = await post(`sync/${source}`, ['ecs', 'clb', 'nat', 'dms', 'aliyun'].includes(source) && cloudTenant ? { tenantId: cloudTenant } : {});
       setMessage(`${source} 独立同步任务已启动`);
       setState(data);
     } catch (e) {
@@ -209,8 +188,7 @@ export default function SettingsPage() {
         setFolidevPassword('');
         setRootPasswordAlt1('');
         setRootPasswordAlt2('');
-        setCookies({ devops: '', aliyun: '', jumpserver: '', local_gitlab: '' });
-        setAliyunAccessKeySecret('');
+        setCookies({ devops: '', jumpserver: '', local_gitlab: '' });
       }
       if (kind === 'sync' || kind === 'local_gitlab') await post(kind === 'local_gitlab' ? 'sync/local-gitlab' : 'sync', {});
       if (kind === 'switch') await post('switch', { id });
@@ -271,10 +249,18 @@ export default function SettingsPage() {
           <p>正在读取设置…</p>
         ) : (
           <>
+            <section className="panel settings-panel">
+              <AliyunTenantSettings tenants={state.aliyunTenants ?? []} busy={busy} save={async patch => {
+                setBusy(true);
+                try {
+                  return await post('config', patch);
+                } finally { setBusy(false); }
+              }} />
+            </section>
             <section id="cookie-settings" className="panel settings-panel">
               <h2>凭据与每日同步</h2>
               <p className="settings-hint">
-                Cookie / AccessKey 仅保存到本机 Docker
+                阿里云凭据在上方租户管理中维护。下列平台凭据仅保存到 Docker
                 数据卷，不回显。留空表示保留已保存内容。
               </p>
               {sources.map(([key, label]) => (
@@ -300,74 +286,6 @@ export default function SettingsPage() {
                   <small>最后保存：{date(state.cookies[key].updatedAt)}</small>
                 </div>
               ))}
-              <div className="settings-field">
-                <label htmlFor="aliyun-auth-mode">
-                  阿里云采集方式 ·{' '}
-                  <span>{aliyunAuthMode === 'accesskey' ? 'AccessKey（OpenAPI）' : 'Cookie（原有方式）'}</span>
-                </label>
-                <select
-                  id="aliyun-auth-mode"
-                  value={aliyunAuthMode}
-                  onChange={(e) => setAliyunAuthMode(e.target.value as 'cookie' | 'accesskey')}
-                >
-                  <option value="cookie">Cookie（原有方式）</option>
-                  <option value="accesskey">AccessKey（OpenAPI）</option>
-                </select>
-                <small>
-                  只影响下一次 ECS / CLB / NAT / DMS / 云效采集；Cookie 与 AccessKey 相互独立，可随时切回。
-                </small>
-              </div>
-              {state.aliyunAccessKey?.alert && (
-                <p role="alert" className="settings-error">{state.aliyunAccessKey.alert.message}</p>
-              )}
-              <div className="settings-field">
-                <label htmlFor="aliyun-access-key-id">
-                  AccessKey ID ·{' '}
-                  <span>
-                    {state.aliyunAccessKey?.configured
-                      ? `已配置${state.aliyunAccessKey.accessKeyId ? `（${state.aliyunAccessKey.accessKeyId}）` : ''}`
-                      : '未配置'}
-                  </span>
-                </label>
-                <Input
-                  id="aliyun-access-key-id"
-                  autoComplete="off"
-                  spellCheck={false}
-                  value={aliyunAccessKeyId}
-                  onChange={(e) => setAliyunAccessKeyId(e.target.value)}
-                  placeholder="LTAI...；留空保留已保存内容"
-                />
-                <small>
-                  建议使用只读权限的 RAM 用户 AccessKey；最后保存：{date(state.aliyunAccessKey?.updatedAt)}
-                </small>
-              </div>
-              <div className="settings-field">
-                <label htmlFor="aliyun-access-key-secret">AccessKey Secret · {state.aliyunAccessKey?.configured ? '已配置' : '未配置'}</label>
-                <Input
-                  id="aliyun-access-key-secret"
-                  type="password"
-                  autoComplete="new-password"
-                  spellCheck={false}
-                  value={aliyunAccessKeySecret}
-                  onChange={(e) => setAliyunAccessKeySecret(e.target.value)}
-                  placeholder="留空保留已保存内容"
-                />
-                <small>仅保存到 Docker 数据卷，不回显。</small>
-              </div>
-              <div className="settings-field">
-                <label htmlFor="codeup-organization-id">云效 Codeup 企业 ID</label>
-                <Input
-                  id="codeup-organization-id"
-                  autoComplete="off"
-                  spellCheck={false}
-                  value={codeupOrganizationId}
-                  onChange={(e) => setCodeupOrganizationId(e.target.value)}
-                  placeholder="留空则从历史仓库快照自动识别"
-                />
-                <small>
-                  取自 https://devops.aliyun.com/organization/【OrganizationId】；已存在历史快照时可留空。
-                </small>
-              </div>
               <div className="settings-field">
                 <label htmlFor="folidev-password">folidev 用户密码 · {state.folidev?.configured ? '已配置' : '未配置'}</label>
                 <Input id="folidev-password" type="password" autoComplete="new-password" value={folidevPassword} onChange={(e) => setFolidevPassword(e.target.value)} placeholder="留空保留已保存密码" />
@@ -407,6 +325,14 @@ export default function SettingsPage() {
                 />
                 <span>北京时间；Docker 需运行且可访问公司内网</span>
               </div>
+              <div className="settings-field">
+                <label htmlFor="cloud-sync-tenant">ECS / CLB / DMS / NAT 独立同步范围</label>
+                <select id="cloud-sync-tenant" value={cloudTenant} onChange={e => setCloudTenant(e.target.value)}>
+                  <option value="">全部启用租户</option>
+                  {(state.aliyunTenants ?? []).filter(t => t.enabled).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+                <small>一键同步始终同步全部启用租户；Codeup 使用上方标记的绑定租户。</small>
+              </div>
               <div className="flex flex-wrap gap-3">
                 <Button disabled={busy} onClick={() => act('save')}>
                   保存设置
@@ -418,6 +344,7 @@ export default function SettingsPage() {
                   单独同步 Local GitLab
                 </Button>
                 <Button disabled={busy || !sourceEnabled('ecs')} variant="outline" title={sourceReason('ecs')} onClick={() => syncSource('ecs')}>单独同步 ECS</Button>
+                <Button disabled={busy || anyRunning} variant="outline" onClick={() => syncSource('aliyun')}>同步所选租户全部云资源</Button>
                 <Button disabled={busy || !sourceEnabled('clb')} variant="outline" title={sourceReason('clb')} onClick={() => syncSource('clb')}>单独同步 CLB</Button>
                 <Button disabled={busy || !sourceEnabled('nat')} variant="outline" title={sourceReason('nat')} onClick={() => syncSource('nat')}>单独同步 NAT</Button>
                 <Button disabled={busy || !sourceEnabled('dms')} variant="outline" title={sourceReason('dms')} onClick={() => syncSource('dms')}>单独同步 DMS</Button>

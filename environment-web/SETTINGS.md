@@ -1,14 +1,32 @@
 # 本地数据同步与历史版本
 
+## 阿里云多租户采集
+
+Settings 顶部的「阿里云租户管理」支持新增租户、修改名称、启停、更新 AccessKey 和验证账号。已有凭据自动作为 `legacy-aliyun`（现有租户）保留；新租户使用稳定 UUID。内部租户 ID、阿里云账号 UID、DMS Tid、Codeup 企业 ID 是独立字段。新增或更换 AccessKey 时通过 STS GetCallerIdentity 校验 UID，已绑定账号不能被另一账号的凭据覆盖。Secret 不回显，留空保留；更换 ID 时需同时填写 Secret。
+
+阿里云配置统一通过顶部「管理租户」维护。标记为「Codeup 绑定租户」的编辑区额外提供采集方式、Cookie 兼容入口和 Codeup 企业 ID（留空自动识别）；其他租户只配置各自的 AccessKey。下方「凭据与每日同步」仅保留 DevOps、JumpServer、Local GitLab Cookie、服务器密码及同步调度，保存时不再提交旧阿里云字段，避免覆盖已保存的租户配置。原 Cookie、AccessKey、企业 ID 及旧客户端 API 保持兼容。
+
+每个启用租户都采集 ECS、CLB、DMS、NAT / DNAT。ECS、CLB、NAT 按配置地域采集（默认 `cn-shanghai`），DMS 按 Tid 采集一次；Tid 留空时通过 GetUserActiveTenant 获取。原有 Cookie 方式仅适用于现有租户的上海地域。Codeup 固定绑定现有租户，新增账号不调用 Codeup；全量及每日任务仍需要现有租户启用且原有平台凭据完整。DNS、EIP 仍使用静态导入。
+
+「一键同步」和每日任务覆盖所有启用租户及现有平台，沿用总计三个采集槽位。「ECS / CLB / DMS / NAT 独立同步范围」可选全部启用租户或一个租户；「同步所选租户全部云资源」只更新四类云资源，不调用 Codeup、DevOps 或 JumpServer。独立任务按租户替换切片，保留其他租户、其他来源及其观察时间。任务启动后固定配置和凭据版本，运行中保存设置只影响后续任务。
+
+任一计划任务失败均不启用新版本；合法空清单可成功。进度、日志槽位及错误显示租户和数据源。失败来源可按现有互斥规则重试，恢复判定区分租户。停用停止后续采集，不修改当前快照或删除历史文件；下一次全量同步的采集范围仅包含启用租户。
+
+租户管理中的采集错误保存在数据卷 `tenant-alerts.json`，记录租户、数据源、地域、凭据版本和失败任务版本。相同范围、相同凭据的后续同步成功并激活后自动清除；其他来源同步成功或仅继承旧快照不算恢复。服务启动时也会核对当前版本，兼容旧错误记录，从原始 `collection-error.json` 还原来源后清除已恢复的提示。历史失败版本和日志保留。
+
+为使旧客户端和租户更新在一次原子写入中保持一致，租户配置及凭据统一保存在原 `/data/secrets/cookies.json` 的 `aliyunTenants` 对象中（0600），现有租户保留旧字段兼容别名。`/api/settings/state` 只返回脱敏租户列表；`POST /api/settings/config` 的 `aliyunTenants` 是单租户或多租户增量 upsert 数组，更新携带 `id` 和 `credentialVersion`，省略的租户不删除。`POST /api/settings/sync/{ecs|clb|dms|nat|aliyun}` 可传 `{ "tenantId": "..." }`，省略则处理全部启用租户。`aliyun` 表示四类云资源。
+
+快照保持原文件入口，增加 schemaVersion=2、逐资源租户信息及逐租户/地域的观察元数据。ECS、CLB、NAT、DMS 和 IP 全景支持租户筛选；DMS CSV 附加租户 ID、名称、采集账号 UID。按预先规划的不重叠网段沿用 IP 关联，拓扑增加租户来源信息，不增加 DNS 采集。历史快照文件不重写。
+
 ## Topology 版本生成与下载
 
 Settings 页面提供“Topology 数据”区域。点击“基于当前数据版本生成 Topology”后，服务读取 `/data/current.json` 指向的当前激活版本，使用其中 DevOps、Codeup/仓库、JumpServer、ECS、CLB 和 NAT 数据；DNS 与 EIP 是静态导入数据，继续取自应用镜像。生成结果写入 `envscope-data` 卷的 `topology/<topology-id>/topology.json`，并保存 `version.json` 与 `topology.log`。每次点击都会创建新的 `topology-*` ID，不覆盖历史结果；`topology/latest.json` 只指向最近一次成功版本。
 
 页面显示拓扑节点数、边数、待确认边、未解析或外部节点，并提供“查看 JSON”和“下载当前 Topology”链接。`/topology.json` 仅返回最近一次成功生成的数据卷版本；如果没有生成记录，会提示先到 Settings 生成，不会回退到镜像内旧拓扑。生成失败会保留 failed 版本目录和日志，且不改变 latest 指针。
 
-打开 `http://localhost:3001/settings`。填写 DevOps、统一阿里云（ECS / Codeup / CLB / NAT 共用）、JumpServer 的 Cookie 后点击“保存并一键同步”。空输入保留已保存 Cookie，页面不会回显 Cookie。每日同步使用北京时间，默认时间为 18:00；需勾选并保存后开启。Docker 停机后当天错过的任务会在启动后补跑，每天最多自动启动一次；失败可手动重试。
+打开 `http://localhost:3001/settings`。先在顶部租户管理中配置阿里云账号，再在下方填写 DevOps、JumpServer、Local GitLab Cookie 后点击“保存并一键同步”。空输入保留已保存 Cookie，页面不会回显 Cookie。每日同步使用北京时间，默认时间为 18:00；需勾选并保存后开启。Docker 停机后当天错过的任务会在启动后补跑，每天最多自动启动一次；失败可手动重试。
 
-同步范围：DevOps 全量应用、环境、分支、Push In 发布时间；Codeup 当前账号代码组和仓库及双向对比；JumpServer 当前账号授权资产和分组。上海 ECS 实例和 CLB 实例、监听器、证书绑定、转发规则及全部后端服务器组。ECS 项目名称目录沿用前版，实例及 ResourceGroupId 每次重新请求。旧 Codeup Cookie 自动迁移为 aliyun，阿里云采集器只读取这一份凭据。
+同步范围：DevOps 全量应用、环境、分支、Push In 发布时间；Codeup 当前账号代码组和仓库及双向对比；JumpServer 当前账号授权资产和分组。上海 ECS 实例和 CLB 实例、监听器、证书绑定、转发规则及全部后端服务器组。ECS 项目名称目录沿用前版，实例及 ResourceGroupId 每次重新请求。旧 Codeup Cookie 自动迁移为 aliyun，上述旧字段仅作为现有租户的兼容别名；新版本按上方多租户配置分别读取凭据。
 
 ## 持久化
 
@@ -54,9 +72,13 @@ MySQL 持久数据独立保存于 `envscope-mysql:/var/lib/mysql`，不发布宿
 
 `/aliyun/clb` 展示 CLB IP → 监听器 → 默认路由或域名/路径规则 → 服务器组 → 后端 IP/端口，支持搜索及展开。域名不代表已验证 DNS。区分服务器 ID 去重数量和服务器组成员记录，跳转监听器单独显示。旧版本未采集 CLB 时展示空状态，不借用当前或镜像中的 CLB 数据。任一采集源失败不激活新版本。
 
+AccessKey 模式先检查每个 CLB 的 `LoadBalancerStatus`：列表中为 `inactive`（已停止）或 `locked`（已锁定）时直接跳过；列表未明确停用时先查实例详情，并再次检查状态。状态缺失不能直接认定为停用。网络超时、连接异常或 HTTP 408/429/500/502/503/504 最多尝试 3 次，每次超时仍为 45 秒，两次重试分别等待 1 秒和 2 秒，并增加最多 0.5 秒随机退避；权限、认证和参数错误不重试。
+
+单个 LB 重试后仍超时、接口异常或详情结构缺失时，记录一条包含 LB ID、状态、接口和原因的 `Warning`，跳过整个 LB 并继续下一个，不阻止任务成功或版本激活。证书元数据及后端 ECS IP 补查失败也仅记录 Warning，未知 IP 保留为空。实例列表枚举失败、枚举鉴权失败或前后清单不稳定仍属于整个来源失败。成功快照的 `complete` 表示清单已枚举并复核、所有 LB 已按此策略处理；存在跳过或补查失败时同时标记 `partial: true`，`warnings[]` 随原始结果、规范化快照及逐租户/地域元数据持久保存，不把这些记录解释为完整详情。
+
 ## NAT / DNAT 同步与 EIP 后端
 
-Settings 的“单独同步 NAT”使用统一阿里云 Cookie，采集上海区域当前账号可见的全部 NAT 网关及各 DNAT 表。全量和每日同步也包含 NAT。只调用 DescribeNatGateways、DescribeForwardTableEntries，核对分页总数、唯一 ID 和网关／表清单稳定性。完整采集并构建成功后才启用新版本；失败保留当前版本。单独同步任何来源都保留其他来源的快照。
+Settings 的“单独同步 NAT”按所选租户和地域分别读取其 AccessKey（现有租户兼容 Cookie），采集可见的全部 NAT 网关及各 DNAT 表。全量和每日同步也包含 NAT。只调用 DescribeNatGateways、DescribeForwardTableEntries，核对分页总数、唯一 ID 和网关／表清单稳定性。完整采集并构建成功后才启用新版本；失败保留当前版本。单独同步任何来源都保留其他来源的快照。
 
 `nat-snapshot.json` 随历史版本保存；旧版本没有此文件时显示未采集，不借用其他版本数据。CLB 页增加 NAT 视图和 EIP 后端详情。ECS 类型通过静态 CSV 的绑定实例 ID 精确查询当前版本 ECS 的内网／公网 IP；NAT 类型同时匹配网关 ID 与 EIP 地址，展示每条 DNAT 的协议、公网 IP/端口、后端 IP/端口和状态。Any、端口范围原样保留。可用 DNAT 规则还可通过后端 IP 关联内网 CLB，并显示端口转换证据；DNS 不限定端口，仍需结合规则和监听器判断。
 

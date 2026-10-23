@@ -12,6 +12,7 @@ function evaluate(file,requireModule){
  return sandbox.exports;
 }
 function render(view, fixture, resources={}){
+ let stateIndex=0;
  const listener={protocol:'HTTPS',port:443,status:'running',description:'',groupId:'g',forwardPort:null,rules:[],certificates:[{id:'cert',domain:'*.example.com'}]};
  const instances=fixture || [{id:'with-cert',name:'有证书实例',ip:'10.0.0.1',listeners:[listener],groups:[]},{id:'no-cert',name:'无证书实例',ip:'10.0.0.2',listeners:[],groups:[]}];
  const cloud=evaluate('lib/clb.ts',()=>({available:true,instances}));
@@ -20,8 +21,10 @@ function render(view, fixture, resources={}){
  const nat=evaluate('lib/nat.ts',()=>resources.nat || {available:false,gateways:[],collectedAt:null});
  // 页面时间展示已统一委托给 lib/datetime.ts。
  const datetimeLib=evaluate('lib/datetime.ts',()=>({}));
+ const tenants=evaluate('lib/tenants.ts',()=>({}));
+ const tenantFilter=evaluate('components/tenant-filter.tsx',id=>id==='@/lib/tenants'?tenants:require(id));
  const page=evaluate('app/aliyun/clb/page.tsx',id=>{
-  if(id==='react')return {...React,useEffect:()=>{},useState:initial=>[initial==='certificates'&&view?view:initial,()=>{}]};
+  if(id==='react')return {...React,useEffect:()=>{},useState:initial=>[(stateIndex++===1&&resources.tenant)?resources.tenant:initial==='certificates'&&view?view:initial,()=>{}]};
   if(id==='react/jsx-runtime')return require(id);
   if(id==='@/lib/clb')return cloud;
   if(id==='@/lib/dns')return dns;
@@ -30,6 +33,8 @@ function render(view, fixture, resources={}){
   if(id==='@/lib/ecs')return {instances:resources.ecs || [],fetchedAt:'today'};
   if(id==='@/lib/jumpserver')return {jumpserver:{assets:[]}};
   if(id==='@/lib/datetime')return datetimeLib;
+  if(id==='@/lib/tenants')return tenants;
+  if(id==='@/components/tenant-filter')return tenantFilter;
   if(id==='@/app/page')return {Shell:({children})=>children};
   if(id.includes('input'))return {Input:()=>null};
   if(id.includes('button'))return {Button:({children})=>React.createElement('button',null,children)};
@@ -68,6 +73,16 @@ test('NAT view renders protocols, differing ports and unavailable versus empty s
  assert.match(render('nat',[]),/该版本尚未采集 NAT/);
  const html=render('nat',[],{nat:{available:true,collectedAt:'today',gateways:[{id:'ngw',name:'gateway',entries:[{id:'rule',tableId:'table',name:'',externalIp:'1.2.3.4',externalPort:'443',internalIp:'10.0.0.1',internalPort:'8443',protocol:'tcp',status:'Available'}]}]}});
  assert.match(html,/8443/);assert.match(html,/443/);assert.match(html,/TCP/);
+});
+test('tenant selection filters cloud instances and NAT gateways while keeping tenant labels',()=>{
+ const rows=[{id:'a',tenantId:'a',tenantName:'原租户',name:'A实例',ip:'10.1.0.1',listeners:[],groups:[]},
+  {id:'b',tenantId:'b',tenantName:'新租户',name:'B实例',ip:'10.2.0.1',listeners:[],groups:[]}];
+ const html=render('instances',rows,{tenant:'b'});
+ assert.match(html,/B实例/);assert.match(html,/新租户/);assert.doesNotMatch(html,/A实例/);
+ const gateways=[{id:'a',tenantId:'a',tenantName:'原租户',name:'A网关',entries:[]},
+  {id:'b',tenantId:'b',tenantName:'新租户',name:'B网关',entries:[]}];
+ const natHtml=render('nat',rows,{tenant:'b',nat:{available:true,collectedAt:'today',gateways}});
+ assert.match(natHtml,/B网关/);assert.doesNotMatch(natHtml,/A网关/);
 });
 
 if(process.env.CLB_PAGE_FIXTURE){

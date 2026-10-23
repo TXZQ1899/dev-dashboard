@@ -52,8 +52,12 @@ def normalize_clb(data):
         if any(l['groupId'] not in ids or any(r['groupId'] not in ids for r in l['rules']) for l in listeners):
             raise ValueError('Unresolved CLB server group')
         instances.append({'id':a['LoadBalancerId'],'name':a['LoadBalancerName'],'ip':a['Address'],
+            'region':data['region'],'vpcId':a.get('VpcId',''),'vswitchId':a.get('VSwitchId',''),
             'addressType':a['AddressType'],'status':a['LoadBalancerStatus'],'listeners':listeners,'groups':groups})
-    return {'available':True,'collectedAt':data['collectedAt'],'region':data['region'],'instances':instances}
+    result = {'available':True,'collectedAt':data['collectedAt'],'region':data['region'],'instances':instances}
+    if 'warnings' in data:
+        result.update(partial=data.get('partial', False), warnings=data['warnings'])
+    return result
 
 
 def ecs_snapshot(raw, projects):
@@ -65,6 +69,7 @@ def ecs_snapshot(raw, projects):
             private += [nic.get('PrimaryIpAddress')]+[p.get('PrivateIpAddress') for p in array(nic,'PrivateIpSets','PrivateIpSet')]
         public=array(i,'PublicIpAddress','IpAddress')+[i.get('EipAddress',{}).get('IpAddress'),extra.get('publicIpAddress'),extra.get('eipAddress')]
         rows.append({'id':i['InstanceId'],'name':i.get('InstanceName') or i['InstanceId'],'projectId':i.get('ResourceGroupId',''),
+            'vpcId':i.get('VpcAttributes',{}).get('VpcId',''),'vswitchId':i.get('VpcAttributes',{}).get('VSwitchId',''),
             'cpu':i['Cpu'],'memoryGiB':i['Memory']/1024,'os':i.get('OSName') or '未提供',
             'privateIps':list(dict.fromkeys(p for p in private if p)) or ([extra['innerIpAddress']] if extra.get('innerIpAddress') else []),
             'publicIps':list(dict.fromkeys(p for p in public if p)),

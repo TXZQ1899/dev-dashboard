@@ -222,6 +222,11 @@ export default function ResourcesPage() {
                 <option key={p}>{p}</option>
               ))}
             </select>
+            <select aria-label="租户筛选" value={filters.tenant || ''} onChange={e => change({ tenant: e.target.value })}>
+              <option value="">全部租户</option>
+              {[...new Map(comparisonRows.flatMap(row => row.tenants).map(t => [t.id, t])).values()].map(t =>
+                <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
             <select
               aria-label="JumpServer 分组"
               value={filters.group}
@@ -294,6 +299,7 @@ export default function ResourcesPage() {
                                 className="resource-ip-cell"
                               >
                                 <code><Highlight text={row.ip} query={search} /></code>
+                                {row.tenants.map(tenant => <small key={tenant.id} title={tenant.accountId}>{tenant.name}</small>)}
                                 <div className="resource-source-tags">
                                   {row.sources.devops && (
                                     <a

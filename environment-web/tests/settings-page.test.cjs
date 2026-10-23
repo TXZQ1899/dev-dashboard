@@ -9,14 +9,18 @@ const { renderToStaticMarkup } = require('react-dom/server');
 
 const SOURCE = 'app/settings/page.tsx';
 
-function renderPage() {
+function renderPage(initialState = null) {
+  let stateIndex = 0;
   const sandbox = {
     exports: {},
     require: (id) => {
-      if (id === 'react') return { ...React, useState: (v) => [v, () => {}], useEffect: () => {} };
+      if (id === 'react') return { ...React, useState: (v) => [stateIndex++ === 0 ? initialState : v, () => {}], useEffect: () => {} };
       if (id === 'react/jsx-runtime') return require(id);
       if (id === '@/app/page') return { Shell: ({ children }) => children };
-      if (id.includes('input')) return { Input: () => null };
+      if (id === '@/lib/datetime') return { formatBeijingTime: (value) => value || '—' };
+      if (id === '@/components/aliyun-tenant-settings')
+        return { AliyunTenantSettings: () => React.createElement('h2', null, '阿里云租户管理') };
+      if (id.includes('input')) return { Input: (props) => React.createElement('input', props) };
       if (id.includes('button'))
         return {
           Button: ({ children, disabled }) =>
@@ -156,4 +160,17 @@ test('settings page renders its loading state without throwing', () => {
   const html = renderPage();
   assert.match(html, /Settings/);
   assert.match(html, /正在读取设置/);
+});
+
+test('loaded settings keeps other platform credentials without duplicate Aliyun fields', () => {
+  const html = renderPage({
+    aliyunTenants: [], cookies: { devops: {}, aliyun: {}, jumpserver: {}, local_gitlab: {} },
+    schedule: { enabled: false, time: '18:00' }, current: { id: 'current', activatedAt: '2026-10-23' },
+    versions: [], storage: 'Docker 数据卷',
+  });
+  assert.match(html, /阿里云租户管理/);
+  for (const id of ['cookie-devops', 'cookie-jumpserver', 'cookie-local_gitlab', 'folidev-password'])
+    assert.ok(html.includes(`id="${id}"`), id);
+  for (const id of ['cookie-aliyun', 'aliyun-auth-mode', 'aliyun-access-key-id', 'aliyun-access-key-secret', 'codeup-organization-id'])
+    assert.ok(!html.includes(`id="${id}"`), `重复入口仍存在：${id}`);
 });

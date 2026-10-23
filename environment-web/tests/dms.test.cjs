@@ -122,18 +122,24 @@ test('csv export keeps header order, BOM and quoting', () => {
   const csv = d.instancesCsv(d.instances);
   const lines = csv.replace('\uFEFF', '').trim().split('\r\n');
   assert.ok(csv.startsWith('\uFEFF'));
-  assert.equal(lines[0], '实例名称,实例地址,类型,实例地区,实例IP,登录状态,实例ID');
+  assert.equal(lines[0], '实例名称,实例地址,类型,实例地区,实例IP,登录状态,实例ID,租户ID,租户名称,阿里云账号UID');
   assert.equal(
     lines[1],
-    'Prod-UserCenter,rm-1.mysql.rds.aliyuncs.com:3306,MySQL,华东2（上海）,10.179.0.182,免登录,rm-1',
+    'Prod-UserCenter,rm-1.mysql.rds.aliyuncs.com:3306,MySQL,华东2（上海）,10.179.0.182,免登录,rm-1,,,',
   );
   assert.equal(
     lines[2],
-    'FosunScrm-Product,r-2.redis.rds.aliyuncs.com:6379,Redis,华东2（上海）,,未登录,r-2',
+    'FosunScrm-Product,r-2.redis.rds.aliyuncs.com:6379,Redis,华东2（上海）,,未登录,r-2,,,',
   );
   assert.equal(
     lines[3],
-    '"Prod, Finance",pgm-3.pg.rds.aliyuncs.com:1921,PostgreSQL,华南1（深圳）,10.58.9.11,未登录,pgm-3',
+    '"Prod, Finance",pgm-3.pg.rds.aliyuncs.com:1921,PostgreSQL,华南1（深圳）,10.58.9.11,未登录,pgm-3,,,',
   );
-  assert.equal(d.instancesCsv([]), '\uFEFF' + '实例名称,实例地址,类型,实例地区,实例IP,登录状态,实例ID\r\n');
+  assert.equal(d.instancesCsv([]), '\uFEFF' + '实例名称,实例地址,类型,实例地区,实例IP,登录状态,实例ID,租户ID,租户名称,阿里云账号UID\r\n');
+});
+test('tenant filtering and exports retain the collection account', () => {
+  const rows = d.instances.map((row, index) => ({ ...row, tenantId: index ? 'b' : 'a', tenantName: index ? '新增租户' : '现有租户', accountId: index ? '2002' : '1001' }));
+  const filtered = d.filterInstances(rows, { ...d.emptyFilters, tenant: 'a' });
+  assert.equal(filtered.length, 1);
+  assert.match(d.instancesCsv(filtered), /,a,现有租户,1001\r\n/);
 });

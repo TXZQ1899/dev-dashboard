@@ -12,6 +12,8 @@ import {
 } from 'lucide-react';
 import { Shell } from '../page';
 import { formatBeijingTime } from '@/lib/datetime';
+import { TenantFilter } from '@/components/tenant-filter';
+import { tenantLabel, resourceIdentity } from '@/lib/tenants';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { NativeSelect } from '@/components/ui/native-select';
@@ -32,7 +34,9 @@ import {
   instances,
   compareText,
   projects,
+  projectToken,
   fetchedAt,
+  tenantSnapshots,
   tagKeys,
   tagValues,
   tagLabel,
@@ -129,6 +133,7 @@ function ResourceTable({ rows }: { rows: Instance[] }) {
         <TableRow>
           {[
             '实例名 / ID',
+            '租户',
             'CPU',
             '内存',
             '操作系统名',
@@ -143,12 +148,13 @@ function ResourceTable({ rows }: { rows: Instance[] }) {
       </TableHeader>
       <TableBody>
         {rows.map((r) => (
-          <TableRow key={r.id}>
+          <TableRow key={resourceIdentity(r)}>
             <TableCell>
               <b>{r.name}</b>
               <small>{r.id}</small>
               <small>{r.instanceType}</small>
             </TableCell>
+            <TableCell>{tenantLabel(r)}<small>{r.accountId}</small></TableCell>
             <TableCell>{r.cpu} vCPU</TableCell>
             <TableCell>{r.memoryGiB} GiB</TableCell>
             <TableCell className="ecs-os">{r.os}</TableCell>
@@ -268,10 +274,11 @@ export default function EcsView({ detail = false }: { detail?: boolean }) {
   const link = (path: string) => path + (query ? `?${query}` : '');
   const totals = summarize(shown);
   const projectStats = projects
-    .filter((p) => !filters.project || JSON.stringify(p.id) === filters.project)
+    .filter((p) => (!filters.tenant || (p.tenantId || 'legacy-aliyun') === filters.tenant) &&
+      (!filters.project || projectToken(p.id, p.tenantId) === filters.project || JSON.stringify(p.id) === filters.project))
     .map((p) => ({
       ...p,
-      ...summarize(shown.filter((r) => r.projectId === p.id)),
+      ...summarize(shown.filter((r) => r.projectId === p.id && r.tenantId === p.tenantId)),
     }))
     .sort((a, b) => b.count - a.count || compareText(a.name, b.name));
   const envStats = groupInstances(shown, ['tag:env']);
@@ -295,7 +302,7 @@ export default function EcsView({ detail = false }: { detail?: boolean }) {
             <div className="eyebrow">ALIYUN · CN-SHANGHAI</div>
             <h1>{detail ? '阿里云资源列表' : '阿里云资源汇总'}</h1>
             <p>
-              上海区域 · ECS 快照 {formatBeijingTime(fetchedAt)}（北京时间）
+              已配置租户及地域 · ECS 快照 {formatBeijingTime(fetchedAt)}（北京时间）
             </p>
           </div>
           <a
@@ -307,7 +314,10 @@ export default function EcsView({ detail = false }: { detail?: boolean }) {
           </a>
         </div>
         <section className="panel ecs-filters" aria-label="资源筛选">
+          {tenantSnapshots.filter(t => !filters.tenant || t.tenantId === filters.tenant).map(t =>
+            <p key={`${t.tenantId}/${t.region}`} className="settings-hint">{t.tenantName} · {t.region} · 采集：{formatBeijingTime(t.collectedAt, '时间未知')}</p>)}
           <div className="ecs-filter-row">
+            <TenantFilter rows={instances} value={filters.tenant || ''} onChange={tenant => set({ tenant })} />
             <label className="ecs-field ecs-search" htmlFor="ecs-search">
               <span>搜索</span>
               <Input
@@ -325,8 +335,8 @@ export default function EcsView({ detail = false }: { detail?: boolean }) {
             >
               <option value="">全部项目</option>
               {projects.map((p) => (
-                <option key={p.id} value={JSON.stringify(p.id)}>
-                  {p.name}
+                <option key={projectToken(p.id, p.tenantId)} value={projectToken(p.id, p.tenantId)}>
+                  {p.tenantName ? `${p.tenantName} · ` : ''}{p.name}
                 </option>
               ))}
             </Picker>
@@ -530,14 +540,15 @@ export default function EcsView({ detail = false }: { detail?: boolean }) {
                 </TableHeader>
                 <TableBody>
                   {projectStats.map((p) => (
-                    <TableRow key={p.id}>
+                    <TableRow key={projectToken(p.id, p.tenantId)}>
                       <TableCell>
                         <a
-                          href={`/aliyun/instances?${filtersQuery({ ...filters, project: JSON.stringify(p.id) })}`}
+                          href={`/aliyun/instances?${filtersQuery({ ...filters, project: projectToken(p.id, p.tenantId) })}`}
                         >
                           <b>{p.name}</b>
                           <ArrowUpRight size={14} />
                         </a>
+                        {p.tenantName && <small>{p.tenantName}</small>}
                         <small>
                           {p.code || (!p.id ? 'ResourceGroupId 为空' : p.id)}
                         </small>
@@ -602,7 +613,7 @@ export default function EcsView({ detail = false }: { detail?: boolean }) {
           <span>
             按实例 ID 计数 · 内存从 MiB 换算为 GiB · CPU、内存为配置容量
           </span>
-          <span>仅包含上海区域 ECS · 静态快照</span>
+          <span>已配置租户及地域的 ECS · 版本化快照</span>
         </footer>
       </main>
     </Shell>

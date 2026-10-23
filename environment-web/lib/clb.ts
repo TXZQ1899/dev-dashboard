@@ -1,4 +1,5 @@
 import snapshot from './clb-snapshot.json';
+import type { TenantResource, TenantScope } from './tenants';
 export type Backend = { id: string; ip: string; port: number | null; weight: number | null; type: string };
 export type Group = { id: string; name: string; kind: string; servers: Backend[] };
 export type Listener = {
@@ -7,8 +8,8 @@ export type Listener = {
   certificates: { id: string; name: string; domain: string; commonName: string; expiresAt: string }[];
   rules: { id: string; domain: string; path: string; groupId: string }[];
 };
-export type Clb = { id: string; name: string; ip: string; addressType: string; status: string; groups: Group[]; listeners: Listener[] };
-export type Snapshot = { available: boolean; collectedAt: string | null; instances: Clb[] };
+export type Clb = TenantResource & { id: string; name: string; ip: string; addressType: string; status: string; groups: Group[]; listeners: Listener[] };
+export type Snapshot = { available: boolean; collectedAt: string | null; instances: Clb[]; tenants?: TenantScope[] };
 export const clb = snapshot as Snapshot;
 export type Certificate = Listener['certificates'][number];
 export type CertificateView = { key: string; certificate: Certificate; instances: Array<{ instance: Clb; listeners: Listener[] }> };
@@ -31,7 +32,7 @@ export function filterClb(instances: Clb[], query: string) {
 export function certificatesFromClb(instances: Clb[], query = ''): CertificateView[] {
   const grouped = new Map<string, CertificateView>();
   for (const instance of instances) for (const listener of instance.listeners) for (const certificate of listener.certificates) {
-    const key = certificate.id || `${certificate.domain}|${certificate.commonName}`;
+    const key = (instance.tenantId ? instance.tenantId + ':' : '') + (certificate.id || `${certificate.domain}|${certificate.commonName}`);
     const view = grouped.get(key) ?? { key, certificate, instances: [] };
     let attached = view.instances.find((entry) => entry.instance.id === instance.id);
     if (!attached) { attached = { instance, listeners: [] }; view.instances.push(attached); }

@@ -61,36 +61,40 @@ export function buildCloudNodes(graph: GraphCollector, input: SnapshotInput): Cl
   if (natRoot.available) {
     const natAt = toIso(natRoot.collectedAt);
     for (const gateway of asArray(natRoot.gateways)) {
+      const tenant: Record<string, string> = gateway.tenantId ? { tenantId: text(gateway.tenantId), tenantName: text(gateway.tenantName), accountId: text(gateway.accountId) } : {};
       const gatewayEvidence: Evidence = {
+        ...tenant,
         source: 'nat',
         sourceId: text(gateway.id),
         reference: 'environment-web/lib/nat-snapshot.json',
         detail: `NAT gateway ${text(gateway.name)} (${text(gateway.id)}), VPC ${text(gateway.vpcId)}`,
-        observedAt: natAt,
+        observedAt: toIso(gateway.observedAt) || natAt,
       };
       const gatewayNode = graph.node({
         id: `nat-gateway:${text(gateway.id)}`,
         type: 'NAT_GATEWAY',
         label: text(gateway.name) || text(gateway.id),
-        identity: { natGatewayId: text(gateway.id), vpcId: text(gateway.vpcId) },
+        identity: { ...tenant, natGatewayId: text(gateway.id), vpcId: text(gateway.vpcId) },
         status: text(gateway.status) === 'Available' ? 'active' : 'unknown',
         environment: 'GLOBAL',
         evidence: [gatewayEvidence],
-        attributes: { status: text(gateway.status), region: text(natRoot.region), vpcId: text(gateway.vpcId) },
+        attributes: { ...tenant, status: text(gateway.status), region: text(gateway.region || natRoot.region), vpcId: text(gateway.vpcId) },
       });
       for (const entry of asArray(gateway.entries)) {
         const evidence: Evidence = {
+          ...tenant,
           source: 'nat',
           sourceId: `${text(gateway.id)}/${text(entry.id)}`,
           reference: 'environment-web/lib/nat-snapshot.json',
           detail: `DNAT ${normalizeIp(entry.externalIp)}:${normalizePort(entry.externalPort)} ${normalizeProtocol(entry.protocol)} -> ${normalizeIp(entry.internalIp)}:${normalizePort(entry.internalPort)}`,
-          observedAt: natAt,
+          observedAt: toIso(gateway.observedAt) || natAt,
         };
         const rule = graph.node({
           id: `dnat-rule:${text(gateway.id)}:${text(entry.id)}`,
           type: 'DNAT_RULE',
           label: text(entry.name) || text(entry.id),
           identity: {
+            ...tenant,
             dnatEntryId: text(entry.id),
             externalIp: normalizeIp(entry.externalIp),
             externalPort: normalizePort(entry.externalPort),
@@ -122,7 +126,7 @@ export function buildCloudNodes(graph: GraphCollector, input: SnapshotInput): Cl
             id,
             type: 'ENDPOINT',
             label: `${ip}:${port}:${protocol}`,
-            identity: { ip, port, protocol },
+            identity: { ...tenant, ip, port, protocol },
             status: 'active',
             environment: 'GLOBAL',
             evidence: [evidence],
@@ -141,23 +145,25 @@ export function buildCloudNodes(graph: GraphCollector, input: SnapshotInput): Cl
   if (clbRoot.available) {
     const clbAt = toIso(clbRoot.collectedAt);
     for (const instance of asArray(clbRoot.instances)) {
+      const tenant: Record<string, string> = instance.tenantId ? { tenantId: text(instance.tenantId), tenantName: text(instance.tenantName), accountId: text(instance.accountId) } : {};
       const ip = normalizeIp(instance.ip);
       const evidence: Evidence = {
+        ...tenant,
         source: 'clb',
         sourceId: text(instance.id),
         reference: 'environment-web/lib/clb-snapshot.json',
         detail: `CLB ${text(instance.name)} (${text(instance.id)}) ${ip}`,
-        observedAt: clbAt,
+        observedAt: toIso(instance.observedAt) || clbAt,
       };
       const clb = graph.node({
         id: `clb:${text(instance.id)}`,
         type: 'CLB',
         label: text(instance.name) || text(instance.id),
-        identity: { clbId: text(instance.id), ip },
+        identity: { ...tenant, clbId: text(instance.id), ip },
         status: text(instance.status) === 'active' ? 'active' : 'unknown',
         environment: 'GLOBAL',
         evidence: [evidence],
-        attributes: { addressType: text(instance.addressType), status: text(instance.status), region: text(clbRoot.region) },
+        attributes: { ...tenant, addressType: text(instance.addressType), status: text(instance.status), region: text(instance.region || clbRoot.region) },
       });
       if (ip) {
         const list = clbByIp.get(ip) || [];
@@ -168,17 +174,18 @@ export function buildCloudNodes(graph: GraphCollector, input: SnapshotInput): Cl
         const protocol = normalizeProtocol(listener.protocol);
         const port = normalizePort(listener.port);
         const listenerEvidence: Evidence = {
+          ...tenant,
           source: 'clb',
           sourceId: `${text(instance.id)}/${protocol}/${port}`,
           reference: 'environment-web/lib/clb-snapshot.json',
           detail: `CLB listener ${protocol}/${port}, status ${text(listener.status)}`,
-          observedAt: clbAt,
+          observedAt: toIso(instance.observedAt) || clbAt,
         };
         const listenerNode = graph.node({
           id: `clb-listener:${text(instance.id)}:${protocol}:${port}`,
           type: 'CLB_LISTENER',
           label: `${text(instance.name)} ${protocol}/${port}`,
-          identity: { clbId: text(instance.id), protocol, port },
+          identity: { ...tenant, clbId: text(instance.id), protocol, port },
           status: text(listener.status) === 'running' ? 'active' : 'unknown',
           environment: 'GLOBAL',
           evidence: [listenerEvidence],
@@ -197,17 +204,18 @@ export function buildCloudNodes(graph: GraphCollector, input: SnapshotInput): Cl
       for (const group of asArray(instance.groups)) {
         const groupId = text(group.id) || 'default';
         const groupEvidence: Evidence = {
+          ...tenant,
           source: 'clb',
           sourceId: `${text(instance.id)}/${groupId}`,
           reference: 'environment-web/lib/clb-snapshot.json',
           detail: `CLB server group ${text(group.name)} (${groupId}), ${asArray(group.servers).length} backends`,
-          observedAt: clbAt,
+          observedAt: toIso(instance.observedAt) || clbAt,
         };
         const groupNode = graph.node({
           id: `clb-server-group:${text(instance.id)}:${groupId}`,
           type: 'SERVER_GROUP',
           label: text(group.name) || groupId,
-          identity: { clbId: text(instance.id), serverGroupId: groupId, kind: text(group.kind) },
+          identity: { ...tenant, clbId: text(instance.id), serverGroupId: groupId, kind: text(group.kind) },
           status: 'active',
           environment: 'GLOBAL',
           evidence: [groupEvidence],
@@ -224,7 +232,7 @@ export function buildCloudNodes(graph: GraphCollector, input: SnapshotInput): Cl
             id,
             type: 'ENDPOINT',
             label: `${serverIp}:${serverPort}:${endpointProtocol}`,
-            identity: { ip: serverIp, port: serverPort, protocol: endpointProtocol },
+            identity: { ...tenant, ip: serverIp, port: serverPort, protocol: endpointProtocol },
             status: 'active',
             environment: 'GLOBAL',
             evidence: [groupEvidence],

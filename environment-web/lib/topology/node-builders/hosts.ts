@@ -47,14 +47,17 @@ export function buildHostNodes(graph: GraphCollector, input: SnapshotInput): Hos
     const publicIps = asArray<string>(instance.publicIps).map(normalizeIp).filter(Boolean);
     const ips = [...new Set([...privateIps, ...publicIps])];
     const evidence: Evidence = {
+      tenantId: text(instance.tenantId) || undefined, accountId: text(instance.accountId) || undefined,
       source: 'ecs',
       sourceId: text(instance.id),
       reference: 'environment-web/lib/ecs-snapshot.json',
       detail: `ECS instance ${text(instance.name)} (${ips.join(', ')})`,
-      observedAt,
+      observedAt: toIso(instance.observedAt) || observedAt,
     };
     const identity: Record<string, string | number | string[]> = { cloudInstanceIds: [text(instance.id)] };
+    if (instance.tenantId) Object.assign(identity, { tenantId: text(instance.tenantId), accountId: text(instance.accountId) });
     const attributes: Record<string, unknown> = {
+      tenantId: instance.tenantId, tenantName: instance.tenantName, accountId: instance.accountId,
       ecs: {
         id: text(instance.id),
         name: text(instance.name),

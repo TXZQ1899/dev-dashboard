@@ -82,11 +82,18 @@ export function Shell({
             <Boxes size={23} />
           </span>
           <span>
-            AppAtlas<small>应用架构图谱</small>
+            EnvScope<small>应用环境管理</small>
           </span>
         </a>
         <div className="nav-label">工作空间</div>
         <nav>
+          <a
+            className={active === 'resources' ? 'active' : ''}
+            href="/resources"
+          >
+            <Database size={18} />
+            服务器资源全景
+          </a>
           <a className={active === 'dashboard' ? 'active' : ''} href="/">
             <LayoutDashboard size={18} />
             环境总览
@@ -138,13 +145,6 @@ export function Shell({
             <Server size={18} />
             本地机房资源
           </a>
-          <a
-            className={active === 'resources' ? 'active' : ''}
-            href="/resources"
-          >
-            <Database size={18} />
-            IP 资源全景
-          </a>
         </nav>
         <div className="side-note">
           <Database size={18} />
@@ -169,7 +169,7 @@ export function Shell({
             {active === 'topology' ? '拓扑路径查询' : active === 'clb' ? 'CLB 全景' : active === 'dms'
               ? '阿里云DMS资源'
               : active === 'resources'
-              ? 'IP 资源全景'
+              ? '服务器资源全景'
               : active === 'settings'
                 ? 'Settings · 数据同步'
                 : active === 'jumpserver'

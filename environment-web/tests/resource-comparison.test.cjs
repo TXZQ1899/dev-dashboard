@@ -22,6 +22,16 @@ vm.runInNewContext(compiled,sandbox);
 const c=sandbox.exports;
 const plain=value=>JSON.parse(JSON.stringify(value));
 const empty=()=>({apps:[],instances:[],projects:[],assets:[],jumpGroups:[],repos:[],codeGroups:[]});
+test('cloud provenance and tenant filters include NAT while static DNS stays unassigned',()=>{
+ const input=empty();
+ input.instances=[{id:'same',tenantId:'a',tenantName:'账号 A',accountId:'1001',projectId:'',privateIps:['10.1.0.1'],publicIps:[]}];
+ input.natGateways=[{id:'nat',tenantId:'b',tenantName:'账号 B',entries:[{id:'r',externalIp:'1.2.3.4',internalIp:'10.2.0.1'}]}];
+ input.dnsRecords=[{id:'dns',name:'static',type:'A',value:'192.0.2.1',status:'启用'}];
+ const rows=c.buildComparison(input);
+ assert.equal(c.filterComparison(rows,{...c.emptyComparisonFilters,tenant:'b'}).length,2);
+ assert.equal(rows.find(r=>r.ip==='192.0.2.1').tenants.length,0);
+ assert.equal(rows.find(r=>r.ip==='10.1.0.1').tenants[0].accountId,'1001');
+});
 
 test('all three input sets are preserved once per IP; missing coverage uses the union denominator',()=>{
   const input=empty();

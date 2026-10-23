@@ -16,6 +16,23 @@ const snapshotInput = () => ({
   clb: readJson('clb-snapshot.json'),
   jumpserver: readJson('jumpserver-snapshot.json'),
 });
+test('cloud tenant provenance and individual observation times survive topology building', async () => {
+  const { buildValidatedTopology } = await import('../lib/topology/topology-builder.ts');
+  const input = { devops:{apps:[]}, repositories:{repos:[]}, dns:{records:[]}, eip:{records:[]},
+    nat:{available:false}, clb:{available:false}, jumpserver:{assets:[]},
+    ecs:{fetchedAt:'2026-10-23T02:00:00Z',instances:[
+      {id:'i-a',name:'A',tenantId:'a',tenantName:'账号 A',accountId:'1001',observedAt:'2026-10-22T01:00:00Z',privateIps:['10.1.0.1'],publicIps:[],tags:{}},
+      {id:'i-b',name:'B',tenantId:'b',tenantName:'账号 B',accountId:'2002',observedAt:'2026-10-23T02:00:00Z',privateIps:['10.2.0.1'],publicIps:[],tags:{}}
+    ]}};
+  const {topology,validation} = buildValidatedTopology(input);
+  assert.equal(validation.valid,true);
+  const host = topology.nodes.find(node=>node.identity.ip==='10.1.0.1');
+  assert.equal(host.identity.tenantId,'a');
+  assert.equal(host.attributes.tenantName,'账号 A');
+  assert.equal(host.evidence[0].accountId,'1001');
+  assert.equal(host.evidence[0].observedAt,'2026-10-22T01:00:00.000Z');
+  assert.equal(topology.nodes.find(node=>node.identity.ip==='10.2.0.1').identity.tenantId,'b');
+});
 
 test('real snapshots build a validated topology with evidence on every edge', async () => {
   const { buildValidatedTopology } = await import('../lib/topology/topology-builder.ts');

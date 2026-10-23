@@ -7,6 +7,7 @@ import eipSnapshot from './eip-snapshot.json';
 import natSnapshot from './nat-snapshot.json';
 import dnsSnapshot from './dns-snapshot.json';
 import { isLocalDatacenterIp } from './datacenter-networks';
+import type { TenantResource } from './tenants';
 
 type Deployment = {
   ip?: string | null;
@@ -21,7 +22,7 @@ type Application = {
   repository?: string;
   envs: Record<string, Deployment[]>;
 };
-type CloudInstance = {
+type CloudInstance = TenantResource & {
   id: string;
   projectId: string;
   privateIps: string[];
@@ -36,13 +37,13 @@ type JumpGroup = {
   assetIds: string[];
 };
 export type ComparisonInput = {
-  clbInstances?: { id: string; ip: string; groups?: { servers: { ip: string }[] }[] }[];
+  clbInstances?: (TenantResource & { id: string; ip: string; groups?: { servers: { ip: string }[] }[] })[];
   eips?: { ip: string; id: string; name: string; owner: string; notes: { value: string }[] }[];
-  natGateways?: { id: string; name: string; entries: { externalIp: string; internalIp: string; id: string }[] }[];
+  natGateways?: (TenantResource & { id: string; name: string; entries: { externalIp: string; internalIp: string; id: string }[] })[];
   dnsRecords?: { id: string; name: string; type: string; value: string; status: string }[];
   apps: Application[];
   instances: CloudInstance[];
-  projects: { id: string; name: string }[];
+  projects: (TenantResource & { id: string; name: string })[];
   assets: { id: string; ip: string | null }[];
   jumpGroups: JumpGroup[];
   repos: { url: string; groupId: string }[];
@@ -60,6 +61,7 @@ export type Association = {
   pushIn: string;
 };
 export type ResourceRow = {
+  tenants: { id: string; name: string; accountId: string }[];
   ip: string;
   resourceType: '阿里云' | '阿里云 CLB' | '阿里云 EIP' | 'NAT 映射' | 'CLB 后端' | 'DNS 记录' | '公司机房' | '';
   references: { label: string; href: string }[];
@@ -128,6 +130,7 @@ export function buildComparison(input: ComparisonInput): ResourceRow[] {
     if (!rows.has(ip))
       rows.set(ip, {
         ip,
+        tenants: [],
         resourceType: '',
         classificationConflict: false,
         cloudInstanceIds: [],
@@ -143,9 +146,14 @@ export function buildComparison(input: ComparisonInput): ResourceRow[] {
     return rows.get(ip)!;
   };
   const projects = new Map(
-    input.projects.filter((p) => p.id).map((p) => [p.id, p.name]),
+    input.projects.filter((p) => p.id).map((p) => [JSON.stringify([p.tenantId || '', p.id]), p.name]),
   );
   const codeGroups = new Map(input.codeGroups.map((g) => [g.id, g.name]));
+  const attachTenant = (row: ResourceRow, source: TenantResource) => {
+    const id = source.tenantId || 'legacy-aliyun';
+    if (!row.tenants.some(t => t.id === id)) row.tenants.push({ id,
+      name: source.tenantName || (source.tenantId ? source.tenantId : '现有租户（历史数据）'), accountId: source.accountId || '' });
+  };
   const repoGroups = new Map(
     input.repos
       .map(
@@ -180,8 +188,9 @@ export function buildComparison(input: ComparisonInput): ResourceRow[] {
     for (const ip of ips) {
       const row = ensure(ip)!;
       row.sources.aliyun = true;
+      attachTenant(row, instance);
       row.cloudInstanceIds.push(instance.id);
-      row.projectNames.push(projects.get(instance.projectId) || '');
+      row.projectNames.push(projects.get(JSON.stringify([instance.tenantId || '', instance.projectId])) || '');
       row.otherManagedIps.push(
         ...ips.filter(
           (other) => other !== ip && rows.get(other)?.sources.jumpserver,
@@ -192,12 +201,14 @@ export function buildComparison(input: ComparisonInput): ResourceRow[] {
   for (const instance of input.clbInstances ?? []) {
     const row = ensure(instance.ip);
     if (row) {
+      attachTenant(row, instance);
       row.sources.aliyun = true;
       row.clbInstanceIds.push(instance.id);
     }
     for (const group of instance.groups ?? []) for (const server of group.servers) {
       const backend = ensure(server.ip);
       if (!backend) continue;
+      attachTenant(backend, instance);
       backend.sources.clbBackend = true;
       backend.references.push({ label: 'CLB 后端', href: `/aliyun/clb?view=instances&q=${encodeURIComponent(server.ip)}` });
       backend.searchTerms.push(instance.id);
@@ -223,6 +234,7 @@ export function buildComparison(input: ComparisonInput): ResourceRow[] {
       const row = ensure(ip);
       if (!row) continue;
       row.sources.nat = true;
+      attachTenant(row, gateway);
       row.references.push({label:'NAT 映射',href:`/aliyun/clb?view=nat&q=${encodeURIComponent(ip)}`});
       row.searchTerms.push(gateway.id, gateway.name, entry.id);
     }
@@ -341,6 +353,7 @@ export function summarizeComparison(rows: ResourceRow[]) {
   };
 }
 export type ComparisonFilters = {
+  tenant?: string;
   query: string;
   coverage: string;
   resource: string;
@@ -351,6 +364,7 @@ export type ComparisonFilters = {
   pushInSort: string;
 };
 export const emptyComparisonFilters: ComparisonFilters = {
+  tenant: '',
   query: '',
   coverage: '',
   resource: '',
@@ -375,6 +389,7 @@ export function filterComparison(
   });
   const filtered = matchingRows.filter(
     (r) =>
+      (!filters.tenant || r.tenants.some(t => t.id === filters.tenant)) &&
       (!filters.coverage ||
         (filters.coverage === 'missing'
           ? !r.sources.jumpserver
@@ -390,6 +405,7 @@ export function filterComparison(
       (!q ||
         [
           r.ip,
+          ...r.tenants.flatMap(t => [t.name, t.accountId]),
           ...r.cloudInstanceIds,
           ...r.clbInstanceIds,
           ...r.searchTerms,

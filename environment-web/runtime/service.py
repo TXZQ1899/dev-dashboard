@@ -15,6 +15,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 from zoneinfo import ZoneInfo
+try:
+    import aliyun_tenants as tenancy
+except ModuleNotFoundError:
+    from runtime import aliyun_tenants as tenancy
 
 try:
     from deployment_catalog import Catalog, CatalogError, CatalogInputError, ENVIRONMENTS as ENVIRONMENTS_CATALOG
@@ -66,6 +70,7 @@ def credentials():
     if 'aliyun' not in value and 'codeup' in value:
         value['aliyun'] = value['codeup']
     value.pop('codeup', None)
+    tenancy.normalize(value)
     return value
 
 
@@ -104,13 +109,41 @@ def validate(folder):
     if {i for g in jump['groups'] for i in g['assetIds']} != ids:
         raise ValueError('分组与资产不一致')
     clb = read(folder/'clb-snapshot.json', EMPTY_CLB)
+    for source in ('ecs', 'clb', 'nat', 'dms'):
+        snapshot = read(folder/f'{source}-snapshot.json', {})
+        planned = read(folder/'version.json', {}).get('cloudPlan', [])
+        if any(source in t['sources'] for t in planned) and snapshot.get('schemaVersion') != 2:
+            raise ValueError(f'{source.upper()} 未生成本次多租户快照')
+        field = 'gateways' if source == 'nat' else 'instances'
+        if source == 'ecs' or snapshot.get('available'):
+            rows = snapshot.get(field, [])
+            keys = [(r.get('tenantId', tenancy.LEGACY_TENANT), r.get('region', ''),
+                     r.get('id') if source != 'dms' else r.get('实例地址')) for r in rows]
+            if len(keys) != len(set(keys)): raise ValueError(f'{source.upper()} 存在重复资源')
+        if snapshot.get('schemaVersion') == 2:
+            scopes = snapshot.get('tenants', [])
+            if not scopes or any(s.get('complete') is not True for s in scopes):
+                raise ValueError(f'{source.upper()} 租户采集范围不完整')
+            expected = {(t['tenantId'], region) for t in planned if source in t['sources']
+                        for region in ([''] if source == 'dms' else t['regions'])}
+            actual = {(s['tenantId'], s.get('region', '')) for s in scopes}
+            if not expected.issubset(actual): raise ValueError(f'{source.upper()} 缺少计划中的租户数据')
+            for row in snapshot.get(field, []):
+                scope_key = (row.get('tenantId'), '' if source == 'dms' else row.get('region', ''))
+                if scope_key not in actual or not row.get('resourceKey'):
+                    raise ValueError(f'{source.upper()} 资源缺少租户来源身份')
+            for tenant in planned:
+                if source not in tenant['sources']: continue
+                own = [s for s in scopes if s['tenantId'] == tenant['tenantId']]
+                if any(s.get('credentialVersion') != tenant['credentialVersion'] for s in own):
+                    raise ValueError(f'{source.upper()} 采集凭据版本与计划不一致')
     if clb.get('available'):
         rows = clb['instances']
-        if len({r['id'] for r in rows}) != len(rows): raise ValueError('CLB 存在重复 ID')
+        if len({(r.get('tenantId',''),r.get('region',''),r['id']) for r in rows}) != len(rows): raise ValueError('CLB 存在重复 ID')
     nat = read(folder/'nat-snapshot.json', EMPTY_NAT)
     if nat.get('available'):
         gateways = nat.get('gateways')
-        if not isinstance(gateways, list) or len({g['id'] for g in gateways}) != len(gateways):
+        if not isinstance(gateways, list) or len({(g.get('tenantId',''),g.get('region',''),g['id']) for g in gateways}) != len(gateways):
             raise ValueError('NAT 网关清单缺失或 ID 重复')
         for gateway in gateways:
             entries = gateway.get('entries')
@@ -121,7 +154,7 @@ def validate(folder):
     dms = read(folder/'dms-snapshot.json', EMPTY_DMS)
     if dms.get('available'):
         rows = dms['instances']
-        if len({(r.get('实例ID'), r.get('实例地址')) for r in rows}) != len(rows):
+        if len({(r.get('tenantId',''),r.get('dmsTenantId',''),r.get('实例地址')) for r in rows}) != len(rows):
             raise ValueError('DMS 实例存在重复的记录')
     return {'applications': len(inventory['apps']), 'repositories': len(repos['repos']), 'servers': len(ids),
             'ecs': len(data[FILES[3]].get('instances', [])), 'clb': len(clb['instances']) if clb.get('available') else None,
@@ -137,6 +170,7 @@ class Service:
         (DATA / 'versions').mkdir(exist_ok=True)
         if (DATA/'secrets/cookies.json').exists(): write(DATA/'secrets/cookies.json', credentials())
         self.lock = threading.RLock()
+        self.collection_inputs = {}
         # Serialises the whole build/launch/swap in activate() so a concurrent
         # single-source retry cannot race the primary job for ports 3101/3102.
         self.activate_lock = threading.Lock()
@@ -205,6 +239,7 @@ class Service:
         if not read(DATA/'current.json'): write(DATA/'current.json', {'id':seed,'activatedAt':now()})
         if not read(DATA/'schedule.json'):
             write(DATA/'schedule.json', {'enabled':False,'time':'18:00','lastDate':None})
+        self._reconcile_tenant_alerts()
 
     def catalog_context(self):
         """Pin a completed active snapshot; never consume a collecting directory."""
@@ -774,13 +809,23 @@ class Service:
             versions = [read(p) for p in (DATA/'versions').glob('*/version.json')]
             job = self._job_view(dict(self.job)) if self.job else None
             alerts = read(DATA/'cookie-alerts.json', {})
+            tenants = tenancy.normalize(saved)['tenants']
+            tenant_alerts = read(DATA/'tenant-alerts.json', {})
+            def public_tenant(tenant):
+                alert = tenant_alerts.get(tenant['id'])
+                if (alert or {}).get('credentialVersion') != tenant.get('credentialVersion'):
+                    alert = None
+                if alert is None and tenant['id'] == tenancy.LEGACY_TENANT:
+                    alert = alerts.get('aliyun_accesskey_id' if tenant['auth']['mode'] == 'accesskey' else 'aliyun')
+                return {**tenancy.public_tenant(tenant), 'alert': alert}
             access_key_id = (saved.get('aliyun_accesskey_id') or {}).get('value') or ''
             secret = (saved.get('aliyun_accesskey_secret') or {}).get('value') or ''
-            masked = (access_key_id[:6] + '****' + access_key_id[-4:]) if len(access_key_id) > 12 else access_key_id
+            masked = (access_key_id[:6] + '****' + access_key_id[-4:]) if len(access_key_id) > 12 else ('****' if access_key_id else '')
             access_key_updated = max(filter(None, [
                 (saved.get('aliyun_accesskey_id') or {}).get('updatedAt'),
                 (saved.get('aliyun_accesskey_secret') or {}).get('updatedAt')]), default=None)
-            return {'cookies':{key:{'configured':bool(saved.get(key,{}).get('value')),
+            return {'aliyunTenants': [public_tenant(t) for t in tenants], 'codeupTenantId': tenancy.LEGACY_TENANT,
+                    'cookies':{key:{'configured':bool(saved.get(key,{}).get('value')),
                     'updatedAt':saved.get(key,{}).get('updatedAt'),
                     'alert':alerts.get(key)} for key in ('devops','aliyun','jumpserver','local_gitlab')},
                     'aliyunAccessKey':{'configured':bool(access_key_id and secret),
@@ -800,6 +845,7 @@ class Service:
     def save_settings(self, payload):
         with self.lock:
             saved = credentials()
+            previous_legacy_auth = deepcopy(next(t for t in tenancy.normalize(saved)['tenants'] if t['id'] == tenancy.LEGACY_TENANT)['auth'])
             for key,value in payload.get('cookies',{}).items():
                 if key not in ('devops','aliyun','codeup','jumpserver','local_gitlab') or not isinstance(value,str): raise ValueError('无效 Cookie 字段')
                 if key == 'codeup': key = 'aliyun'  # Existing open Settings tabs remain compatible.
@@ -822,6 +868,8 @@ class Service:
                     if not isinstance(key_id, str): raise ValueError('AccessKey ID 格式无效')
                     key_id = key_id.strip()
                     if key_id:
+                        if key_id != tenancy.value(saved, 'aliyun_accesskey_id') and not access.get('accessKeySecret'):
+                            raise ValueError('更换 AccessKey ID 时请同时填写 Secret')
                         if len(key_id) > 128 or any(ord(c) < 33 or ord(c) > 126 for c in key_id):
                             raise ValueError('AccessKey ID 格式无效')
                         saved['aliyun_accesskey_id'] = {'value':key_id,'updatedAt':now()}
@@ -863,18 +911,32 @@ class Service:
                 if len(cleared) != len(ip_map):
                     write(DATA/'secrets/ip-password-map.json', cleared)
             schedule = payload.get('schedule')
+            tenancy.normalize(saved)
+            original = next(t for t in saved['aliyunTenants']['tenants'] if t['id'] == tenancy.LEGACY_TENANT)
+            if isinstance(access, dict) and original.get('accountId') and (access.get('accessKeyId') or access.get('accessKeySecret')):
+                tenancy.verify(original)
+            if 'aliyunTenants' in payload:
+                tenancy.update(saved, payload['aliyunTenants'])
             if schedule is not None:
                 if not isinstance(schedule.get('enabled'),bool) or not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d',schedule.get('time','')):
                     raise ValueError('无效定时设置')
-                if schedule['enabled'] and (not aliyun_configured(saved) or
-                        any(not saved.get(k,{}).get('value') for k in ('devops','jumpserver','local_gitlab'))):
-                    raise ValueError('启用每日同步前，请配置四个平台所需的 Cookie / AccessKey')
+                if schedule['enabled']:
+                    tenancy.select(saved)
+                    tenancy.select(saved, 'codeup')
+                    if any(not saved.get(k,{}).get('value') for k in ('devops','jumpserver','local_gitlab')):
+                        raise ValueError('启用每日同步前，请配置四个平台所需的 Cookie / AccessKey')
             write(DATA/'secrets/cookies.json',saved)
             alerts=read(DATA/'cookie-alerts.json',{})
             for key,value in payload.get('cookies',{}).items():
                 if isinstance(value,str) and value.strip(): alerts.pop('aliyun' if key=='codeup' else key,None)
             if isinstance(access, dict) and isinstance(access.get('accessKeyId'), str) and access['accessKeyId'].strip():
                 alerts.pop('aliyun_accesskey_id', None)
+            if 'aliyunTenants' in payload:
+                current_auth = next(t for t in tenancy.normalize(saved)['tenants'] if t['id'] == tenancy.LEGACY_TENANT)['auth']
+                if current_auth['cookie'] != previous_legacy_auth['cookie']:
+                    alerts.pop('aliyun', None)
+                if any(current_auth[field] != previous_legacy_auth[field] for field in ('accessKeyId', 'accessKeySecret')):
+                    alerts.pop('aliyun_accesskey_id', None)
             write(DATA/'cookie-alerts.json',alerts)
             if schedule is not None:
                 previous = read(DATA/'schedule.json',{})
@@ -885,13 +947,100 @@ class Service:
         with self.lock:
             alerts=read(DATA/'cookie-alerts.json',{})
             saved=credentials()
+            tenant_alerts=read(DATA/'tenant-alerts.json', {})
             for failure in error.get('failures',[]):
+                tenant = next((t for t in tenancy.normalize(saved)['tenants'] if t['id'] == failure.get('tenantId')), None)
+                if tenant and failure.get('credentialVersion') == tenant.get('credentialVersion'):
+                    previous = tenant_alerts.get(tenant['id'], {})
+                    previous_id = str(previous.get('versionId') or '')
+                    newer = (previous.get('credentialVersion') == failure['credentialVersion'] and
+                             re.fullmatch(r'\d{8}-\d{6}-\d{6}', previous_id) and previous_id > folder.name)
+                    if not newer:
+                        tenant_alerts[tenant['id']] = {
+                            **{k: failure[k] for k in ('message', 'credentialVersion', 'source', 'region') if k in failure},
+                            'versionId': folder.name,
+                        }
                 key=failure.get('credential')
                 if (failure.get('type') in ('cookie_expired','accesskey_invalid') and key in saved and
                         failure.get('credentialUpdatedAt')==saved[key].get('updatedAt')):
                     alerts[key]={'message':failure['message'],'detectedAt':now()}
             write(DATA/'cookie-alerts.json',alerts)
+            write(DATA/'tenant-alerts.json',tenant_alerts)
+        self._reconcile_tenant_alerts()
         return error.get('message') or '采集失败，请检查连接或平台响应'
+
+    def _reconcile_tenant_alerts(self):
+        """Clear only alerts covered by a newer, activated collection of that scope."""
+        with self.lock:
+            alerts = read(DATA/'tenant-alerts.json', {})
+            if not alerts: return
+            current = read(DATA/'current.json', {}).get('id')
+            folder = DATA/'versions'/str(current or '')
+            if read(folder/'version.json', {}).get('status') != 'ready': return
+            tenants = {t['id']: t for t in tenancy.normalize(credentials())['tenants']}
+            snapshots, manifests = {}, {}
+            def manifest(identifier):
+                if identifier not in manifests:
+                    manifests[identifier] = read(DATA/'versions'/identifier/'version.json', {})
+                return manifests[identifier]
+            changed = False
+            for tenant_id, alert in list(alerts.items()):
+                tenant = tenants.get(tenant_id)
+                if not tenant or alert.get('credentialVersion') != tenant.get('credentialVersion'): continue
+                failure = alert
+                if not failure.get('source') or not failure.get('versionId'):
+                    # Older releases saved only the message and credential revision.
+                    # Recover scope from its original error record, never from message text.
+                    for error_file in sorted((DATA/'versions').glob('*/collection-error.json'), reverse=True):
+                        try: errors = read(error_file, {}).get('failures', [])
+                        except (OSError, ValueError): continue
+                        match = next((item for item in errors if item.get('tenantId') == tenant_id and
+                                      item.get('credentialVersion') == alert.get('credentialVersion') and
+                                      item.get('message') == alert.get('message') and item.get('source')), None)
+                        if match:
+                            failure = {**match, 'versionId': error_file.parent.name}
+                            break
+                source = str(failure.get('source', '')).lower()
+                failed_version = str(failure.get('versionId') or '')
+                # Collection IDs include microseconds, so even retries within one
+                # second are ordered. Unknown legacy IDs cannot prove recovery.
+                if source not in tenancy.CLOUD_SOURCES or not re.fullmatch(r'\d{8}-\d{6}-\d{6}', failed_version): continue
+                if 'region' not in failure: continue
+                if source not in snapshots:
+                    snapshots[source] = read(folder/f'{source}-snapshot.json', {})
+                for scope in snapshots[source].get('tenants', []):
+                    if (scope.get('tenantId') != tenant_id or scope.get('region', '') != failure['region'] or
+                            scope.get('credentialVersion') != alert.get('credentialVersion') or scope.get('complete') is not True): continue
+                    success_id = str(scope.get('sourceVersion') or '')
+                    if not re.fullmatch(r'\d{8}-\d{6}-\d{6}', success_id) or success_id <= failed_version: continue
+                    success = manifest(success_id)
+                    if success.get('status') != 'ready': continue
+                    planned = any(t.get('tenantId') == tenant_id and source in t.get('sources', []) and
+                                  t.get('credentialVersion') == alert.get('credentialVersion') and
+                                  failure['region'] in ([''] if source == 'dms' else t.get('regions', []))
+                                  for t in success.get('cloudPlan', []))
+                    if planned:
+                        del alerts[tenant_id]
+                        changed = True
+                        break
+            if changed: write(DATA/'tenant-alerts.json', alerts)
+
+    def remember_tenant_identity(self, folder):
+        """Adopt verified observations only while their credential revision is current."""
+        with self.lock:
+            saved = credentials()
+            tenants = tenancy.normalize(saved)['tenants']
+            changed = False
+            for source in tenancy.CLOUD_SOURCES:
+                for scope in read(folder/f'{source}-snapshot.json', {}).get('tenants', []):
+                    tenant = next((t for t in tenants if t['id'] == scope['tenantId']), None)
+                    if not tenant or scope.get('credentialVersion') != tenant.get('credentialVersion'): continue
+                    account = scope.get('accountId')
+                    if account and not tenant.get('accountId'):
+                        tenant.update(accountId=account, verifiedAt=now()); changed = True
+                    if scope.get('dmsTenantId') and not tenant.get('dmsTenantId'):
+                        tenant['dmsTenantId'] = str(scope['dmsTenantId']); changed = True
+            if changed: write(DATA/'secrets/cookies.json', saved)
 
     def set_job(self, **changes):
         with self.lock:
@@ -919,11 +1068,11 @@ class Service:
             folder = DATA/'versions'/str(primary.get('id') or '')
             try: error = read(folder/'collection-error.json', {})
             except (json.JSONDecodeError, OSError): error = {}
-            failed = {str(item.get('source')) for item in (error or {}).get('failures') or [] if item.get('source')}
+            failed = {(str(item.get('source')), item.get('tenantId')) for item in (error or {}).get('failures') or [] if item.get('source')}
             if not failed: return
-            succeeded = {SOURCE_LABELS.get(job.get('kind')) for job in self.extra_jobs
+            succeeded = {(SOURCE_LABELS.get(job.get('kind')), job.get('tenantId')) for job in self.extra_jobs
                          if job.get('status') == 'succeeded'}
-            if not failed.issubset(succeeded): return
+            if not all(item in succeeded or (item[0], None) in succeeded for item in failed): return
             self.job = None
             write(DATA/'job.json', {})
             self.extra_jobs = [job for job in self.extra_jobs if job.get('status') != 'succeeded']
@@ -989,7 +1138,7 @@ class Service:
                 job['failures'] = error['failures']
         return job
 
-    def _source_available(self, kind):
+    def _source_available(self, kind, tenant_id=None):
         """Whether a single-source sync for `kind` may start right now."""
         if kind not in SOURCE_LABELS: return False
         if not self._any_running(): return True
@@ -1003,6 +1152,9 @@ class Service:
         if not (self.job and self.job.get('status') == 'running' and self.job.get('kind') == 'sync' and self.job.get('id')):
             return False
         progress = read(DATA/'versions'/self.job['id']/'progress.json', {})
+        if tenant_id:
+            matches = [t for t in progress.get('tasks', {}).values() if t.get('tenantId') == tenant_id and t.get('source') == SOURCE_LABELS[kind]]
+            return any(t['status'] == '失败' for t in matches)
         return ((progress or {}).get('sources') or {}).get(SOURCE_LABELS[kind]) == '失败'
 
     def _source_states(self):
@@ -1025,17 +1177,17 @@ class Service:
             states[kind] = {'busy': busy, 'retryable': retryable, 'reason': reason}
         return states
 
-    def start(self, kind, identifier=None, asset_id=None, app_id=None):
+    def start(self, kind, identifier=None, asset_id=None, app_id=None, tenant_id=None):
         with self.lock:
             if self.archive_job and self.archive_job.get('status') == 'running': raise ValueError('请等待日志下载结束后再采集或切换版本')
             if self.check_job and self.check_job.get('status') == 'running': raise ValueError('请等待应用核验任务结束后再采集或切换版本')
             if self.backend is None: raise ValueError('应用正在恢复当前版本，请稍后重试')
-            source_modes = ('local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'jumpserver', 'devops', 'jumpserver_asset', 'devops_app')
+            source_modes = ('local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'aliyun', 'jumpserver', 'devops', 'jumpserver_asset', 'devops_app')
             # While a job is running only a single-source retry whose source already
             # failed in the running full sync may start, and it runs concurrently.
             is_extra = False
             if self._any_running():
-                if kind in SOURCE_LABELS and self._source_available(kind):
+                if kind in SOURCE_LABELS and self._source_available(kind, tenant_id):
                     is_extra = True
                 else:
                     reason = self._source_states().get(kind, {}).get('reason')
@@ -1043,6 +1195,8 @@ class Service:
                                      else '已有同步或切换任务正在进行')
             if kind in ('sync', *source_modes):
                 saved = credentials()
+                if tenant_id and kind not in (*tenancy.CLOUD_SOURCES, 'aliyun'):
+                    raise ValueError('仅云资源独立同步支持指定租户')
                 aliyun_ok = aliyun_configured(saved)
                 aliyun_hint = ('请先保存阿里云 AccessKey ID 和 Secret' if aliyun_mode(saved) == 'accesskey'
                                else '请先保存阿里云 Cookie')
@@ -1050,8 +1204,10 @@ class Service:
                     missing_other = any(not saved.get(k,{}).get('value') for k in ('devops','jumpserver','local_gitlab'))
                     if missing_other or not aliyun_ok:
                         raise ValueError('请先保存四个平台的 Cookie' if missing_other else aliyun_hint)
-                elif kind in ('ecs','clb','nat','dms','codeup'):
-                    if not aliyun_ok: raise ValueError(aliyun_hint)
+                    tenancy.select(saved)
+                    tenancy.select(saved, 'codeup')
+                elif kind in ('ecs','clb','nat','dms','codeup','aliyun'):
+                    tenancy.select(saved, None if kind == 'aliyun' else kind, tenant_id)
                 elif kind == 'jumpserver_asset':
                     if not saved.get('jumpserver',{}).get('value'):
                         raise ValueError('请先保存 JumpServer Cookie')
@@ -1075,13 +1231,24 @@ class Service:
                 else: raise ValueError('无法创建版本目录，请重试')
                 note = '单独重新采集一台服务器的进程与 Nginx' if kind == 'jumpserver_asset' else \
                     f'单独重新采集 DevOps 应用 {app_id} 的部署记录' if kind == 'devops_app' else \
-                    f'单独同步 {kind}' if kind in source_modes else '同步 DevOps、Codeup、JumpServer、上海 ECS、CLB 和 NAT'
+                    f'单独同步 {kind}' if kind in source_modes else '同步全部启用租户的 ECS、CLB、DMS、NAT 及现有平台'
                 write(folder/'version.json',{'id':identifier,'createdAt':now(),'status':'collecting','kind':kind,
-                      'note':note})
+                      'note':note,'tenantId':tenant_id})
+                frozen = deepcopy(saved)
+                frozen['_tenantId'] = tenant_id
+                frozen['_ipPasswordMap'] = read(DATA/'secrets/ip-password-map.json',{})
+                self.collection_inputs[identifier] = frozen
+                if kind in ('sync', 'aliyun') or kind in tenancy.CLOUD_SOURCES:
+                    selected = tenancy.select(frozen, None if kind in ('sync', 'aliyun') else kind, tenant_id)
+                    report = read(folder/'version.json')
+                    report['cloudPlan'] = [{'tenantId':t['id'],'tenantName':t['name'],'accountId':t.get('accountId',''),'regions':t['regions'],
+                                            'sources':list(tenancy.CLOUD_SOURCES) if kind in ('sync', 'aliyun') else [kind],
+                                            'credentialVersion':t.get('credentialVersion')} for t in selected]
+                    write(folder/'version.json', report)
             else: self.version(identifier)
             if is_extra:
                 record = {'id':identifier,'kind':kind,'status':'running','startedAt':now(),
-                          'phase':'任务准备中','assetId':asset_id,'concurrent':True}
+                          'phase':'任务准备中','assetId':asset_id,'concurrent':True,'tenantId':tenant_id}
                 self.extra_jobs.append(record)
                 if len(self.extra_jobs) > 6: self.extra_jobs = self.extra_jobs[-6:]
                 write(DATA/'extra-jobs.json', self.extra_jobs)
@@ -1092,7 +1259,7 @@ class Service:
             if self.extra_jobs:
                 self.extra_jobs = [j for j in self.extra_jobs if j.get('status') == 'running']
                 write(DATA/'extra-jobs.json', self.extra_jobs)
-            self.job={'id':identifier,'kind':kind,'status':'running','startedAt':now(),'phase':'任务准备中','assetId':asset_id,'appId':app_id}
+            self.job={'id':identifier,'kind':kind,'status':'running','startedAt':now(),'phase':'任务准备中','assetId':asset_id,'appId':app_id,'tenantId':tenant_id}
             write(DATA/'job.json',self.job)
             threading.Thread(target=self.work,args=(kind,identifier,asset_id,None,app_id),daemon=True).start()
             return identifier
@@ -1100,18 +1267,23 @@ class Service:
     def work(self,kind,identifier,asset_id=None,job=None,app_id=None):
         folder=DATA/'versions'/identifier
         if job is None: job = self.job
+        frozen = self.collection_inputs.pop(identifier, None)
         try:
-            if kind in ('sync', 'local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'jumpserver', 'devops', 'jumpserver_asset', 'devops_app'):
+            if kind in ('sync', 'local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'aliyun', 'jumpserver', 'devops', 'jumpserver_asset', 'devops_app'):
                 self._set_job(job, phase='正在采集数据')
                 current_folder = self.version(read(DATA/'current.json')['id'])
-                if kind in ('local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'jumpserver', 'devops', 'jumpserver_asset', 'devops_app'):
+                if kind in ('local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'aliyun', 'jumpserver', 'devops', 'jumpserver_asset', 'devops_app'):
                     for name in FILES: shutil.copyfile(current_folder/name, folder/name)
                     for name in OPTIONAL_FILES: write(folder/name, read(current_folder/name, OPTIONAL_DEFAULTS[name]))
                     # A source sync must produce fresh data, not accidentally retain the copied snapshot.
-                    if kind in ('clb', 'nat', 'dms'): (folder/f'{kind}-snapshot.json').unlink(missing_ok=True)
+                    if kind in (*tenancy.CLOUD_SOURCES, 'aliyun'):
+                        (folder/'base').mkdir(exist_ok=True)
+                        for source in (tenancy.CLOUD_SOURCES if kind == 'aliyun' else (kind,)):
+                            shutil.copyfile(folder/f'{source}-snapshot.json', folder/'base'/f'{source}-snapshot.json')
+                            (folder/f'{source}-snapshot.json').unlink()
                     with tempfile.TemporaryDirectory(prefix='envscope-input-') as tmp:
                         creds=Path(tmp)/'credentials.json'
-                        creds_data=credentials(); creds_data['_ipPasswordMap']=read(DATA/'secrets/ip-password-map.json',{})
+                        creds_data=deepcopy(frozen) if frozen is not None else credentials(); creds_data.setdefault('_ipPasswordMap',read(DATA/'secrets/ip-password-map.json',{}))
                         write(creds, creds_data)
                         command=['python3',str(APP/'runtime/collect.py'),str(folder),str(creds),kind]
                         if kind == 'jumpserver_asset': command.append(asset_id)
@@ -1143,7 +1315,7 @@ class Service:
                     with tempfile.TemporaryDirectory(prefix='envscope-input-') as tmp:
                         creds=Path(tmp)/'credentials.json'
                         with self.lock:
-                            creds_data=credentials(); creds_data['_ipPasswordMap']=read(DATA/'secrets/ip-password-map.json',{})
+                            creds_data=deepcopy(frozen) if frozen is not None else credentials(); creds_data.setdefault('_ipPasswordMap',read(DATA/'secrets/ip-password-map.json',{}))
                             write(creds,creds_data)
                         with (folder/'collection.log').open('w') as log:
                             p=subprocess.run(['python3',str(APP/'runtime/collect.py'),str(folder),str(creds)],stdout=log,stderr=log,timeout=7200)
@@ -1163,6 +1335,7 @@ class Service:
                     if not read(folder/'nat-snapshot.json',{}).get('available'): raise ValueError('缺少本次 NAT 采集数据')
                     counts=validate(folder)
                     self._set_job(job, phase='数据采集完成，正在构建并切换到新版本')
+            if kind != 'switch': self.remember_tenant_identity(folder)
             self.activate(identifier)
             # Only flip the version to ready after the new backend is live, so
             # the Settings version row and the CLB panorama page agree on what
@@ -1172,6 +1345,7 @@ class Service:
                 report=read(folder/'version.json');report.update(status='ready',finishedAt=now(),counts=counts)
                 write(folder/'version.json',report)
             self._set_job(job, status='succeeded',phase='已切换到指定数据版本' if kind=='switch' else '同步完成，已启用新版本',finishedAt=now())
+            self._reconcile_tenant_alerts()
             self._reconcile_recovered_failure()
         except Exception as exc:
             message=str(exc) if isinstance(exc,ValueError) else '任务失败或超时，当前版本保持不变；请检查连接后重试'
@@ -1400,8 +1574,8 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path=='/api/settings/sync/local-gitlab':service.start('local_gitlab')
             elif self.path.startswith('/api/settings/sync/'):
                 source = self.path.rsplit('/', 1)[-1]
-                if source not in ('ecs', 'clb', 'nat', 'dms', 'jumpserver', 'devops', 'codeup'): return self.json(404,{'error':'不支持的数据源'})
-                service.start(source)
+                if source not in ('ecs', 'clb', 'nat', 'dms', 'aliyun', 'jumpserver', 'devops', 'codeup'): return self.json(404,{'error':'不支持的数据源'})
+                service.start(source, tenant_id=payload.get('tenantId'))
                 return self.json(200, service.status())
             elif self.path=='/api/settings/jumpserver-inspect':
                 # rootPassword 存在时先更新这台服务器在密码映射表中的记录，再按原流程开始单独采集。

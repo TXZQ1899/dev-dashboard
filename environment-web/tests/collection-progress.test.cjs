@@ -87,3 +87,10 @@ test('a single-source run renders no slot grid', () => {
 test('an absent job renders nothing instead of an empty shell', () => {
   assert.equal(text({ status: 'succeeded', phase: '完成' }), '');
 });
+test('cloud slots show tenant names and DMS alongside aggregate source states', () => {
+  const out=text({status:'running',phase:'collecting',progress:{
+    sources:{DMS:'失败'},tasks:{'a/dms/':{tenantId:'a',source:'DMS',label:'账号 A · DMS',status:'失败'},
+      'b/dms/':{tenantId:'b',source:'DMS',label:'账号 B · DMS',status:'完成'}},
+    slots:{1:{source:'a/dms/',status:'失败'}},slotHistory:{1:[{source:'a/dms/',status:'失败'}]}}});
+  assert.match(out,/账号 A · DMS/);assert.match(out,/账号 B · DMS/);assert.match(out,/阿里云 DMS/);
+});

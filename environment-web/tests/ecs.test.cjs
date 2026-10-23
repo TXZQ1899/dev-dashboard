@@ -18,6 +18,16 @@ const sandbox = {
 };
 vm.runInNewContext(output, sandbox);
 const e = sandbox.exports;
+test('tenant filters and resource group keys retain account scope', () => {
+  const base = e.instances[0];
+  const rows = [{ ...base, tenantId: 'a', tenantName: '账号 A', projectId: 'same' },
+                { ...base, tenantId: 'b', tenantName: '账号 B', projectId: 'same' }];
+  assert.equal(e.filterInstances(rows, { ...e.emptyFilters, tenant: 'b' })[0].tenantId, 'b');
+  assert.equal(e.filterInstances(rows, { ...e.emptyFilters, query: '账号 B' }).length, 1);
+  assert.equal(e.groupInstances(rows, ['project']).length, 2);
+  const filters = { ...e.emptyFilters, tenant: 'b' };
+  assert.equal(e.filtersFromQuery(e.filtersQuery(filters)).tenant, 'b');
+});
 test('snapshot contains the expected instance and configuration totals', () => {
   assert.equal(e.instances.length, 204);
   assert.equal(new Set(e.instances.map((r) => r.id)).size, 204);
