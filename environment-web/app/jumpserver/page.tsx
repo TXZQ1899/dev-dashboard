@@ -420,7 +420,7 @@ function IpManagedQueryPanel() {
                       {row.pushIn}
                     </TableCell>
                     <TableCell>
-                      {row.source === 'process' && row.pid && ['Tomcat', 'Java'].includes(row.appType) && (() => {
+                      {row.source === 'process' && row.pid && (!!row.ports?.length || ['Tomcat', 'Java'].includes(row.appType)) && (() => {
                         const assets = (jumpserver.assets as Asset[]).filter((a) => parseIpList(a.ip).includes(row.ip));
                         return <ApplicationCheckLink asset={assets[0]?.id || ''} pid={row.pid!} disabled={assets.length !== 1 || !!collect?.running} />;
                       })()}

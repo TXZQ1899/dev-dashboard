@@ -238,10 +238,9 @@ def collect_usage(terminal):
         return None
 
 
-# Listening TCP sockets with owning PIDs. `| cat` forces ss to treat stdout
-# as a pipe (non-TTY) so it never wraps columns to the PTY width; sockets
-# without an owning PID (kernel/unowned) are skipped during parsing.
-PORTS_COMMAND = "ss -ltnp 2>/dev/null | cat"
+# Extended output exposes socket UIDs even when another user's PID is hidden.
+# Keep non-TTY formatting and propagate ss failures through the pipe.
+PORTS_COMMAND = "bash -o pipefail -c 'ss -ltnpe 2>/dev/null | cat'"
 
 # Read /proc/net/tcp + /proc/net/tcp6 (world-readable, includes socket UID) and
 # /etc/passwd (username→UID mapping) for PID inference without sudo.
@@ -311,6 +310,9 @@ def collect_port_uids(terminal):
 # match_names: process comm names; match_kinds: process kind labels;
 # cmd_keyword: optional substring required in the command line (case-insensitive).
 WELL_KNOWN_PORTS = {
+    5672: {'match_names': {'beam.smp'}, 'cmd_pattern': r'(?:^|\s)-s\s+rabbit\s+boot(?:\s|$)', 'requires_uid': True, 'label': 'RabbitMQ'},
+    15672: {'match_names': {'beam.smp'}, 'cmd_pattern': r'(?:^|\s)-s\s+rabbit\s+boot(?:\s|$)', 'requires_uid': True, 'label': 'RabbitMQ'},
+    25672: {'match_names': {'beam.smp'}, 'cmd_pattern': r'(?:^|\s)-s\s+rabbit\s+boot(?:\s|$)', 'requires_uid': True, 'label': 'RabbitMQ'},
     3306: {'match_names': {'mysqld', 'mariadbd'}, 'match_kinds': {'MySQL'}, 'label': 'MySQL'},
     5432: {'match_names': {'postgres'}, 'match_kinds': {'PostgreSQL'}, 'label': 'PostgreSQL'},
     6379: {'match_names': {'redis-server', 'redis'}, 'match_kinds': {'Redis'}, 'label': 'Redis'},
@@ -324,14 +326,11 @@ WELL_KNOWN_PORTS = {
 }
 
 
-def match_well_known_port(port, processes):
-    """Try to match a well-known port to a specific process.
-
-    Returns the PID if exactly one process matches, None otherwise.
-    """
+def well_known_port_candidates(port, processes):
+    """Return all service-role candidates, never choose between competing PIDs."""
     info = WELL_KNOWN_PORTS.get(port)
     if not info:
-        return None
+        return []
     match_names = info.get('match_names', set())
     match_kinds = info.get('match_kinds', set())
     keyword = info.get('cmd_keyword')
@@ -340,7 +339,14 @@ def match_well_known_port(port, processes):
         if proc.get('name', '') in match_names or proc.get('kind', '') in match_kinds:
             if keyword and keyword not in proc.get('command', '').lower():
                 continue
+            if info.get('cmd_pattern') and not re.search(info['cmd_pattern'], proc.get('command', ''), re.I):
+                continue
             candidates.append(proc['pid'])
+    return sorted(set(candidates))
+
+
+def match_well_known_port(port, processes):
+    candidates = well_known_port_candidates(port, processes)
     return candidates[0] if len(candidates) == 1 else None
 
 
@@ -368,19 +374,23 @@ def parse_listening_ports(body):
         # ss -t omits the Netid column when every row is TCP; detect by checking
         # whether the first token is a State value rather than a protocol name.
         offset = 0 if tokens[0] == 'LISTEN' else 1
+        if tokens[offset] != 'LISTEN':
+            continue
         local = tokens[3 + offset]
         port_text = local.rsplit(':', 1)[-1]
-        if not port_text.isdigit():
+        if not port_text.isdigit() or not 0 < int(port_text) <= 65535:
             continue
         address = local.rsplit(':', 1)[0]
         if address.startswith('[') and address.endswith(']'):
             address = address[1:-1]
         pids = re.findall(r'pid=(\d+)', line)
+        uid = re.search(r'\buid:(\d+)\b', line)
+        metadata = {'uid': int(uid[1])} if uid else {}
         if pids:
             for pid in pids:
-                listeners.append({'pid': int(pid), 'port': int(port_text), 'address': address})
+                listeners.append({'pid': int(pid), 'port': int(port_text), 'address': address, **metadata})
         else:
-            listeners.append({'pid': None, 'port': int(port_text), 'address': address})
+            listeners.append({'pid': None, 'port': int(port_text), 'address': address, **metadata})
     return listeners
 
 
@@ -391,67 +401,61 @@ PORT_ARG_RE = re.compile(
 
 
 def infer_port_pids(listeners, processes, port_uids=None, user_to_uid=None):
-    """Best-effort match listeners without a PID to processes.
+    """Keep inferred/ambiguous candidates separate from ss-observed PID owners.
 
-    Three-level fallback when the collection account lacks sudo (``ss -ltnp``
-    shows ports but hides owning PIDs for other users' sockets):
-
-    1. Command-line port args (e.g. ``--server.port=7084`` in Spring Boot)
-    2. UID matching: /proc/net/tcp gives socket UID, /etc/passwd maps
-       username→UID. If only one process runs as the socket's UID, match.
-    3. Well-known port + process name matching (3306→mysqld, 9200→ES, etc.)
-
-    Only unambiguous matches are applied; remaining listeners stay pid=None.
+    Socket UID constrains every candidate when available. A service-role hint
+    can narrow a UID shared with auxiliary processes, but is never FD evidence.
     """
-    # Level 1: command-line port args
+    user_to_uid = user_to_uid or {}
     port_to_pids = {}
     for proc in processes:
         cmd = proc.get('command', '')
         for m in PORT_ARG_RE.finditer(cmd):
             port = int(m.group(1))
-            port_to_pids.setdefault(port, []).append(proc['pid'])
+            port_to_pids.setdefault(port, set()).add(proc['pid'])
     for listener in listeners:
         if listener['pid'] is not None:
             continue
-        candidates = port_to_pids.get(listener['port'])
-        if candidates and len(candidates) == 1:
-            listener['pid'] = candidates[0]
-
-    # Level 2: UID matching via /proc/net/tcp + /etc/passwd
-    if port_uids and user_to_uid:
-        uid_to_procs = {}
-        for proc in processes:
-            uid = user_to_uid.get(proc.get('user', ''))
-            if uid is not None:
-                uid_to_procs.setdefault(uid, []).append(proc)
-        for listener in listeners:
-            if listener['pid'] is not None:
-                continue
-            uids = port_uids.get(listener['port'])
-            if not uids or len(uids) != 1:
-                continue
-            socket_uid = next(iter(uids))
-            candidates = uid_to_procs.get(socket_uid, [])
-            if len(candidates) == 1:
-                listener['pid'] = candidates[0]['pid']
-
-    # Level 3: well-known port + process name matching
-    for listener in listeners:
-        if listener['pid'] is not None:
-            continue
-        pid = match_well_known_port(listener['port'], processes)
-        if pid is not None:
-            listener['pid'] = pid
+        socket_uid = listener.get('uid')
+        if socket_uid is None:
+            uids = (port_uids or {}).get(listener['port'], set())
+            if len(uids) == 1:
+                socket_uid = next(iter(uids))
+        pool = processes
+        reasons = []
+        if socket_uid is not None:
+            def process_uid(proc):
+                user = proc.get('user', '')
+                return int(user) if str(user).isdigit() else user_to_uid.get(user)
+            pool = [p for p in processes if process_uid(p) == socket_uid]
+            reasons.append('socket UID '+str(socket_uid)+'，仅考虑同 UID 进程')
+        pool_ids = {p['pid'] for p in pool}
+        declared = port_to_pids.get(listener['port'], set()) & pool_ids
+        rule = WELL_KNOWN_PORTS.get(listener['port'], {})
+        service = set(well_known_port_candidates(listener['port'], pool)) if socket_uid is not None or not rule.get('requires_uid') else set()
+        if declared:
+            reasons.append('启动参数声明相同端口')
+        if service:
+            reasons.append('监听端口与 '+rule['label']+' 主进程角色匹配')
+        # Conflicting declarations and role hints retain every candidate.
+        candidates = declared | service
+        # A shared UID alone cannot identify a service role. Root is especially
+        # unsafe here: filtered/partial ps output may hide its actual owner.
+        if not candidates and socket_uid not in (None, 0) and len(pool_ids) == 1 and not rule.get('requires_uid'):
+            candidates = pool_ids
+        listener.update(candidatePids=sorted(candidates),
+                        ownershipConfidence='INFERRED' if len(candidates) == 1 else 'AMBIGUOUS' if candidates else 'UNKNOWN',
+                        basis='；'.join(reasons) or '监听端口可见，进程归属未确认')
 
 
 def collect_listening_ports(terminal):
-    """Read listening TCP sockets with owning PIDs. Returns [] when ss is absent."""
+    """Read TCP listeners; None means collection failed, [] means none observed."""
     try:
         rc, body = terminal.run(PORTS_COMMAND, timeout=20)
     except Exception:
-        return []
+        return None
     if rc != 0:
-        return []
+        return None
     return parse_listening_ports(body)
 
 
@@ -494,22 +498,25 @@ def app_name(process):
 
 
 def attach_process_ports(processes, listeners):
-    """Attach sorted listening ports to each process row by owning PID.
-
-    Listeners without a PID (sudo unavailable — owning PID hidden by ss) and
-    listeners whose PID is not in the collected process list are ignored; a
-    process with no listening socket simply gets no `ports` field, so old
-    snapshots and port-less processes both read as "no port data".
-    """
+    """Attach observed owners to ports and unique candidates to inferredPorts."""
     by_pid = {}
+    inferred = {}
     for listener in listeners:
         if listener['pid'] is None:
+            candidates = listener.get('candidatePids', [])
+            if listener.get('ownershipConfidence') == 'INFERRED' and len(candidates) == 1:
+                inferred.setdefault(candidates[0], []).append({
+                    'port': listener['port'], 'address': listener['address'], 'protocol': 'tcp',
+                    'confidence': 'INFERRED', 'basis': listener['basis']})
             continue
         by_pid.setdefault(listener['pid'], set()).add(listener['port'])
     for proc in processes:
         ports = sorted(by_pid.get(proc['pid'], ()))
         if ports:
             proc['ports'] = ports
+        candidates = inferred.get(proc['pid'])
+        if candidates:
+            proc['inferredPorts'] = sorted(candidates, key=lambda p: (p['port'], p['address']))
 
 
 def build_app_ports(processes, listeners):
@@ -532,7 +539,10 @@ def build_app_ports(processes, listeners):
         else:
             name = '未知进程'
             kind = '未知'
-        key = (name, listener['port'])
+        candidates = tuple(listener.get('candidatePids', []))
+        confidence = listener.get('ownershipConfidence', 'UNKNOWN')
+        basis = listener.get('basis', '')
+        key = (name, listener['port'], candidates, confidence, basis)
         entry = grouped.get(key)
         if entry is None:
             entry = {'kind': kind, 'addresses': set(), 'pids': set()}
@@ -540,9 +550,13 @@ def build_app_ports(processes, listeners):
         entry['addresses'].add(listener['address'])
         if listener['pid'] is not None:
             entry['pids'].add(listener['pid'])
-    result = [{'app': app, 'kind': entry['kind'], 'port': port,
-               'addresses': sorted(entry['addresses']), 'pids': sorted(entry['pids'])}
-              for (app, port), entry in grouped.items()]
+    result = []
+    for (app, port, candidates, confidence, basis), entry in grouped.items():
+        item = {'app': app, 'kind': entry['kind'], 'port': port,
+                'addresses': sorted(entry['addresses']), 'pids': sorted(entry['pids'])}
+        if candidates or basis:
+            item.update(candidatePids=list(candidates), ownershipConfidence=confidence, basis=basis)
+        result.append(item)
     result.sort(key=lambda r: (r['app'], r['port']))
     return result
 
@@ -1283,7 +1297,7 @@ def resolve_elevation(terminal, ip, folidev_pw, root_alt1, root_alt2, ip_map):
 
 
 def inspect_asset(asset, accounts, cookie, folidev_pw, root_alt1, root_alt2, ip_map, terminal_factory=Terminal):
-    result={'checkedAt':datetime.now(timezone.utc).isoformat(), 'loginStatus':'cannot_login', 'reason':'没有授权 SSH 账号', 'processStatus':'not_collected','processes':[], 'appPorts':[], 'webapps':{'status':'not_collected','apps':[]}, 'nginxStatus':'not_collected', 'nginxRoutes':[], 'nginxConfigurations':[], 'warnings':[], 'attempts':[]}
+    result={'checkedAt':datetime.now(timezone.utc).isoformat(), 'loginStatus':'cannot_login', 'reason':'没有授权 SSH 账号', 'processStatus':'not_collected','processes':[], 'appPorts':[], 'portStatus':'not_collected', 'webapps':{'status':'not_collected','apps':[]}, 'nginxStatus':'not_collected', 'nginxRoutes':[], 'nginxConfigurations':[], 'warnings':[], 'attempts':[]}
     ip = asset.get('ip', '')
     host = asset.get('hostname', '')
     tag = f'JumpServer [{ip}] {host}' if host else f'JumpServer [{ip}]'
@@ -1328,20 +1342,23 @@ def inspect_asset(asset, accounts, cookie, folidev_pw, root_alt1, root_alt2, ip_
             if malformed: result['warnings'].append(f'{malformed} 行进程无法解析')
             usage = collect_usage(terminal)
             if usage: result['serverUsage'] = usage
-            if rows:
-                listeners = collect_listening_ports(terminal)
+            # Host listeners remain useful even when ps returns no visible rows.
+            listeners = collect_listening_ports(terminal)
+            result['portStatus'] = 'failed' if listeners is None else 'complete'
+            if listeners is not None:
                 port_uids, user_to_uid = collect_port_uids(terminal)
                 infer_port_pids(listeners, rows, port_uids, user_to_uid)
                 attach_process_ports(rows, listeners)
                 result['appPorts'] = build_app_ports(rows, listeners)
                 print(f'{tag} 监听端口：{len(listeners)} 个，应用×端口 {len(result["appPorts"])} 条', flush=True)
                 if not elevated and listeners:
-                    result['warnings'].append('sudo 不可用，应用监听端口仅含当前账号可见的进程，完整性未确认')
+                    result['warnings'].append('sudo 不可用，主机应用监听端口已保留；其他用户的 PID 可能不可见，推断归属不代表已核验 socket 所有权')
                     unmatched = sum(1 for l in listeners if l['pid'] is None)
                     if unmatched:
-                        result['warnings'].append(f'无 sudo 权限，{unmatched} 个监听端口无法关联到进程（已按端口号列出）')
+                        result['warnings'].append(f'无 sudo 权限，{unmatched} 条监听记录无法关联到进程的直接所有权（已保留端口及推断候选）')
             else:
-                print(f'{tag} 监听端口：跳过（无进程）', flush=True)
+                result['warnings'].append('TCP 监听端口采集失败，不能据此判断没有监听')
+                print(f'{tag} 监听端口：采集失败', flush=True)
             if is_10_58(asset.get('ip','')):
                 specs = collect_specs(terminal)
                 if specs:

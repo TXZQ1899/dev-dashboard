@@ -17,6 +17,30 @@ import application_check as c
 
 
 class FileTests(unittest.TestCase):
+    def test_config_catalogue_does_not_list_or_read_logs(self):
+        with patch.object(f, 'run_script', return_value='FILES_DONE') as run:
+            result = f.catalogue(None, process(), kind='config')
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.args[5], 'config')
+        self.assertEqual(result['roots']['log'], [])
+        self.assertFalse(any('日志目录' in warning for warning in result['warnings']))
+
+    def test_log_catalogue_keeps_logback_scopes_without_returning_configs(self):
+        encode = lambda value: base64.b64encode(value.encode()).decode()
+        config_root, log_root = '/var/www/webapps/orders/WEB-INF', '/var/log/shared/orders'
+        config = ('ROOT\tconfig\t'+encode(config_root)+'\nFILE\tconfig\t'+encode(config_root+'/logback.xml')+
+                  '\t100\t100\t'+encode(config_root)+'\nFILES_DONE')
+        log = ('ROOT\tlog\t'+encode(log_root)+'\nFILE\tlog\t'+encode(log_root+'/orders.log')+
+               '\t100\t100\t'+encode(log_root)+'\nFILES_DONE')
+        xml = '<configuration><appender><file>'+log_root+'/orders.log</file></appender></configuration>'
+        with patch.object(f, 'run_script', side_effect=[config, 'FILES_DONE', log]) as run, \
+             patch.object(f, 'read_file', return_value={'content':xml}):
+            result = f.catalogue(None, process(), kind='log')
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual([entry['kind'] for entry in result['files']], ['log'])
+        self.assertEqual(result['roots']['config'], [])
+        self.assertEqual(result['logScopes'], [{'root':log_root, 'patterns':['orders.log']}])
+
     def test_log_groups_exclude_unrelated_files_and_flume_directories(self):
         for name in ('app.log', 'catalina.out', 'debug.txt', 'line\nfeed.log'):
             self.assertEqual(log_policy.group_for('/app/logs/'+name), 'current', name)

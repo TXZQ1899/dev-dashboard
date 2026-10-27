@@ -520,6 +520,87 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
         self.assertEqual(ports,{(20156,9091,'*'),(1234,80,'0.0.0.0'),(384,7084,'::'),
                                  (None,9200,'0.0.0.0')})
 
+    def test_extended_listeners_keep_per_endpoint_uid_and_ignore_detail_rows(self):
+        listeners=inv.parse_listening_ports(
+            'LISTEN 0 128 127.0.0.1:5672 *:* uid:997 ino:123\n'
+            'LISTEN 0 128 10.0.0.2:5672 *:* uid:998 ino:456\n'
+            'tcp LISTEN 0 128 :::15672 :::* uid:997 ino:789\n'
+            'udp UNCONN 0 0 *:5672 *:* uid:999\n'
+            'uid:1000 ino:999 some unsupported detail row\n')
+        self.assertEqual([(p['address'],p['port'],p['uid']) for p in listeners],
+                         [('127.0.0.1',5672,997),('10.0.0.2',5672,998),('::',15672,997)])
+
+    def test_rabbitmq_role_narrows_shared_uid_without_promoting_pid_ownership(self):
+        processes=[{'pid':10,'user':'rabbitmq','name':'beam.smp','command':'beam.smp -s rabbit boot'},
+                   {'pid':11,'user':'rabbitmq','name':'epmd','command':'epmd -daemon'},
+                   {'pid':12,'user':'rabbitmq','name':'inet_gethost','command':'inet_gethost'}]
+        listeners=inv.parse_listening_ports('\n'.join(
+            f'LISTEN 0 128 *:{port} *:* uid:997 ino:{port}' for port in (5672,15672,25672,4369)))
+        inv.infer_port_pids(listeners,processes,user_to_uid={'rabbitmq':997})
+        for listener in listeners[:3]:
+            self.assertIsNone(listener['pid'])
+            self.assertEqual(listener['candidatePids'],[10])
+            self.assertEqual(listener['ownershipConfidence'],'INFERRED')
+            self.assertIn('RabbitMQ',listener['basis'])
+        self.assertEqual(listeners[3]['ownershipConfidence'],'UNKNOWN')
+        self.assertEqual(listeners[3]['candidatePids'],[])
+        inv.attach_process_ports(processes,listeners)
+        self.assertNotIn('ports',processes[0])
+        self.assertEqual([p['port'] for p in processes[0]['inferredPorts']],[5672,15672,25672])
+        self.assertNotIn('inferredPorts',processes[1])
+        app_ports=inv.build_app_ports(processes,listeners)
+        for port in (5672,15672,25672):
+            entry=next(p for p in app_ports if p['port']==port)
+            self.assertEqual(entry['pids'],[])
+            self.assertEqual(entry['app'],'未知进程')
+            self.assertEqual(entry['candidatePids'],[10])
+
+    def test_rabbitmq_does_not_guess_missing_uid_wrong_uid_or_multiple_nodes(self):
+        processes=[{'pid':10,'user':'rabbitmq','name':'beam.smp','command':'beam.smp -s rabbit boot'},
+                   {'pid':11,'user':'other','name':'epmd','command':'epmd'}]
+        listeners=[{'pid':None,'port':5672,'address':'*','uid':998},
+                   {'pid':None,'port':5672,'address':'::'}]
+        inv.infer_port_pids(listeners,processes,user_to_uid={'rabbitmq':997,'other':998})
+        self.assertTrue(all(p['ownershipConfidence']=='UNKNOWN' for p in listeners))
+        processes.append({'pid':12,'user':'997','name':'beam.smp','command':'beam.smp -s rabbit boot'})
+        listener={'pid':None,'port':5672,'address':'*','uid':997}
+        inv.infer_port_pids([listener],processes,user_to_uid={'rabbitmq':997})
+        self.assertIsNone(listener['pid'])
+        self.assertEqual(listener['candidatePids'],[10,12])
+        self.assertEqual(listener['ownershipConfidence'],'AMBIGUOUS')
+        inv.attach_process_ports(processes,[listener])
+        self.assertTrue(all('inferredPorts' not in p for p in processes))
+
+    def test_socket_uid_overrides_port_only_uid_fallback_and_command_hint(self):
+        processes=[{'pid':10,'user':'a','name':'java','command':'java --server.port=8080'},
+                   {'pid':20,'user':'b','name':'java','command':'java --server.port=8080'}]
+        listener={'pid':None,'port':8080,'address':'127.0.0.1','uid':1002}
+        inv.infer_port_pids([listener],processes,{8080:{1001}},{'a':1001,'b':1002})
+        self.assertEqual(listener['candidatePids'],[20])
+        self.assertIsNone(listener['pid'])
+
+    def test_conflicting_role_and_declared_port_remain_ambiguous(self):
+        processes=[{'pid':10,'name':'mysqld','kind':'MySQL','command':'mysqld'},
+                   {'pid':20,'name':'java','kind':'Java','command':'java --server.port=3306'}]
+        listener={'pid':None,'port':3306,'address':'*'}
+        inv.infer_port_pids([listener],processes)
+        self.assertEqual(listener['candidatePids'],[10,20])
+        self.assertEqual(listener['ownershipConfidence'],'AMBIGUOUS')
+
+    def test_shared_uid_or_root_uid_alone_does_not_identify_a_service(self):
+        for uid,users in [(0,['root']),(1000,['app','app'])]:
+            with self.subTest(uid=uid):
+                processes=[{'pid':i+10,'user':user,'name':'java','command':'java -jar app.jar'} for i,user in enumerate(users)]
+                listener={'pid':None,'port':7777,'address':'*','uid':uid}
+                inv.infer_port_pids([listener],processes,user_to_uid={users[0]:uid})
+                self.assertEqual(listener['candidatePids'],[])
+                self.assertEqual(listener['ownershipConfidence'],'UNKNOWN')
+
+    def test_port_collection_failure_is_distinct_from_no_listeners(self):
+        class Terminal:
+            def run(self,*args,**kwargs):return 127,''
+        self.assertIsNone(inv.collect_listening_ports(Terminal()))
+
     def test_infer_port_pids_matches_via_command_line(self):
         # When sudo is unavailable, ss hides PIDs for other users' sockets.
         # infer_port_pids fills them in by scanning command-line port args.
@@ -529,8 +610,12 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
                    {'pid':None,'port':3000,'address':'0.0.0.0'},
                    {'pid':None,'port':3306,'address':'0.0.0.0'}]   # no cmd-line match → stays None
         inv.infer_port_pids(listeners,processes)
-        self.assertEqual(listeners[0]['pid'],384)   # matched via --server.port=7084
-        self.assertEqual(listeners[1]['pid'],2721)  # matched via --port=3000
+        self.assertIsNone(listeners[0]['pid'])
+        self.assertEqual(listeners[0]['candidatePids'],[384])
+        self.assertEqual(listeners[0]['ownershipConfidence'],'INFERRED')   # matched via --server.port=7084
+        self.assertIsNone(listeners[1]['pid'])
+        self.assertEqual(listeners[1]['candidatePids'],[2721])
+        self.assertEqual(listeners[1]['ownershipConfidence'],'INFERRED')  # matched via --port=3000
         self.assertIsNone(listeners[2]['pid'])      # no match → still None
 
     def test_infer_port_pids_skips_ambiguous_matches(self):
@@ -606,8 +691,12 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
         port_uids={3306:{0},9200:{1000}}
         user_to_uid={'root':0,'app':1000}
         inv.infer_port_pids(listeners,processes,port_uids,user_to_uid)
-        self.assertEqual(listeners[0]['pid'],1693)   # UID 0 → only mysqld
-        self.assertEqual(listeners[1]['pid'],1544)   # UID 1000 → only java
+        self.assertIsNone(listeners[0]['pid'])
+        self.assertEqual(listeners[0]['candidatePids'],[1693])
+        self.assertEqual(listeners[0]['ownershipConfidence'],'INFERRED')   # UID 0 → only mysqld
+        self.assertIsNone(listeners[1]['pid'])
+        self.assertEqual(listeners[1]['candidatePids'],[1544])
+        self.assertEqual(listeners[1]['ownershipConfidence'],'INFERRED')   # UID 1000 → only java
 
     def test_infer_port_pids_uid_skips_multi_candidates(self):
         # Two processes run as root → can't decide by UID alone
@@ -618,7 +707,9 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
         user_to_uid={'root':0}
         inv.infer_port_pids(listeners,processes,port_uids,user_to_uid)
         # UID matching: 2 root processes → skip; well-known 3306 → 2 candidates (sshd not MySQL kind) → 1 match
-        self.assertEqual(listeners[0]['pid'],200)   # well-known port matches mysqld, not sshd
+        self.assertIsNone(listeners[0]['pid'])
+        self.assertEqual(listeners[0]['candidatePids'],[200])
+        self.assertEqual(listeners[0]['ownershipConfidence'],'INFERRED')   # well-known port matches mysqld, not sshd
 
     def test_infer_port_pids_well_known_port_matching(self):
         # No /proc/net/tcp data → falls to level 3 (well-known port)
@@ -629,8 +720,12 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
                    {'pid':None,'port':5601,'address':'0.0.0.0'},
                    {'pid':None,'port':8080,'address':'0.0.0.0'}]
         inv.infer_port_pids(listeners,processes)   # no port_uids/user_to_uid
-        self.assertEqual(listeners[0]['pid'],1693)   # 3306 → mysqld
-        self.assertEqual(listeners[1]['pid'],1544)   # 9200 → java with elasticsearch in cmd
+        self.assertIsNone(listeners[0]['pid'])
+        self.assertEqual(listeners[0]['candidatePids'],[1693])
+        self.assertEqual(listeners[0]['ownershipConfidence'],'INFERRED')   # 3306 → mysqld
+        self.assertIsNone(listeners[1]['pid'])
+        self.assertEqual(listeners[1]['candidatePids'],[1544])
+        self.assertEqual(listeners[1]['ownershipConfidence'],'INFERRED')   # 9200 → java with elasticsearch in cmd
         self.assertIsNone(listeners[2]['pid'])       # 5601 → no node process → no match
         self.assertIsNone(listeners[3]['pid'])       # 8080 → not well-known → no match
 
@@ -719,12 +814,36 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
         apps={a['port']:a for a in row['appPorts']}
         self.assertIn(3306,apps);self.assertIn(9200,apps);self.assertIn(9300,apps)
         # Port 3306 matched to mysqld via well-known port inference (level 3)
-        self.assertEqual(apps[3306]['pids'],[1693])
+        self.assertEqual(apps[3306]['pids'],[])
+        self.assertEqual(apps[3306]['candidatePids'],[1693])
+        self.assertEqual(apps[3306]['ownershipConfidence'],'INFERRED')
         # Ports 9200/9300 not matched (java cmd lacks 'elasticsearch' keyword)
         self.assertEqual(apps[9200]['app'],'未知进程')
         self.assertEqual(apps[9200]['pids'],[])
         # Warning about unmatched ports should be present
         self.assertTrue(any('无法关联到进程' in w for w in row['warnings']))
+
+    def test_host_ports_are_collected_when_process_query_fails(self):
+        for port_rc in (0,127):
+            with self.subTest(port_rc=port_rc):
+                class Terminal:
+                    def __init__(self,*args):pass
+                    def login(self):pass
+                    def run(self,command,timeout=60):
+                        if command==inv.PS:return 1,''
+                        if command==inv.PORTS_COMMAND:return port_rc,'LISTEN 0 128 *:5672 *:* uid:997'
+                        return 0,''
+                    def close(self):pass
+                row=inv.inspect_asset({'id':'a','ip':'10.0.0.1'},[{'protocol':'ssh','username':'folidev'}],
+                    'cookie','','','',{'10.0.0.1':{'status':'password_error'}},Terminal)
+                self.assertEqual(row['processStatus'],'failed')
+                self.assertEqual(row['portStatus'],'failed' if port_rc else 'complete')
+                if port_rc:
+                    self.assertEqual(row['appPorts'],[])
+                    self.assertTrue(any('不能据此判断没有监听' in w for w in row['warnings']))
+                else:
+                    self.assertEqual(row['appPorts'][0]['port'],5672)
+                    self.assertEqual(row['appPorts'][0]['pids'],[])
 
     def test_resolve_elevation_mapped_sudo_i_uses_saved_method(self):
         class T:

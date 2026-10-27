@@ -282,7 +282,12 @@ def observation_frames(sample):
 
 def probe(terminal, mode, selector, batch=False):
     script = (PROBES/'application_sockets.sh').read_text()
-    if mode == 'container-peer':
+    if mode == 'container-target':
+        args = ['target', str(selector['pid']), '', selector['startTicks'], '',
+                str(BATCH_SAMPLES if batch else 1), str(SAMPLE_PERIOD)]
+    elif mode == 'container-listeners':
+        args = ['listeners', selector['filter'], str(selector['pid']), selector['startTicks']]
+    elif mode == 'container-peer':
         args = ['peer', selector['filter'], str(selector['pid']), selector['startTicks'], selector['listenFilter']]
     else:
         args = [mode, str(selector)]
@@ -334,7 +339,7 @@ def probe(terminal, mode, selector, batch=False):
 
 
 def sampling_probe(terminal, mode, selector):
-    return probe(terminal, mode, selector, batch=mode in ('target', 'peer'))
+    return probe(terminal, mode, selector, batch=mode in ('target', 'peer', 'container-target'))
 
 
 def is_docker_proxy(process):
@@ -405,6 +410,72 @@ def docker_mappings(containers, flow):
                     if mapping not in mappings:
                         mappings.append(mapping)
     return mappings
+
+
+def resolve_docker_target(terminal, proxy, sample_probe, evidence):
+    """Resolve a proxy entry to one live listener, never to a guessed container PID."""
+    def fail(message, ambiguous=False):
+        evidence.update(resolution='AMBIGUOUS' if ambiguous else 'UNKNOWN', reason=message)
+        raise ProbeError('DOCKER_TARGET_AMBIGUOUS' if ambiguous else 'DOCKER_TARGET_UNRESOLVED',
+                         'docker_target', message)
+
+    try:
+        tokens = shlex.split(proxy.get('command', ''))
+        fields = {}
+        for flag in ('-proto', '-host-ip', '-host-port', '-container-ip', '-container-port'):
+            if tokens.count(flag) != 1 or tokens.index(flag)+1 >= len(tokens):
+                raise ValueError('missing or repeated proxy argument')
+            fields[flag] = tokens[tokens.index(flag)+1]
+        host, address = normal_ip(fields['-host-ip']), normal_ip(fields['-container-ip'])
+        host_port, port = int(fields['-host-port']), int(fields['-container-port'])
+        if fields['-proto'] != 'tcp' or not host or not address or not 0 < host_port <= 65535 or not 0 < port <= 65535:
+            raise ValueError('invalid proxy endpoint')
+    except (ValueError, IndexError):
+        fail('无法从 Docker 代理中确认完整 TCP 发布端口与容器 Endpoint')
+
+    containers, warnings = docker_containers(terminal)
+    candidates = []
+    for container in containers:
+        if address not in container['ips']:
+            continue
+        bindings = container['ports'].get(str(port)+'/tcp')
+        if isinstance(bindings, list) and any(isinstance(binding, dict) and
+                normal_ip(binding.get('HostIp')) == host and str(binding.get('HostPort')) == str(host_port)
+                for binding in bindings):
+            candidates.append(container)
+    evidence['mappings'] = [{'containerId': value['id'], 'containerName': value['name'],
+        'initPid': value['initPid'], 'published': {'ip': host, 'port': host_port, 'protocol': 'tcp'},
+        'target': {'ip': address, 'port': port, 'protocol': 'tcp'}} for value in candidates]
+    if warnings:
+        fail('Docker 网络元数据不完整，未能唯一确认代理对应的容器')
+    if len(candidates) != 1:
+        fail('Docker 代理对应多个容器候选，未选择检测目标' if candidates else
+             '未找到与 Docker 代理完整发布端口及容器 Endpoint 一致的运行容器', len(candidates) > 1)
+    container = candidates[0]
+    sample = sample_probe(terminal, 'container-listeners', {'pid': container['initPid'],
+        'startTicks': container['startTicks'], 'filter': '( sport = :'+str(port)+' )'})
+    current, warnings = docker_containers(terminal, container['id'])
+    if warnings or current != [container] or sample.get('networkNamespace') != container['networkNamespace']:
+        fail('容器身份、网络空间或发布端口已变化，请重新检测')
+    pids = {pid for listener in sample['listeners'] if listener['state'] == 'LISTEN' and
+            listener['local']['protocol'] == 'tcp' and listener['local']['port'] == port and
+            listener['local']['ip'] in ('*', '0.0.0.0', '::', address) for pid in listener['pids']}
+    evidence['processes'] = [{'pid': pid, 'processName': si.app_name(sample['processes'][pid])
+        if pid in sample['processes'] else None} for pid in sorted(pids)]
+    if not pids:
+        fail('容器发布端口 '+str(port)+' 未发现可核验的监听进程；不能据此判断整个容器没有连接')
+    if len(pids) != 1:
+        fail('容器发布端口存在多个监听 PID，未选择检测目标', True)
+    process = sample['processes'].get(next(iter(pids)))
+    if not process or process.get('netns') != container['networkNamespace'] or is_docker_proxy(process):
+        fail('容器监听 PID 的实时身份未通过核验，未选择检测目标')
+    if sample['warnings']:
+        fail('容器监听检查不完整，未能唯一确认服务进程')
+    evidence.update(resolution='INFERRED', reason='由 Docker 发布端口与实时监听定位服务进程；本次检测该进程的全部 TCP 连接',
+        pid=process['pid'], processName=si.app_name(process), startedAt=process['startedAt'],
+        startTicks=process['startTicks'], networkNamespace=container['networkNamespace'],
+        observedAt=sample.get('observedAt', now()))
+    return container, process
 
 
 def docker_peer_connections(terminal, flows, sample_probe, should_stop=lambda: False):
@@ -1254,6 +1325,8 @@ def inspect_application(asset, selected, apps, assets, saved, ip_map, environmen
     pool = ThreadPoolExecutor(max_workers=peer_workers, thread_name_prefix='app-check-peer')
     stage = 'target_login'
     target_process = None
+    sampling_selected = selected
+    target_container = None
     listeners = []
     started = None
     last_observation_end = None
@@ -1268,38 +1341,72 @@ def inspect_application(asset, selected, apps, assets, saved, ip_map, environmen
             stage = 'target_probe'
             notify('正在准备并校验只读连接探针', 'prepare')
             terminal.prepare_probe((PROBES/'application_sockets.sh').read_text())
+        if is_docker_proxy(selected) and not cancel.is_set():
+            stage = 'docker_target'
+            notify('正在核验 Docker 代理与容器监听进程', 'docker_target')
+            entry = sample_probe(terminal, 'target', selected['pid'])
+            proxy, proxy_ticks = None, None
+            for frame in observation_frames(entry):
+                proxy = frame['processes'].get(selected['pid'])
+                if (not proxy or not is_docker_proxy(proxy) or
+                        selected.get('startedAt') and proxy['startedAt'] != selected['startedAt']):
+                    raise RuntimeError('所选代理进程已退出或 PID 已复用，请重新采集服务器')
+                if proxy_ticks is None:
+                    proxy_ticks = proxy['startTicks']
+                if proxy['startTicks'] != proxy_ticks:
+                    raise RuntimeError('检查期间代理进程已重启，请重新采集服务器')
+            if proxy is None:
+                raise ProbeError('DOCKER_TARGET_UNRESOLVED', 'docker_target', '未取得代理进程实时身份')
+            report['target'].update(processName=si.app_name(proxy), startedAt=proxy['startedAt'],
+                                    startTicks=proxy['startTicks'])
+            evidence = {'resolution': 'UNKNOWN', 'reason': '尚未确认容器服务进程', 'mappings': [], 'processes': []}
+            report['target']['dockerTarget'] = evidence
+            target_container, sampling_selected = resolve_docker_target(terminal, proxy, sample_probe, evidence)
+            report['coverage']['limitations'].append('连接与字节计数来自容器服务进程，保留容器实际 Endpoint；不将端口映射当作代理原连接或 NAT 前的对端归属证据')
+            notify('已定位容器 '+target_container['name']+'，正在检测服务 PID '+str(sampling_selected['pid']), 'docker_target')
         started = time.monotonic()
         notify('目标探针已就绪，开始观察 TCP 连接', 'sampling', samplingStartedAt=now())
-        initial_ticks = None
+        initial_ticks = sampling_selected.get('startTicks') if target_container else None
         while not cancel.is_set():
             if target_stamps and time.monotonic()-started >= duration:
                 break
             stage = 'target_probe'
             notify('正在等待目标连接采样返回', 'sampling')
-            batch = sample_probe(terminal, 'target', selected['pid'])
+            if target_container:
+                batch = sample_probe(terminal, 'container-target', {
+                    'pid': sampling_selected['pid'], 'startTicks': initial_ticks})
+                current, check_warnings = docker_containers(terminal, target_container['id'])
+                if check_warnings or current != [target_container]:
+                    raise ProbeError('DOCKER_TARGET_CHANGED', 'target_probe',
+                                     '检测期间容器身份或发布端口已变化，已停止并保留先前观察')
+            else:
+                batch = sample_probe(terminal, 'target', sampling_selected['pid'])
             warnings[:] = list(dict.fromkeys(warnings+batch['warnings']))
             for sample in observation_frames(batch):
-                process = sample['processes'].get(selected['pid'])
-                if not process or (selected.get('startedAt') and process['startedAt'] != selected['startedAt']):
+                process = sample['processes'].get(sampling_selected['pid'])
+                if not process or (sampling_selected.get('startedAt') and process['startedAt'] != sampling_selected['startedAt']):
                     raise RuntimeError('所选进程已退出或 PID 已复用，请重新采集服务器')
+                if target_container and (sample.get('networkNamespace') != target_container['networkNamespace'] or
+                                         process.get('netns') != target_container['networkNamespace']):
+                    raise ProbeError('DOCKER_TARGET_CHANGED', 'target_probe', '容器服务进程的网络空间已变化，已停止检测')
                 if initial_ticks is not None and initial_ticks != process['startTicks']:
                     raise RuntimeError('检查期间进程已重启，结果仅保留已观察证据')
                 initial_ticks = process['startTicks']
                 target_process = process
                 listeners = sample['listeners']
-                if environment is None:
+                if environment is None and not target_container:
                     environment = infer_environment(process, ips(asset.get('ip')), listeners, apps)
                     report['environment'] = environment
                 stamp = sample.get('observedAt', now())
                 first, last = observation_bounds(sample, stamp)
                 last_observation_end = last
                 with lock:
-                    present = {flow_key(s) for s in sample['sockets'] if selected['pid'] in s['pids']}
+                    present = {flow_key(s) for s in sample['sockets'] if sampling_selected['pid'] in s['pids']}
                     for key, flow in flows.items():
                         if key not in present:
                             flow.setdefault('_possibleEnd', last)
                     for socket in sample['sockets']:
-                        if selected['pid'] not in socket['pids'] or socket['state'] == 'LISTEN':
+                        if sampling_selected['pid'] not in socket['pids'] or socket['state'] == 'LISTEN':
                             continue
                         if not normal_ip(socket['local']['ip']) or not normal_ip(socket['peer']['ip']) or not socket['peer']['port']:
                             continue
@@ -1349,7 +1456,10 @@ def inspect_application(asset, selected, apps, assets, saved, ip_map, environmen
         report['coverage']['samplingElapsedSeconds'] = round(time.monotonic()-started, 1)
         done.set()
         notify('目标连接采样结束', 'sampling_complete', samplingFinishedAt=now())
-        if target_process:
+        if target_process and target_container:
+            report['configuration'] = {'status': 'not_collected', 'endpoints': [],
+                'warnings': ['容器服务配置未核对；未将容器内目录作为宿主机目录读取']}
+        elif target_process:
             if not cancel.is_set():
                 notify('正在核对应用配置中的数据库、Redis、ES 与 MQ Endpoint', 'configuration')
                 try:
@@ -1378,7 +1488,10 @@ def inspect_application(asset, selected, apps, assets, saved, ip_map, environmen
                     flow.setdefault('_possibleEnd', last_observation_end)
         if 'samplingElapsedSeconds' not in report['coverage']:
             report['coverage']['samplingElapsedSeconds'] = round(time.monotonic()-started, 1) if started is not None else 0
-        if target_process:
+        if target_process and target_container:
+            report['target']['application'] = {'appId': None, 'appName': None, 'confidence': 'UNKNOWN',
+                'basis': '容器服务归属独立于 DevOps 应用，未按宿主机部署端口关联', 'candidates': []}
+        elif target_process:
             host_ips = ips(asset.get('ip')) | {x['local']['ip'] for x in flows.values()}
             report['target'].update(processName=si.app_name(target_process), startedAt=target_process['startedAt'],
                 startTicks=target_process['startTicks'],

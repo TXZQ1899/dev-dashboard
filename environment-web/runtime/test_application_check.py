@@ -110,6 +110,21 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(command, "timeout 30 bash /tmp/envscope-socket-probe.x/probe.sh "
                                   "target 2059 '' '' '' 5 0.2")
 
+    def test_container_target_and_listener_modes_preserve_pid_identity_and_batch_arguments(self):
+        terminal = object.__new__(c.ProbeTerminal)
+        script = (c.PROBES/'application_sockets.sh').read_text()
+        terminal._socket_probe_path = '/tmp/envscope-socket-probe.x/probe.sh'
+        terminal._socket_probe_digest = hashlib.sha256(script.encode()).hexdigest()
+        commands = []
+        def run(command, **_):
+            commands.append(command)
+            return 0, 'CHECK_SS_RC\t0\nCHECK_LISTEN_RC\t0\nCHECK_UID\t0\n'
+        terminal.run = run
+        c.sampling_probe(terminal, 'container-target', {'pid': 500, 'startTicks': '54321'})
+        self.assertTrue(commands[-1].endswith("target 500 '' 54321 '' 5 0.2"))
+        c.sampling_probe(terminal, 'container-listeners', {'pid': 400, 'startTicks': '100', 'filter': '( sport = :6379 )'})
+        self.assertTrue(commands[-1].endswith("listeners '( sport = :6379 )' 400 100"))
+
     def test_persistent_terminal_timeout_has_safe_stage_and_error_code(self):
         class Terminal:
             calls = 0

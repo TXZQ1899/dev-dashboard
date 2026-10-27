@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { Shell } from '@/app/page';
-import { ApplicationCheck } from '@/components/application-check';
+import { ApplicationInspection } from '@/components/application-inspection';
 import { jumpserver } from '@/lib/jumpserver';
 import { processBusinessName } from '@/lib/process-comparison';
 import type { Asset } from '@/lib/server-processes';
@@ -16,6 +16,6 @@ export default async function ApplicationCheckPage({ params }: { params: Promise
   if (!asset || !process || !Number.isSafeInteger(pid) || pid <= 0) notFound();
   return <Shell active="jumpserver"><main className="check-page">
     <Link className="check-back" href="/jumpserver">← 返回 JumpServer</Link>
-    <ApplicationCheck asset={asset.id} ip={asset.ip} pid={pid} name={processBusinessName(process)} />
+    <ApplicationInspection asset={asset.id} ip={asset.ip} pid={pid} name={processBusinessName(process)} />
   </main></Shell>;
 }

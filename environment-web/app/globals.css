@@ -1933,7 +1933,8 @@ h2 {
 .check-back, .check-download { color: #24866a; font-size: 13px; text-decoration: underline; text-underline-offset: 3px; }
 .check-page .application-check-panel { background: var(--background, white); margin-top: 18px; }
 .check-heading h2 { font-size: 23px; font-weight: 650; }
-.check-files { border-top: 1px solid var(--border, #d8e1db); margin-top: 28px; padding-top: 24px; }
+.check-capability-tabs { margin-top: 20px; }
+.check-files { padding-top: 16px; }
 .check-files h3 { font-size: 17px; font-weight: 600; }
 .check-file { border: 1px solid var(--border, #d8e1db); border-radius: 8px; padding: 12px 14px; }
 .check-file summary { overflow-wrap: anywhere; font-family: ui-monospace, monospace; font-size: 13px; }

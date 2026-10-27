@@ -1,6 +1,5 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { ApplicationFiles } from '@/components/application-files';
 import { ApplicationCheckProgress } from '@/components/application-check-progress';
 import { Button } from '@/components/ui/button';
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table';
@@ -89,8 +88,8 @@ function AggregatedFlows({ flows, label }: { flows: CheckFlow[]; label: string }
   </div>;
 }
 
-export function ApplicationCheck({ asset, ip, pid, name }: {
-  asset: string; ip: string; pid: number; name: string;
+export function ApplicationCheck({ asset, pid }: {
+  asset: string; pid: number;
 }) {
   const [duration, setDuration] = useState(30);
   const [state, setState] = useState<ApplicationCheckState>({ job: null, report: null });
@@ -154,8 +153,7 @@ export function ApplicationCheck({ asset, ip, pid, name }: {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   const report = state.report;
-  return <section className="application-check-panel" aria-label="单应用上下游检测">
-    <div className="check-heading"><div><h2>单应用上下游检测</h2><p>{ip} · PID {pid} · {name}</p></div></div>
+  return <section aria-label="TCP 连接检测">
     <div className="check-controls">
       <label>观察时长 <select aria-label="观察时长" value={duration} onChange={(e) => setDuration(Number(e.target.value))} disabled={running || busy}>
         {[10, 30, 60, 300].map((seconds) => <option value={seconds} key={seconds}>{seconds} 秒</option>)}
@@ -168,6 +166,17 @@ export function ApplicationCheck({ asset, ip, pid, name }: {
     {error && <p role="alert" className="check-error">{error}</p>}
     {state.job && <ApplicationCheckProgress job={state.job} lastSyncedAt={lastSyncedAt} syncError={syncError} />}
     {report && <>
+      {report.target.dockerTarget && <div className="check-note">
+        <p>Docker 代理入口：PID {report.target.pid} · {report.target.processName}；服务定位：{confidence[report.target.dockerTarget.resolution]}</p>
+        {report.target.dockerTarget.mappings.map((mapping, i) => <p key={i}>
+          容器：{mapping.containerName} · <code>{checkEndpointText(mapping.published)}</code> → <code>{checkEndpointText(mapping.target)}</code>
+        </p>)}
+        {report.target.dockerTarget.pid !== undefined && <p>实际检测进程：PID {report.target.dockerTarget.pid} · {report.target.dockerTarget.processName}；检测该进程的全部 TCP 连接。</p>}
+        <p>{report.target.dockerTarget.reason}</p>
+        {report.target.dockerTarget.pid === undefined && !!report.target.dockerTarget.processes.length && <p>
+          监听候选：{report.target.dockerTarget.processes.map((process) => `${process.pid} · ${process.processName ?? '身份未确认'}`).join('；')}
+        </p>}
+      </div>}
       {report.target.application && <p>目标应用：<AppIdentity app={report.target.application} /></p>}
       <p>{report.coverage.samplingElapsedSeconds !== undefined ? '目标有效观察跨度' : '实际观察'} {report.coverage.actualSeconds ?? '未知'} 秒；
         {report.coverage.samplingElapsedSeconds !== undefined && <>采样阶段耗时 {report.coverage.samplingElapsedSeconds} 秒；</>}
@@ -206,7 +215,6 @@ export function ApplicationCheck({ asset, ip, pid, name }: {
         {report.configuration.endpoints.map((entry, i) => <p key={i}><code>{entry.host}:{entry.port}</code> · {entry.kind} · {entry.file}:{entry.line} · {entry.key}</p>)}
         {report.configuration.warnings.map((warning, i) => <p key={i}>{warning}</p>)}
       </details>}
-      {!running && state.job && <ApplicationFiles key={state.job.id} id={state.job.id} />}
       <details><summary>检查覆盖范围</summary>
         {report.coverage.peers?.map((peer) => <p key={peer.serverIp}>对端 {peer.serverIp}：有效采样 {peer.samples} 次，平均观察间隔 {peer.averageIntervalSeconds ?? '未知'} 秒，最长 {peer.maxIntervalSeconds ?? '未知'} 秒。</p>)}
         {report.coverage.limitations.map((warning, i) => <p key={i}>{warning}</p>)}

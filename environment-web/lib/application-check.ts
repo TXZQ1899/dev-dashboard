@@ -12,6 +12,12 @@ export type CheckDockerMapping = {
   containerId: string; containerName: string; initPid: number;
   published: CheckEndpoint; target: CheckEndpoint; observedAt?: string; service?: CheckService;
 };
+export type CheckDockerTarget = {
+  resolution: CheckConfidence; reason: string; mappings: CheckDockerMapping[];
+  processes: { pid: number; processName: string | null }[];
+  pid?: number; processName?: string; startedAt?: string; startTicks?: string;
+  networkNamespace?: string; observedAt?: string;
+};
 export type CheckConfigEndpoint = {
   host: string; port: number; kind: string; file: string; key: string; line: number; resolvedIps?: string[];
 };
@@ -64,7 +70,7 @@ export type ApplicationCheckState = {
   report: {
     status: string; taskId: string; startedAt: string; finishedAt: string; sourceVersion: string;
     error?: { stage: string; code: string; exitCode: number | null; message: string; diagnostics: string[] };
-    target: { serverIp: string; pid: number; processName?: string; application?: CheckApplication };
+    target: { serverIp: string; pid: number; processName?: string; application?: CheckApplication; dockerTarget?: CheckDockerTarget };
     upstream: CheckFlow[];
     downstream: CheckFlow[];
     configuration?: { status: string; roots?: string[]; endpoints: CheckConfigEndpoint[]; warnings: string[] };

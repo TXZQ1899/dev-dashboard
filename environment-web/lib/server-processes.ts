@@ -1,10 +1,11 @@
-export type Process = { pid: number; ppid: number; user: string; name: string; kind: string; startedAt: string; elapsedSeconds: number; command: string; cpuPercent?: number; memPercent?: number; rssKB?: number; vszKB?: number; ports?: number[]; system?: boolean };
+export type InferredPort = { port: number; address: string; protocol: 'tcp'; confidence: 'INFERRED'; basis: string };
+export type Process = { pid: number; ppid: number; user: string; name: string; kind: string; startedAt: string; elapsedSeconds: number; command: string; cpuPercent?: number; memPercent?: number; rssKB?: number; vszKB?: number; ports?: number[]; inferredPorts?: InferredPort[]; system?: boolean };
 export type Route = { domains: string[]; listen: string[]; uri: string; directive: string; target: string; upstream: string; file?: string; instance?: string; backends: {host: string; port: string | null; resolution: string}[] };
-export type AppPort = { app: string; kind: string; port: number; addresses: string[]; pids: number[] };
+export type AppPort = { app: string; kind: string; port: number; addresses: string[]; pids: number[]; candidatePids?: number[]; ownershipConfidence?: 'INFERRED' | 'AMBIGUOUS' | 'UNKNOWN'; basis?: string };
 export type Webapp = { name: string; mtime: string | null };
 export type Webapps = { status: string; apps: Webapp[] };
 export type ServerUsage = { cpuPercent: number; memPercent: number; memTotalMB: number; memUsedMB: number };
-export type Inspection = { sudoStatus?: string; configurationCount?: number; configurationVersion?: string; checkedAt: string; loginStatus: string; reason: string; account?: string; processStatus: string; processes: Process[]; appPorts?: AppPort[]; webapps?: Webapps; nginxStatus: string; nginxRoutes: Route[]; warnings: string[]; serverUsage?: ServerUsage; attempts?: {account: string; reason: string}[] };
+export type Inspection = { sudoStatus?: string; configurationCount?: number; configurationVersion?: string; checkedAt: string; loginStatus: string; reason: string; account?: string; processStatus: string; processes: Process[]; appPorts?: AppPort[]; portStatus?: 'complete' | 'failed' | 'not_collected'; webapps?: Webapps; nginxStatus: string; nginxRoutes: Route[]; warnings: string[]; serverUsage?: ServerUsage; attempts?: {account: string; reason: string}[] };
 export type Asset = { id: string; ip: string; hostname: string; inspection?: Inspection };
 // 把 location 修饰符翻译成给非 Nginx 读者看的匹配说明；无法识别时返回空串。
 export function locationHint(uri: string): string {
@@ -156,7 +157,7 @@ export function filterProcesses(rows: ProcessRow[], query: string, duration: Dur
 export function matchesProcessQuery(row: ProcessRow, query: string) {
   const words=query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if(!words.length)return true;
-  const ports=(row.process.ports||[]).join(' ');
+  const ports=[...(row.process.ports||[]),...(row.process.inferredPorts||[]).map(p=>p.port)].join(' ');
   const haystack=`${row.process.pid} ${row.process.name} ${row.name} ${ports} ${row.process.command}`.toLowerCase();
   return words.every(word=>haystack.includes(word));
 }

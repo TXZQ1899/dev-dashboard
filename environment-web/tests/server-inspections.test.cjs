@@ -268,12 +268,16 @@ test('middleware processes are recognized for upstream/downstream detection',()=
  assert.equal(p({command:'nginx: master process /usr/sbin/nginx',name:'nginx',kind:'Nginx'}),false,'Nginx 已另有入口');
  assert.equal(p({command:'[kworker/0:1]',name:'kworker/0:1',system:true}),false,'系统进程');
 });
-test('expanded middleware rows expose the check link while non-middleware rows do not',()=>{
+test('expanded rows expose checks for listening processes and preserve existing Java and middleware entries',()=>{
  const mysql={pid:5,ppid:1,user:'mysql',name:'mysqld',kind:'MySQL',elapsedSeconds:86400,startedAt:'2026-09-17T12:00:00Z',command:'/usr/sbin/mysqld --defaults-file=/etc/my.cnf'};
- const nodeProc={pid:6,ppid:1,user:'app',name:'node',kind:'Node',elapsedSeconds:86400,startedAt:'2026-09-17T12:00:00Z',command:'node /srv/app.js'};
- const html=render([{...asset,inspection:{...inspection,processes:[mysql,nodeProc]}}],{expanded:{a:{type:'全部进程',page:1}}});
- assert.ok(html.includes('检测上下游:a:5'),'中间件（MySQL）行显示检测上下游入口');
- assert.ok(!html.includes('检测上下游:a:6'),'非中间件（Node）行不显示检测上下游入口');
+ const nodeProc={...process,pid:6,name:'node',kind:'Node',command:'node /srv/app.js',ports:[3000]};
+ const pythonProc={...process,pid:7,name:'python3',kind:'Python',command:'python3 /srv/api.py',ports:[8000]};
+ const otherProc={...process,pid:8,name:'custom-server',kind:'未分类',command:'/srv/custom-server',ports:[9000]};
+ const idleProc={...nodeProc,pid:9,ports:[]};
+ const legacyProc={...process,pid:10,name:'custom-server',kind:'未分类',command:'/srv/custom-server --port=9000'};
+ const html=render([{...asset,inspection:{...inspection,processes:[process,mysql,nodeProc,pythonProc,otherProc,idleProc,legacyProc]}}],{expanded:{a:{type:'全部进程',page:1}}});
+ for(const pid of [2,5,6,7,8])assert.ok(html.includes(`检测上下游:a:${pid}`),`PID ${pid} 显示检测入口`);
+ for(const pid of [9,10])assert.ok(!html.includes(`检测上下游:a:${pid}`),`PID ${pid} 无监听证据，不新增检测入口`);
 });
 test('listening ports show in summary count and expanded rows, with an em dash when none',()=>{
  const open={a:{type:'全部进程',page:1}};
@@ -281,6 +285,30 @@ test('listening ports show in summary count and expanded rows, with an em dash w
  assert.match(html,/监听端口/);assert.ok(html.includes('8080, 8081'));
  const none=render([{...asset,inspection:{...inspection,processes:[{...process,command:'java -jar /srv/app-api.jar'}]}}],{expanded:open});
  assert.match(none,/监听端口/);assert.ok(!none.includes('8080'));
+});
+test('unprivileged RabbitMQ ports appear as inferred and remain searchable',()=>{
+ const inferredPorts=[5672,15672,25672].map(port=>({port,address:'*',protocol:'tcp',confidence:'INFERRED',basis:'socket UID 997；RabbitMQ 主进程角色'}));
+ const proc={...process,pid:25409,name:'beam.smp',kind:'未分类',user:'rabbitmq',command:'beam.smp -s rabbit boot',inferredPorts};
+ const appPorts=inferredPorts.map(p=>({app:'未知进程',kind:'未知',port:p.port,addresses:['*'],pids:[],candidatePids:[25409],ownershipConfidence:'INFERRED',basis:p.basis}));
+ const host={...asset,inspection:{...inspection,portStatus:'complete',processes:[proc],appPorts}};
+ const html=render([host],{expanded:{a:{type:'全部进程',page:1}},procQuery:{a:'5672'}});
+ for(const text of ['25409','服务器 TCP 监听端口（3）','5672, 15672, 25672','（推断）','归属推断','候选 PID 25409'])assert.ok(html.includes(text),text);
+ assert.ok(!html.includes('没有匹配“5672”'));
+});
+test('ambiguous owners stay in host inventory without filling a process port cell',()=>{
+ const appPorts=[{app:'未知进程',kind:'未知',port:5672,addresses:['::'],pids:[],candidatePids:[10,20],ownershipConfidence:'AMBIGUOUS'}];
+ const html=render([{...asset,inspection:{...inspection,processes:[{...process,command:'java -jar app.jar'}],appPorts}}],{expanded:{a:{type:'全部进程',page:1}}});
+ assert.match(html,/归属有歧义/);assert.match(html,/候选 PID 10, 20/);
+ assert.match(html,/未确认该进程的监听端口/);
+ assert.ok(!html.includes('（推断）'));
+});
+test('host listening counts deduplicate shared ports and failed queries stay unknown',()=>{
+ const appPorts=[{app:'one',kind:'Java',port:8080,addresses:['127.0.0.1'],pids:[10]},{app:'two',kind:'Java',port:8080,addresses:['10.0.0.2'],pids:[20]}];
+ const html=render([{...asset,inspection:{...inspection,appPorts}}]);
+ assert.ok(html.includes('title="8080">1<'));
+ const failed=render([{...asset,inspection:{...inspection,portStatus:'failed',appPorts:[]}}],{expanded:{a:{type:'全部进程',page:1}}});
+ assert.match(failed,/TCP 监听端口采集失败，不能据此判断没有监听/);
+ assert.ok(!failed.includes('title="">0<'));
 });
 test('system processes are hidden when CPU gap is small',()=>{
  const sysProc={pid:3,ppid:2,user:'root',name:'kworker/0:1',kind:'未分类',elapsedSeconds:86400,startedAt:'2026-09-17T12:00:00Z',command:'[kworker/0:1]',cpuPercent:3,system:true};
@@ -446,4 +474,17 @@ test('nginx worker processes are grouped into one row with a worker count',()=>{
  assert.equal(workers[0].process.ports?.[0],80);
  assert.equal(workers[0].process.ports?.[1],443);
  assert.equal(rows.filter(r=>r.process.command.includes('master process')).length,1);
+});
+test('nginx check links use actual listening PIDs including the grouped worker row',()=>{
+ const master={...process,pid:1,name:'nginx',kind:'Nginx',command:'nginx: master process /usr/sbin/nginx',ports:[80,443]};
+ const idleWorker={...master,pid:10,ppid:1,command:'nginx: worker process',ports:[]};
+ const worker={...idleWorker,pid:11,ports:[80]};
+ const laterWorker={...idleWorker,pid:12,ports:[443]};
+ const open={expanded:{a:{type:'全部进程',page:1}}};
+ const html=render([{...asset,inspection:{...inspection,processes:[master,laterWorker,idleWorker,worker]}}],open);
+ assert.ok(html.includes('检测上下游:a:1'),'Nginx master 有监听时提供入口');
+ assert.ok(html.includes('检测上下游:a:11'),'合并行使用实际监听的最小 worker PID');
+ assert.ok(!html.includes('检测上下游:a:10'),'不把合并端口当作空闲代表 PID 的监听证据');
+ const none=render([{...asset,inspection:{...inspection,processes:[idleWorker]}}],open);
+ assert.ok(!none.includes('检测上下游'),'worker 均无监听时不显示检测入口');
 });

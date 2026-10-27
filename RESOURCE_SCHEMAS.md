@@ -628,6 +628,7 @@ AccessKey 采集按 LB 隔离故障。列表或详情明确为 `inactive` / `loc
 | `processes` | `Process[]` | 是 | 非系统进程 |
 | `excludedSystemProcesses` | `number?` | 条件 | 排除的系统进程行数 |
 | `appPorts` | `AppPort[]` | 是 | 应用监听端口，按 (应用名, 端口) 归并；未采集或无应用端口为空数组 |
+| `portStatus` | `string?` | 条件 | TCP 监听端口查询状态：complete / failed / not_collected；与 PID 是否可见独立。failed 的空列表不能解释为没有监听；旧快照缺失时不补采集结论 |
 | `nginxStatus` | `string` | 是 | complete / partial / failed / not_running 等 |
 | `nginxRoutes` | `Route[]` | 是 | 静态解析出的 Nginx 路由 |
 | `configurationCount` | `number?` | 条件 | 原始配置文件数 |
@@ -647,6 +648,8 @@ AccessKey 采集按 LB 隔离故障。列表或详情明确为 `inactive` / `loc
 | `startedAt` | `string` | 是 | UTC ISO-8601 启动时间 |
 | `elapsedSeconds` | `number` | 是 | 采集时已运行秒数 |
 | `command` | `string` | 是 | 完整命令；敏感参数已脱敏 |
+| `ports` | `number[]?` | 条件 | 当前版本仅保存 `ss` 直接观察到此 PID 持有的 TCP 监听端口，不包含推断候选；旧快照沿用原采集口径 |
+| `inferredPorts` | `{port, address, protocol: "tcp", confidence: "INFERRED", basis}[]?` | 条件 | 实测监听 Endpoint 的唯一进程候选，未直接核验 FD/inode 所有权；与 `ports` 分开保存、显示及搜索，不用作直接 PID 证据 |
 
 ### `AppPort`
 
@@ -657,6 +660,11 @@ AccessKey 采集按 LB 隔离故障。列表或详情明确为 `inactive` / `loc
 | `port` | `number` | 是 | 监听端口 |
 | `addresses` | `string[]` | 是 | 绑定地址（去括号；`*` 表示全部接口） |
 | `pids` | `number[]` | 是 | 占用该端口的进程 PID |
+| `candidatePids` | `number[]?` | 条件 | PID 不可见时的推断候选；不写入 `pids`。不同候选集合或依据的监听记录分别保留，不能只按端口合并归属 |
+| `ownershipConfidence` | `string?` | 条件 | INFERRED（唯一候选）/ AMBIGUOUS（多候选或依据冲突）/ UNKNOWN（无候选）；只说明进程归属，端口监听本身仍是直接观察 |
+| `basis` | `string?` | 条件 | socket UID、启动参数或服务角色等匹配依据；UID 优先使用同一 `ss` 监听行的 `uid:`，不覆盖直接观察到的 PID |
+
+无 root 时仍采集主机 TCP 监听端口，PID 不可见的端口保留为 `未知进程`（`pids=[]`），不因进程列表为空而跳过。共享 UID 本身不足以识别服务角色；仅有 root UID 也不生成进程候选。RabbitMQ 的 `5672/15672/25672` 仅在 socket UID 一致、命令为 `beam.smp ... -s rabbit boot` 的主进程候选唯一时加入 `inferredPorts`；同 UID 的 EPMD / Erlang 辅助进程不因此获得这些端口。多个 RabbitMQ 主进程保留 AMBIGUOUS；缺少 UID 时不按常用端口强配 RabbitMQ。此处不执行协议握手，不查询容器网络空间，容器内部监听不能从宿主机发布端口强行关联。页面同时展示服务器端口清单与进程推断标记。
 
 ### `Route`
 
@@ -1401,16 +1409,20 @@ STALE
 
 下游未确认连接或 Docker 代理连接会继续核验 Docker 发布端口（区分宿主机 IP、TCP/UDP、宿主机和容器端口），最多读取 64 个运行容器的网络元数据、核验 8 个匹配容器。对端通过 `nsenter -t <initPid> -n -- ss` 查询容器网络空间，保留宿主机 PID；不依赖容器安装 `ss`，不读取 Docker Env/完整 inspect、不挂载本服务的 Docker socket。容器 init PID 启动计数和网络空间在探针执行前后核验，并重新读取该容器映射，容器重启/映射变化保留未解析结果。只有容器反向连接的客户端 IP、源端口、协议和映射目标 Endpoint 完整匹配、进程处于该网络空间、socket 身份及目标观察时间重叠充分时，连接归属才为 `EXACT`；多个容器候选为 `AMBIGUOUS`。代理重建连接、SNAT、缺少 Docker/nsenter 或权限不足时不猜测客户端映射。Docker 服务类型可由实际进程确认为 Redis、MQ 等，DevOps 应用独立保留 `UNKNOWN`，不按宿主机部署端口强制关联。字节统计仍使用所选进程原 socket，缺失计数仍为未知。
 
+当检测入口本身为 `docker-proxy*` 时，先实时复核入口 PID，再按其 TCP 发布地址/端口与容器地址/端口匹配 Docker 网络元数据，并在容器网络空间核验对应端口的唯一监听 PID。`target.pid / processName / startedAt / startTicks` 保留入口代理身份；新增可选 `target.dockerTarget = { resolution, reason, mappings[], processes[], pid?, processName?, startedAt?, startTicks?, networkNamespace?, observedAt? }`。`mappings[]` 沿用 `CheckDockerMapping`；`processes[] = { pid, processName: string | null }[]` 保留监听候选。唯一定位为 `INFERRED`，只表示由映射和监听定位检测对象，不声称代理 socket 与容器 socket 为同一连接。成功后采样该服务进程的全部 TCP 连接（包含其他监听端口与主动外连），保留容器实际 Endpoint、FD/inode 所有权和字节计数；不将容器地址替换为宿主机发布地址来强行匹配反向连接。每批校验服务 PID 启动计数/网络空间并重新确认容器身份及发布映射，变化后停止并保留先前证据。多容器或多监听 PID 返回 `AMBIGUOUS`；映射缺失、容器端口未监听或身份不可读返回 `UNKNOWN` 和明确错误，不能以空连接表示成功。容器目标的 DevOps 应用归属保持 `UNKNOWN`，配置核对为 `not_collected`，不把容器内路径当作宿主机路径读取。配置/日志页仍绑定原入口 PID，不随 TCP 服务定位自动切换。
+
 ### 11.1 实时配置与日志文件
 
-- 独立页面：`/jumpserver/check/<asset-id>/<pid>`；所有入口新标签页打开，移除手动环境选择。
+- 独立页面：`/jumpserver/check/<asset-id>/<pid>`；所有入口新标签页打开，提供「TCP 连接检测」（默认）、「配置文件」、「日志文件」三个页签，无手动环境选择。配置/日志操作不依赖 TCP 检测报告；切换页签保留已打开的内容和任务。
+- 独立文件会话：`POST /api/settings/application-files`，`{ action: "open", asset, pid }` 返回 `{ id, sourceVersion, assetId, pid }`。验证当前快照中唯一资产/PID 后，以版本、资产、PID、快照启动时间生成稳定会话 ID，同一进程的配置与日志复用该会话，不创建 TCP 任务或覆盖 `checks/latest.json`。后续调用同一接口传 `{ id, action: "list" | "read", kind: "config" | "log", file? }`；列表和读取响应沿用下述结构。配置列表不枚举日志；日志列表仍读取 Logback 声明以限定共享目录范围，仅返回日志条目。配置/日志列表分别持久化，互不覆盖。配置页下载浏览器内本次读取的已脱敏文本，沿用 256 KiB 上限，截断时明确提示。
+- 独立日志操作：同接口 `{ id, kind: "log", action: "archive" | "cancel-archive", group: "history" }`；`GET /api/settings/application-files/logs?id=<session-id>` 查询状态，`GET /api/settings/application-files/logs/download?id=<session-id>` 下载。下面原 `/application-check/*` API 保持兼容，继续接受已有检测任务 ID。
 - `POST /api/settings/application-check/files`：`{ id, action: "list" }` 返回 `{ files[], roots: {config[], log[]}, warnings[], observedAt, pid, startTicks }`。文件包含不透明 `id`、`kind: config | log`、`path`、`root`、`size`（bytes）、`modifiedAt`（Unix seconds）。日志额外包含 `logGroup: current | history`，分别对应「当前日志」和「历史日志」Tab；当前日志只接收 `.log/.out/.txt` 普通文本文件（空文件保留，前 4 KiB 二进制检测）；历史日志接收这些扩展名后的数字/日期轮转后缀及 `gz/tar.gz/bz2/xz/zip` 压缩后缀。Logback 明确声明的 `gz/bz2/xz/zip/tgz` 滚动文件按文件名范围接收，不能扩展为共享目录内其他应用文件。列表和打包在遍历时跳过 `apache-flume-*` 目录及其内容。额外保留 `logScopes: { root, patterns[] }[]`：进程推导目录为 `*`，Logback 共享目录按配置的文件名和滚动规则限定；配置、当前日志、历史日志分别最多列出最近更新的 1000 个文件，目录不可读/截断显示警告。
 - 同接口 `{ id, action: "read", file: <file-id> }` 返回 `{ id, content, observedAt, lines, truncated, redacted }`。配置读取前 256 KiB并遮盖常见凭证；当前日志读取末尾 100 行（最多 256 KiB）；历史日志不支持文本预览，需打包下载。旧列表中的无关文件、已排除目录内日志及压缩日志也不能继续预览。配置/日志文本仅实时返回，不写入报告或文件列表。
-- 操作使用原任务的版本、资产和进程，实时复核 `startedAt` / `startTicks`；客户端不能指定任意路径。目录符号链接在列目录时解析，内容读取拒绝路径重定向到列表外。
+- 操作使用文件会话或原检测任务绑定的版本、资产和进程，实时复核 `startedAt` / `startTicks`；独立会话首次探针成功后持久化 `startTicks`，后续操作必须一致。客户端不能指定任意路径。目录符号链接在列目录时解析，内容读取拒绝路径重定向到列表外。
 - `{ id, action: "archive", group: "history" }` 打包全部符合规则的历史日志，排除当前日志，`cutoff = 0`（不限制最近 30 天）。省略 `group` 或传 `all` 兼容原 API，按修改时间打包最近 30 天的当前及历史日志；其他范围拒绝。`{ id, action: "cancel-archive" }` 请求取消，在打包结束后的分块传输阶段生效。
 - `GET /api/settings/application-check/logs?id=<task-id>` 返回 `{ status, logGroup?: all | history, phase, startedAt, finishedAt?, transferred, total, size?, fileCount?, cutoff?, sha256?, warnings? }`；`cutoff` 为修改时间下限：历史打包为 `0`，兼容模式为服务器当前时刻减 30×86400 秒。范围从启动阶段即持久化，完成后历史 Tab 仅展示历史范围下载链接。
 - `GET /api/settings/application-check/logs/download?id=<task-id>` 下载 gzip tar 压缩包。包内目录相对 `/` 保存，无绝对路径，不跟随目录内符号链接；共享目录仅打包 `logScopes` 指定的文件，列表与打包共用文件名及目录排除规则（进程目录深度最多 6 层，按文件名限定的共享目录仅当前层），文件列表去重；最多 10000 个文件、512 MiB 原始文件，超限失败，不生成不完整下载。
-- 元数据持久化为 `checks/<task-id>/files.json`、`archive.json`；最终压缩包为 `logs.tar.gz`，均在数据卷中，权限 `0600`。临时分块文件 `logs.part` 在失败/重启时清理。远端私有临时目录在传输结束后清理。下载任务与检测、采集、版本切换互斥。
+- 元数据持久化为 `checks/<id>/context.json`（独立会话的版本/资产/PID）、`identity.json`（独立会话实时启动计数）、`files-config.json` / `files-log.json`（分类型列表；旧接口未传 kind 时仍为 `files.json`）、`archive.json`；最终压缩包为 `logs.tar.gz`，均在数据卷中，权限 `0600`。文件原文不写入这些元数据。临时分块文件 `logs.part` 在失败/重启时清理。远端私有临时目录在传输结束后清理。实时文件读取与下载任务均与检测、采集、版本切换互斥。
 
 ## 部署管理目录（MySQL，独立于采集快照）
 

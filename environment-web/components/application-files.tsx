@@ -8,11 +8,31 @@ type Entry = { id: string; kind: 'config' | 'log'; logGroup?: 'current' | 'histo
 type Catalogue = { files: Entry[]; roots: { config: string[]; log: string[] }; warnings: string[]; observedAt: string };
 type Content = { content: string; truncated: boolean; redacted: boolean; observedAt: string };
 type Archive = { status: string; logGroup?: 'all' | 'history'; phase?: string; transferred?: number; total?: number; fileCount?: number; size?: number; warnings?: string[] };
-const api = '/api/settings/application-check';
+const api = '/api/settings/application-files';
 function size(bytes: number) { return bytes < 1024 ? `${bytes} B` : bytes < 1048576 ? `${(bytes / 1024).toFixed(1)} KiB` : `${(bytes / 1048576).toFixed(1)} MiB`; }
 function isCurrentLog(file: Entry) { return file.kind === 'log' && file.logGroup !== 'history' && /\.(log|out|txt)$/.test(file.path); }
 
-export function ApplicationFiles({ id }: { id: string }) {
+export function ApplicationFiles({ asset, pid, kind }: { asset: string; pid: number; kind: 'config' | 'log' }) {
+  const [session, setSession] = useState<{ asset?: string; pid?: number; id?: string; error?: string }>({});
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let live = true;
+    void fetch(api, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'open', asset, pid }),
+    }).then(async (response) => {
+      const result = await response.json() as { id?: string; error?: string };
+      if (!response.ok || !result.id) throw new Error(result.error || '应用文件会话创建失败');
+      if (live) setSession({ asset, pid, id: result.id });
+    }).catch((error: Error) => { if (live) setSession({ asset, pid, error: error.message }); });
+    return () => { live = false; };
+  }, [asset, pid, attempt]);
+  const currentSession = session.asset === asset && session.pid === pid ? session : {};
+  if (currentSession.error) return <div className="check-files"><p role="alert" className="check-error">{currentSession.error}</p><Button variant="outline" onClick={() => { setSession({}); setAttempt((previous) => previous + 1); }}>重试读取文件</Button></div>;
+  if (!currentSession.id) return <output aria-live="polite">正在准备应用文件…</output>;
+  return <ApplicationFileBrowser key={currentSession.id+'-'+kind} id={currentSession.id} kind={kind} />;
+}
+
+export function ApplicationFileBrowser({ id, kind }: { id: string; kind: 'config' | 'log' }) {
   const [catalogue, setCatalogue] = useState<Catalogue | null>(null);
   const [contents, setContents] = useState<Record<string, Content>>({});
   const [selected, setSelected] = useState('');
@@ -22,11 +42,11 @@ export function ApplicationFiles({ id }: { id: string }) {
   const running = archive.status === 'running';
 
   const request = useCallback(async <T,>(body: Record<string, unknown>) => {
-    const response = await fetch(api + '/files', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, ...body }) });
+    const response = await fetch(api, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, kind, ...body }) });
     const result = await response.json() as T & { error?: string };
     if (!response.ok) throw new Error(result.error || '应用文件读取失败');
     return result;
-  }, [id]);
+  }, [id, kind]);
 
   const readFile = useCallback(async (file: string) => {
     setBusy(file); setError('');
@@ -40,20 +60,31 @@ export function ApplicationFiles({ id }: { id: string }) {
     try {
       const result = await request<Catalogue>({ action: 'list' });
       setCatalogue(result); setContents({});
-      const logs = result.files.filter(isCurrentLog);
+      const logs = kind === 'log' ? result.files.filter(isCurrentLog) : [];
       const first = logs.find((f) => f.size > 0) || logs[0];
       setSelected(first?.id || '');
       if (first) await readFile(first.id);
     } catch (e) { setError(e instanceof Error ? e.message : '读取失败'); }
     finally { setBusy(''); }
-  }, [request, readFile]);
+  }, [request, readFile, kind]);
 
   useEffect(() => {
-    void fetch(api + '/logs?id=' + encodeURIComponent(id), { cache: 'no-store' }).then(async (r) => await r.json() as Archive).then((result) => {
+    if (kind === 'config') {
+      const timer = setTimeout(() => void load(), 0);
+      return () => clearTimeout(timer);
+    }
+    let live = true;
+    void fetch(api + '/logs?id=' + encodeURIComponent(id), { cache: 'no-store' }).then(async (r) => {
+      const result = await r.json() as Archive & { error?: string };
+      if (!r.ok) throw new Error(result.error || '读取日志下载进度失败');
+      return result;
+    }).then((result) => {
+      if (!live) return;
       setArchive(result);
       if (result.status !== 'running') void load();
-    }).catch(() => { setArchive({ status: 'idle' }); void load(); });
-  }, [id, load]);
+    }).catch((error: Error) => { if (live) { setArchive({ status: 'idle' }); setError(error.message); } });
+    return () => { live = false; };
+  }, [id, load, kind]);
 
   useEffect(() => {
     if (!running) return;
@@ -74,25 +105,32 @@ export function ApplicationFiles({ id }: { id: string }) {
     catch (e) { setError(e instanceof Error ? e.message : '日志打包失败'); }
     finally { setBusy(''); }
   }
+  function downloadConfig(file: Entry, content: Content) {
+    const url = URL.createObjectURL(new Blob([content.content], { type: 'text/plain;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url; link.download = (file.path.split('/').pop() || 'config') + '.redacted.txt'; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
   const configs = catalogue?.files.filter((f) => f.kind === 'config') || [];
   const logs = catalogue?.files.filter(isCurrentLog) || [];
   const history = catalogue?.files.filter((f) => f.kind === 'log' && f.logGroup === 'history') || [];
   const current = contents[selected];
   const selectedFile = logs.find((file) => file.id === selected);
-  return <section className="check-files" aria-label="应用配置与日志">
-    <div className="check-heading"><h3>当前应用的配置文件{catalogue ? ` · ${configs.length} 个` : ''}</h3><Button variant="outline" disabled={!!busy || running} onClick={() => void load()}>刷新文件与日志</Button></div>
-    <p className="check-note">点击文件展开配置详情；常见密码、令牌和私钥字段已遮盖。文件内容来自本次读取，可能与检测时不同。</p>
+  return <section className="check-files" aria-label={kind === 'config' ? '应用配置文件' : '应用日志文件'}>
+    <div className="check-heading"><h3>{kind === 'config' ? `当前应用的配置文件${catalogue ? ` · ${configs.length} 个` : ''}` : '应用日志'}</h3><Button variant="outline" disabled={!!busy || running} onClick={() => void load()}>{kind === 'config' ? '刷新配置文件' : '刷新日志文件'}</Button></div>
     {error && <p className="check-error" role="alert">{error}</p>}
     {busy === 'list' && <output>正在通过 JumpServer 读取文件列表…</output>}
+    {kind === 'config' && <>
+    <p className="check-note">点击文件展开配置详情；常见密码、令牌和私钥字段已遮盖，可下载本次读取的已脱敏内容。</p>
     {catalogue && !configs.length && <p>已检查目录中没有找到配置文件。</p>}
     <div className="check-config-list">{configs.map((file) => <details className="check-file" key={file.id} onToggle={(event) => {
       if (event.currentTarget.open && !contents[file.id] && !busy && !running) void readFile(file.id);
     }}><summary>{file.path}<small>{size(file.size)} · {formatBeijingTime(file.modifiedAt * 1000, '—')}</small></summary>
-      {contents[file.id] ? <><pre>{contents[file.id].content}</pre>{contents[file.id].truncated && <p>文件较大，仅展示前 256 KiB。</p>}</> : <Button variant="outline" disabled={!!busy || running} onClick={() => void readFile(file.id)}>{busy === file.id ? '正在读取…' : '读取配置内容'}</Button>}
+      {contents[file.id] ? <><Button variant="outline" onClick={() => downloadConfig(file, contents[file.id])}>下载已脱敏内容</Button><pre>{contents[file.id].content}</pre>{contents[file.id].truncated && <p>文件较大，仅展示和下载前 256 KiB 的已脱敏内容。</p>}</> : <Button variant="outline" disabled={!!busy || running} onClick={() => void readFile(file.id)}>{busy === file.id ? '正在读取…' : '读取配置内容'}</Button>}
     </details>)}</div>
+    </>}
     {catalogue?.warnings.map((warning, i) => <p className="check-note" key={i}>{warning}</p>)}
-    <div className="check-heading check-log-heading"><h3>应用日志</h3></div>
-    <Tabs defaultValue="current" className="check-log-tabs">
+    {kind === 'log' && <Tabs defaultValue="current" className="check-log-tabs">
       <TabsList aria-label="应用日志分类" variant="line">
         <TabsTrigger value="current">当前日志{catalogue ? `（${logs.length}）` : ''}</TabsTrigger>
         <TabsTrigger value="history">历史日志{catalogue ? `（${history.length}）` : ''}</TabsTrigger>
@@ -120,6 +158,6 @@ export function ApplicationFiles({ id }: { id: string }) {
         </tbody></table></div>}
         {catalogue && !history.length && <p>未找到历史日志文件。</p>}
       </TabsContent>
-    </Tabs>
+    </Tabs>}
   </section>;
 }

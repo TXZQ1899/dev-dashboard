@@ -357,6 +357,8 @@ class Service:
 
     def start_application_check(self, payload):
         with self.lock:
+            if self.files_lock.locked():
+                raise ValueError('请等待应用文件读取或下载完成后再开始检测')
             if self.archive_job and self.archive_job.get('status') == 'running':
                 raise ValueError('请等待日志下载完成后再开始检测')
             if self.check_job and self.check_job.get('status') == 'running':
@@ -370,14 +372,7 @@ class Service:
             if type(pid) is not int or not 0 < pid <= 2**31-1: raise ValueError('无效进程 ID')
             if type(duration) is not int or not 10 <= duration <= 300: raise ValueError('观察时间必须为 10–300 秒')
             if environment is not None and environment not in REQUEST_ENVIRONMENTS: raise ValueError('无效部署环境')
-            source = read(DATA/'current.json')['id']
-            folder = self.version(source)
-            snapshot = read(folder/'jumpserver-snapshot.json', {})
-            matches = [a for a in snapshot.get('assets', []) if a.get('id') == payload.get('asset')]
-            if len(matches) != 1: raise ValueError('当前版本中不存在唯一的目标资产')
-            asset = matches[0]
-            processes = [p for p in (asset.get('inspection') or {}).get('processes', []) if p.get('pid') == pid]
-            if len(processes) != 1: raise ValueError('所选进程不在当前快照中，请重新采集')
+            source, folder, snapshot, asset, selected = self.application_process_target(payload)
             identifier = datetime.now(TZ).strftime('%Y%m%d-%H%M%S-%f')
             self.check_cancel = threading.Event()
             self.check_job = {'id':identifier, 'status':'running', 'phase':'正在通过 JumpServer 登录目标服务器',
@@ -386,7 +381,7 @@ class Service:
             self.update_application_check_progress(identifier, self.check_job['phase'],
                 stage='login', serverIp=asset.get('ip'))
             threading.Thread(target=self.work_application_check,
-                args=(identifier, asset, processes[0], snapshot, read(folder/'snapshot.json', {}), saved,
+                args=(identifier, asset, selected, snapshot, read(folder/'snapshot.json', {}), saved,
                       read(DATA/'secrets/ip-password-map.json', {}), environment, duration, self.check_cancel),
                 daemon=True, name='application-check').start()
             return self.application_check_state(identifier)
@@ -467,13 +462,44 @@ class Service:
                 self.update_application_check_progress(identifier, '正在结束检查并保存已观察证据', stage='cancelling')
             return self.application_check_state(identifier)
 
+    def application_process_target(self, payload):
+        pid = payload.get('pid')
+        if type(pid) is not int or not 0 < pid <= 2**31-1: raise ValueError('无效进程 ID')
+        source = read(DATA/'current.json')['id']
+        folder = self.version(source)
+        snapshot = read(folder/'jumpserver-snapshot.json', {})
+        assets = [a for a in snapshot.get('assets', []) if a.get('id') == payload.get('asset')]
+        if len(assets) != 1: raise ValueError('当前版本中不存在唯一的目标资产')
+        processes = [p for p in (assets[0].get('inspection') or {}).get('processes', []) if p.get('pid') == pid]
+        if len(processes) != 1: raise ValueError('所选进程不在当前快照中，请重新采集')
+        return source, folder, snapshot, assets[0], processes[0]
+
+    def open_application_file_session(self, payload):
+        """Bind reusable file operations to a snapshot process without a TCP check."""
+        with self.lock:
+            if not credentials().get('jumpserver', {}).get('value'):
+                raise ValueError('请先保存 JumpServer Cookie')
+            source, _, _, asset, selected = self.application_process_target(payload)
+            key = json.dumps([source, asset['id'], selected['pid'], selected.get('startedAt')])
+            identifier = 'files-'+hashlib.sha256(key.encode()).hexdigest()[:32]
+            path = DATA/'checks'/identifier/'context.json'
+            if not read(path):
+                write(path, {'id':identifier, 'sourceVersion':source, 'assetId':asset['id'],
+                             'pid':selected['pid'], 'createdAt':now()})
+            return {'id':identifier, 'sourceVersion':source, 'assetId':asset['id'], 'pid':selected['pid']}
+
     def application_file_context(self, identifier):
         if not isinstance(identifier, str) or not re.fullmatch(r'[A-Za-z0-9-]{1,80}', identifier):
-            raise ValueError('无效核验任务 ID')
-        state = self.application_check_state(identifier)
-        job, report = state['job'], state['report']
-        if job['status'] == 'running' or not report:
-            raise ValueError('请等待上下游检测完成后再读取应用文件')
+            raise ValueError('无效应用文件会话 ID')
+        job = read(DATA/'checks'/identifier/'context.json')
+        if job:
+            report = {'target':read(DATA/'checks'/identifier/'identity.json', {})}
+        else:
+            # Previously created TCP reports remain valid file contexts.
+            state = self.application_check_state(identifier)
+            job, report = state['job'], state['report']
+            if job['status'] == 'running' or not report:
+                raise ValueError('请等待上下游检测完成后再读取应用文件')
         folder = self.version(job['sourceVersion'])
         snapshot = read(folder/'jumpserver-snapshot.json', {})
         assets = [a for a in snapshot.get('assets', []) if a.get('id') == job['assetId']]
@@ -483,16 +509,24 @@ class Service:
         return assets[0], processes[0], report
 
     def open_application_files(self, identifier):
-        from application_check import open_terminal, probe
+        from application_check import open_terminal, probe, ips, infer_environment, match_application
         asset, selected, report = self.application_file_context(identifier)
         terminal, _ = open_terminal(asset, credentials(), read(DATA/'secrets/ip-password-map.json', {}))
         try:
-            process = probe(terminal, 'target', selected['pid'])['processes'].get(selected['pid'])
+            sample = probe(terminal, 'target', selected['pid'])
+            process = sample['processes'].get(selected['pid'])
             target = report.get('target', {})
             if not process or (selected.get('startedAt') and process.get('startedAt') != selected['startedAt']) or (
                 target.get('startTicks') and target['startTicks'] != process['startTicks']):
-                raise ValueError('应用进程已变化，请重新检测')
-            return terminal, process, target.get('application')
+                raise ValueError('应用进程已变化，请重新采集并打开页面')
+            context = read(DATA/'checks'/identifier/'context.json')
+            application = target.get('application')
+            if context:
+                apps = read(self.version(context['sourceVersion'])/'snapshot.json', {}).get('apps', [])
+                environment = infer_environment(process, ips(asset.get('ip')), sample['listeners'], apps)
+                application = match_application(process, ips(asset.get('ip')), sample['listeners'], apps, environment)
+                write(DATA/'checks'/identifier/'identity.json', {'startTicks':process['startTicks']})
+            return terminal, process, application
         except Exception:
             terminal.close()
             raise
@@ -500,6 +534,9 @@ class Service:
     def application_files(self, payload):
         from application_files import catalogue, read_file
         identifier, action = payload.get('id'), payload.get('action', 'list')
+        if action == 'open': return self.open_application_file_session(payload)
+        kind = payload.get('kind')
+        if kind not in (None, 'config', 'log'): raise ValueError('无效应用文件类型')
         self.application_file_context(identifier)
         if action == 'archive': return self.start_log_archive(identifier, payload.get('group', 'all'))
         if action == 'cancel-archive':
@@ -508,13 +545,17 @@ class Service:
                     self.archive_cancel.set()
             return self.log_archive_state(identifier)
         if action not in ('list', 'read'): raise ValueError('无效文件操作')
-        if not self.files_lock.acquire(blocking=False): raise ValueError('正在读取或下载应用文件，请稍后重试')
+        with self.lock:
+            if self.check_job and self.check_job.get('status') == 'running': raise ValueError('请等待当前 TCP 连接检测完成后再读取文件')
+            if self.job and self.job.get('status') == 'running' or any(j.get('status') == 'running' for j in self.extra_jobs):
+                raise ValueError('请等待当前采集或版本切换完成')
+            if not self.files_lock.acquire(blocking=False): raise ValueError('正在读取或下载应用文件，请稍后重试')
         terminal = None
         try:
             terminal, process, application = self.open_application_files(identifier)
-            path = DATA/'checks'/identifier/'files.json'
+            path = DATA/'checks'/identifier/('files-'+kind+'.json' if kind else 'files.json')
             if action == 'list':
-                result = catalogue(terminal, process, application)
+                result = catalogue(terminal, process, application, kind=kind)
                 write(path, result)
                 return result
             catalog = read(path)
@@ -530,7 +571,7 @@ class Service:
             self.files_lock.release()
 
     def log_archive_state(self, identifier):
-        self.application_check_state(identifier)
+        self.application_file_context(identifier)
         return read(DATA/'checks'/identifier/'archive.json', {'status':'idle'})
 
     def start_log_archive(self, identifier, group='all'):
@@ -539,7 +580,8 @@ class Service:
             if self.archive_job and self.archive_job.get('status') == 'running': raise ValueError('已有日志下载任务正在运行')
             if self.check_job and self.check_job.get('status') == 'running': raise ValueError('请等待当前应用检测完成')
             if self.job and self.job.get('status') == 'running' or any(j.get('status') == 'running' for j in self.extra_jobs): raise ValueError('请等待当前采集或版本切换完成')
-            if not read(DATA/'checks'/identifier/'files.json'): raise ValueError('请先读取应用文件列表')
+            if not (read(DATA/'checks'/identifier/'files-log.json') or read(DATA/'checks'/identifier/'files.json')):
+                raise ValueError('请先读取日志文件列表')
             if not self.files_lock.acquire(blocking=False): raise ValueError('正在读取应用文件，请稍后重试')
             self.archive_cancel = threading.Event()
             self.archive_job = {'id':identifier, 'logGroup':group, 'status':'running', 'phase':'正在登录并确认日志目录', 'startedAt':now(), 'transferred':0, 'total':None}
@@ -557,7 +599,7 @@ class Service:
                 write(folder/'archive.json', self.archive_job)
         try:
             terminal, process, application = self.open_application_files(identifier)
-            catalog = catalogue(terminal, process, application)
+            catalog = catalogue(terminal, process, application, kind='log')
             result = archive_logs(terminal, process, catalog.get('logScopes') or catalog['roots']['log'], folder/'logs.part', progress, self.archive_cancel.is_set,
                                   group=self.archive_job.get('logGroup', 'all'))
             os.replace(folder/'logs.part', folder/'logs.tar.gz')
@@ -1197,6 +1239,7 @@ class Service:
 
     def start(self, kind, identifier=None, asset_id=None, app_id=None, tenant_id=None):
         with self.lock:
+            if self.files_lock.locked(): raise ValueError('请等待应用文件读取或下载完成后再采集或切换版本')
             if self.archive_job and self.archive_job.get('status') == 'running': raise ValueError('请等待日志下载结束后再采集或切换版本')
             if self.check_job and self.check_job.get('status') == 'running': raise ValueError('请等待应用核验任务结束后再采集或切换版本')
             if self.backend is None: raise ValueError('应用正在恢复当前版本，请稍后重试')
@@ -1522,7 +1565,8 @@ class Handler(BaseHTTPRequestHandler):
             except (CatalogInputError, ValueError) as exc: return self.json(400, {'error': str(exc)})
             except CatalogError as exc: return self.json(503, {'error': str(exc)})
             except Exception: return self.json(503, {'error': '部署单元暂不可用，请稍后重试'})
-        if urlsplit(self.path).path in ('/api/settings/application-check/logs', '/api/settings/application-check/logs/download'):
+        if urlsplit(self.path).path in ('/api/settings/application-check/logs', '/api/settings/application-check/logs/download',
+                                       '/api/settings/application-files/logs', '/api/settings/application-files/logs/download'):
             identifier = parse_qs(urlsplit(self.path).query).get('id', [''])[0]
             try:
                 if urlsplit(self.path).path.endswith('/download'):
@@ -1585,7 +1629,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(202,service.start_application_check(payload))
             elif self.path=='/api/settings/application-check/cancel':
                 return self.json(200,service.cancel_application_check(payload.get('id')))
-            elif self.path=='/api/settings/application-check/files':
+            elif self.path in ('/api/settings/application-check/files', '/api/settings/application-files'):
                 return self.json(200,service.application_files(payload))
             elif self.path=='/api/settings/topology':service.generate_topology()
             elif self.path=='/api/settings/sync':service.start('sync')

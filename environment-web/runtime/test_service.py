@@ -236,6 +236,98 @@ class SettingsTests(unittest.TestCase):
         self.assertFalse(self.service.files_lock.locked())
         with self.assertRaises(ValueError):self.service.log_archive_file(identifier)
 
+    def test_application_files_open_without_tcp_report_and_preserve_latest_check(self):
+        payload = self.application_check_fixture()
+        for invalid in ({'pid':True}, {'pid':0}, {'pid':999}, {'asset':'unknown'}):
+            with self.assertRaises(ValueError):
+                self.service.application_files({**payload, **invalid, 'action':'open'})
+        context = self.service.application_files({**payload, 'action':'open'})
+        identifier = context['id']
+        self.assertIsNone(self.service.check_job)
+        self.assertFalse((self.data/'checks/latest.json').exists())
+        self.assertFalse((self.data/'checks'/identifier/'report.json').exists())
+        self.assertEqual(self.service.application_files({**payload, 'action':'open'}), context)
+        asset, process, _ = self.service.application_file_context(identifier)
+        self.assertEqual((asset['id'], process['pid']), ('server', 123))
+        self.assertEqual((self.data/'checks'/identifier/'context.json').stat().st_mode & 0o777, 0o600)
+        restarted = s.Service()
+        self.assertEqual(restarted.application_file_context(identifier)[1]['pid'], 123)
+        self.assertEqual(restarted.log_archive_state(identifier), {'status':'idle'})
+
+    def test_application_file_session_pins_live_identity_and_rejects_pid_reuse(self):
+        from test_application_check import process
+        payload = self.application_check_fixture()
+        identifier = self.service.application_files({**payload, 'action':'open'})['id']
+        class Terminal:
+            closed = False
+            def close(self): self.closed = True
+        terminal = Terminal()
+        live = process()
+        with patch('application_check.open_terminal', return_value=(terminal, None)), \
+             patch('application_check.probe', return_value={'processes':{123:live}, 'listeners':[]}):
+            self.service.open_application_files(identifier)
+        self.assertEqual(s.read(self.data/'checks'/identifier/'identity.json'), {'startTicks':'54321'})
+        for changed in ({**live, 'startTicks':'99999'}, {**live, 'startedAt':'different'}):
+            with patch('application_check.open_terminal', return_value=(terminal, None)), \
+                 patch('application_check.probe', return_value={'processes':{123:changed}, 'listeners':[]}):
+                with self.assertRaisesRegex(ValueError, '应用进程已变化'):
+                    self.service.open_application_files(identifier)
+            self.assertTrue(terminal.closed)
+
+    def test_config_and_log_catalogues_are_separate_and_bound_to_original_version(self):
+        payload = self.application_check_fixture()
+        identifier = self.service.application_files({**payload, 'action':'open'})['id']
+        class Terminal:
+            def close(self): pass
+        with patch.object(self.service, 'open_application_files', return_value=(Terminal(), {'startTicks':'54321'}, None)), \
+             patch('application_files.catalogue', side_effect=lambda *_args, kind: {
+                 'startTicks':'54321', 'files':[{'id':kind, 'kind':kind}]}) as catalogue, \
+             patch('application_files.read_file', return_value={'content':'preview'}) as read_file:
+            for kind in ('config', 'log'):
+                result = self.service.application_files({'id':identifier, 'action':'list', 'kind':kind})
+                self.assertEqual(result['files'][0]['kind'], kind)
+            self.assertEqual(catalogue.call_count, 2)
+            for kind in ('config', 'log'):
+                self.assertEqual(self.service.application_files({'id':identifier, 'action':'read', 'kind':kind, 'file':kind}), {'content':'preview'})
+            with self.assertRaisesRegex(ValueError, '文件不在'):
+                self.service.application_files({'id':identifier, 'action':'read', 'kind':'config', 'file':'log'})
+            self.assertEqual(read_file.call_count, 2)
+        self.assertFalse(self.service.files_lock.locked())
+        s.write(self.data/'current.json', {'id':'unrelated-version'})
+        self.assertEqual(self.service.application_file_context(identifier)[0]['id'], 'server')
+
+    def test_standalone_files_and_collection_or_tcp_checks_are_mutually_exclusive(self):
+        payload = self.application_check_fixture()
+        identifier = self.service.application_files({**payload, 'action':'open'})['id']
+        self.service.files_lock.acquire()
+        try:
+            with self.assertRaisesRegex(ValueError, '文件读取'):
+                self.service.start_application_check(payload)
+            with self.assertRaisesRegex(ValueError, '文件读取'):
+                self.service.start('sync')
+        finally:
+            self.service.files_lock.release()
+        for attribute in ('job', 'check_job'):
+            setattr(self.service, attribute, {'status':'running'})
+            with self.assertRaises(ValueError):
+                self.service.application_files({'id':identifier, 'action':'list', 'kind':'config'})
+            setattr(self.service, attribute, None)
+
+    def test_standalone_log_archive_requires_log_catalogue_and_survives_restart(self):
+        identifier = self.service.application_files({**self.application_check_fixture(), 'action':'open'})['id']
+        folder = self.data/'checks'/identifier
+        s.write(folder/'files-config.json', {'files':[]})
+        with self.assertRaisesRegex(ValueError, '日志文件列表'):
+            self.service.application_files({'id':identifier, 'action':'archive', 'group':'history'})
+        s.write(folder/'files-log.json', {'files':[]})
+        with patch.object(s.threading.Thread, 'start'):
+            result = self.service.application_files({'id':identifier, 'action':'archive', 'group':'history'})
+        self.assertEqual(result['status'], 'running')
+        self.service.application_files({'id':identifier, 'action':'cancel-archive'})
+        self.assertTrue(self.service.archive_cancel.is_set())
+        restarted = s.Service()
+        self.assertEqual(restarted.log_archive_state(identifier)['status'], 'failed')
+
     def test_log_archive_survives_restart_and_blocks_conflicting_tasks(self):
         identifier = self.completed_check()
         s.write(self.data/'checks'/identifier/'files.json', {'files':[]})

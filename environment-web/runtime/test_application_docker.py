@@ -239,5 +239,145 @@ class DockerOrchestrationTests(unittest.TestCase):
             self.assertEqual(self.run_report()['resolution'], 'UNKNOWN')
 
 
+class DockerTargetTests(unittest.TestCase):
+    def proxy(self, **changes):
+        return process(600, '/usr/bin/docker-proxy-current -proto tcp -host-ip 0.0.0.0 '
+            '-host-port 7000 -container-ip 172.18.0.6 -container-port 6379') | {
+            'name': 'docker-proxy-cu', 'kind': '未分类', 'exe': '/usr/bin/docker-proxy-current', **changes}
+
+    def resolve(self, sample=None, values=None, warnings=None, current=None, proxy=None):
+        evidence = {'resolution': 'UNKNOWN', 'mappings': [], 'processes': []}
+        value = container()
+        values = [value] if values is None else values
+        sample = redis_sample() if sample is None else sample
+        def discovery(_terminal, identifier=None):
+            rows = values if identifier is None else (current if current is not None else [value])
+            return copy.deepcopy(rows), warnings or []
+        with patch.object(c, 'docker_containers', side_effect=discovery):
+            try:
+                resolved = c.resolve_docker_target(None, proxy or self.proxy(), lambda *_: sample, evidence)
+                return evidence, resolved, None
+            except c.ProbeError as error:
+                return evidence, None, error.details
+
+    def test_proxy_endpoint_and_live_listener_select_actual_pid_without_claiming_application(self):
+        evidence, (value, owner), error = self.resolve()
+        self.assertIsNone(error)
+        self.assertEqual(value, container())
+        self.assertEqual(owner['pid'], 500)
+        self.assertEqual(evidence['resolution'], 'INFERRED')
+        self.assertEqual(evidence['mappings'][0]['published'], c.endpoint('0.0.0.0:7000'))
+        self.assertEqual(evidence['mappings'][0]['target'], c.endpoint('172.18.0.6:6379'))
+        self.assertNotIn('command', json.dumps(evidence))
+
+    def test_missing_or_inconsistent_endpoint_metadata_never_selects_an_arbitrary_container(self):
+        wrong_binding = container()
+        wrong_binding['ports']['6379/tcp'][0]['HostIp'] = '127.0.0.1'
+        for changes in [dict(values=[]), dict(values=[wrong_binding]), dict(warnings=['unreadable']),
+                        dict(proxy=self.proxy(command=self.proxy()['command'].replace('-proto tcp', '-proto udp'))),
+                        dict(proxy=self.proxy(command=self.proxy()['command']+' -host-port 7001'))]:
+            evidence, resolved, error = self.resolve(**changes)
+            self.assertIsNone(resolved)
+            self.assertEqual(error['code'], 'DOCKER_TARGET_UNRESOLVED')
+            self.assertEqual(evidence['resolution'], 'UNKNOWN')
+
+    def test_multiple_containers_or_listener_pids_remain_ambiguous(self):
+        second = container('b')
+        evidence, resolved, error = self.resolve(values=[container(), second])
+        self.assertEqual(evidence['resolution'], 'AMBIGUOUS')
+        self.assertEqual(len(evidence['mappings']), 2)
+        self.assertIsNone(resolved)
+        sample = redis_sample()
+        # A PID with unreadable identity must not disappear from the candidate set.
+        sample['listeners'][0]['pids'].append(501)
+        evidence, resolved, error = self.resolve(sample=sample)
+        self.assertIsNone(resolved)
+        self.assertEqual(error['code'], 'DOCKER_TARGET_AMBIGUOUS')
+        self.assertEqual([p['pid'] for p in evidence['processes']], [500, 501])
+
+    def test_published_but_unlistened_port_is_explicitly_unresolved(self):
+        sample = redis_sample() | {'listeners': []}
+        evidence, resolved, error = self.resolve(sample=sample)
+        self.assertIsNone(resolved)
+        self.assertEqual(error['code'], 'DOCKER_TARGET_UNRESOLVED')
+        self.assertIn('未发现可核验的监听进程', error['message'])
+        self.assertEqual(len(evidence['mappings']), 1)
+
+    def test_restarted_container_changed_namespace_and_unverified_listener_are_rejected(self):
+        wrong_pid = redis_sample() | {'processes': {}}
+        wrong_netns = redis_sample() | {'networkNamespace': 'net:[99]'}
+        warnings = redis_sample() | {'warnings': ['未提权']}
+        wrong_process = redis_sample()
+        wrong_process['processes'][500]['netns'] = 'net:[99]'
+        for changes in [dict(current=[container() | {'startTicks': '101'}]), dict(sample=wrong_pid),
+                        dict(sample=wrong_netns), dict(sample=warnings), dict(sample=wrong_process)]:
+            evidence, resolved, error = self.resolve(**changes)
+            self.assertIsNone(resolved)
+            self.assertEqual(evidence['resolution'], 'UNKNOWN')
+            self.assertEqual(error['code'], 'DOCKER_TARGET_UNRESOLVED')
+
+    def run_report(self, change=None):
+        calls, discovery_calls = [], []
+        proxy, service = self.proxy(), redis_sample()['processes'][500]
+        class Terminal:
+            def close(self): pass
+        def discovery(_terminal, identifier=None):
+            discovery_calls.append(identifier)
+            changed = identifier and len(discovery_calls) >= 4 and change == 'container'
+            return [container() | ({'startTicks': '101'} if changed else {})], []
+        def probe(_terminal, mode, selector):
+            calls.append((mode, selector))
+            if mode == 'target':
+                return {'sockets': [], 'listeners': [], 'processes': {600: proxy}, 'warnings': []}
+            if mode == 'container-listeners':
+                return redis_sample()
+            self.assertEqual(mode, 'container-target')
+            self.assertEqual(selector, {'pid': 500, 'startTicks': service['startTicks']})
+            sample = redis_sample(peer='192.0.2.10:33580')
+            # Include another listening port and an outgoing socket: the scope
+            # is the resolved process, not just the proxy's published port.
+            sample['sockets'].append(socket('172.18.0.6:46000', '192.0.2.20:3306', 500, 'out'))
+            sample['listeners'].append(socket('*:6380', '*:*', 500, state='LISTEN'))
+            sample['sockets'].append(socket('172.18.0.6:6380', '192.0.2.30:33581', 500, 'other'))
+            if change == 'pid': sample['processes'][500]['startTicks'] = 'reused'
+            if change == 'namespace': sample['networkNamespace'] = 'net:[99]'
+            return sample
+        with patch.object(c, 'docker_containers', side_effect=discovery):
+            report = c.inspect_application({'id': 'target', 'ip': '10.0.0.2'}, proxy,
+                [app('wrong', 'redis', '10.0.0.2', '6379')], [], {}, {}, 'TEST',
+                duration=0.015, interval=0.002, terminal_opener=lambda *_: (Terminal(), 'root'),
+                sample_probe=probe, config_collector=lambda *_: self.fail('must not read container paths on host'))
+        return report, calls
+
+    def test_proxy_entry_samples_container_service_connections_and_preserves_actual_endpoints(self):
+        report, calls = self.run_report()
+        self.assertEqual(report['target']['pid'], 600)
+        self.assertEqual(report['target']['processName'], 'docker-proxy-cu')
+        self.assertEqual(report['target']['dockerTarget']['pid'], 500)
+        self.assertEqual(report['target']['application']['confidence'], 'UNKNOWN')
+        self.assertEqual(len(report['upstream']), 2)
+        self.assertEqual(len(report['downstream']), 1)
+        self.assertEqual(report['upstream'][0]['local'], c.endpoint('172.18.0.6:6379'))
+        self.assertTrue(all(flow['resolution'] == 'UNKNOWN' for flow in report['upstream']))
+        self.assertGreaterEqual(report['coverage']['samples'], 1)
+        self.assertEqual(report['configuration']['status'], 'not_collected')
+        self.assertEqual([mode for mode, _ in calls[:3]], ['target', 'container-listeners', 'container-target'])
+
+    def test_changed_container_retains_prior_evidence_and_never_uses_the_new_identity(self):
+        report, _ = self.run_report('container')
+        self.assertEqual(report['status'], 'partial')
+        self.assertEqual(report['error']['code'], 'DOCKER_TARGET_CHANGED')
+        self.assertEqual(report['coverage']['samples'], 1)
+        self.assertEqual(len(report['upstream']), 2)
+
+    def test_changed_service_identity_or_namespace_stops_before_accepting_flows(self):
+        for change in ('pid', 'namespace'):
+            report, _ = self.run_report(change)
+            self.assertEqual(report['status'], 'failed')
+            self.assertEqual(report['coverage']['samples'], 0)
+            self.assertEqual(report['upstream'], [])
+            self.assertEqual(report['downstream'], [])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { ApplicationCheckLink } from '@/components/application-check-link';
 import { IpMetaCell } from '@/components/ip-meta-cell';
 
-import { processTypes, durations, processRows, filterProcesses, matchesProcessQuery, formatDuration, paginate, locationHint, findLocationBlock, isMiddlewareProcess, formatCommand, COMMAND_COLLAPSE_THRESHOLD, type Asset, type Inspection, type ProcessRow, type ProcessType, type Duration } from '@/lib/server-processes';
+import { processType, processTypes, durations, processRows, filterProcesses, matchesProcessQuery, formatDuration, paginate, locationHint, findLocationBlock, isMiddlewareProcess, formatCommand, COMMAND_COLLAPSE_THRESHOLD, type Asset, type Inspection, type ProcessRow, type ProcessType, type Duration } from '@/lib/server-processes';
 import { ipSpecSummary, tomcatInstanceName, tomcatProcessApp, jarBusinessName, jarProcessApp, ipDeployEnvironments, appDeployEnvironments } from '@/lib/process-comparison';
 import { envs, shortLabels, labels, type Env } from '@/lib/inventory';
 import { formatBeijingTime } from '@/lib/datetime';
@@ -16,6 +16,23 @@ const statuses: Record<string,string> = {complete:'采集完整',partial:'采集
 const webappStatuses: Record<string,string> = {complete:'采集完整',partial:'采集不完整',failed:'采集失败',not_collected:'未采集',absent:'目录不存在'};
 // 采集时间统一按北京时间展示。
 function date(value: string) { return formatBeijingTime(value, '—'); }
+function ListeningPortInventory({inspection}: {inspection: Inspection}) {
+  if(inspection.portStatus==='failed')return <p role="status" className="text-sm text-amber-700">TCP 监听端口采集失败，不能据此判断没有监听。</p>;
+  if(!inspection.appPorts?.length)return inspection.portStatus==='complete'?<p className="text-sm text-muted-foreground">本次未观察到服务器 TCP 监听端口。</p>:null;
+  const count=new Set(inspection.appPorts.map(p=>p.port)).size;
+  return <details><summary className="cursor-pointer font-medium">服务器 TCP 监听端口（{count}）</summary>
+    <p className="text-xs text-muted-foreground">端口可见不代表 PID 可见；推断归属与直接确认的 PID 分开显示。</p>
+    <ul className="text-sm space-y-0.5">{inspection.appPorts.map((p,i)=><li key={i} title={p.basis}>
+      <code>{p.port}</code> · {p.addresses.join(', ')||'绑定地址未知'} · {p.pids.length?`${p.app} · PID ${p.pids.join(', ')}`:p.ownershipConfidence==='INFERRED'?`归属推断 · 候选 PID ${p.candidatePids?.join(', ')}`:p.ownershipConfidence==='AMBIGUOUS'?`归属有歧义 · 候选 PID ${p.candidatePids?.join(', ')}`:'进程归属未确认'}
+    </li>)}</ul></details>;
+}
+function ProcessListeningPorts({process}: {process: ProcessRow['process']}) {
+  const exact=process.ports||[];
+  const inferred=(process.inferredPorts||[]).filter(p=>!exact.includes(p.port));
+  const ports=[...new Set(inferred.map(p=>p.port))].sort((a,b)=>a-b);
+  if(!exact.length&&!ports.length)return <span title="未确认该进程的监听端口；不能据此判断没有监听">—</span>;
+  return <>{!!exact.length&&<code>{exact.join(', ')}</code>}{!!ports.length&&<span className="block text-amber-700" title={inferred.map(p=>`${p.address}:${p.port}/tcp：${p.basis}`).join('；')}><code>{ports.join(', ')}</code>（推断）</span>}</>;
+}
 function csvCell(value: string): string {
   return /[",\n]/.test(value) ? '"' + value.replace(/"/g, '""') + '"' : value;
 }
@@ -181,8 +198,7 @@ function ServerDetails({asset, inspectState, onInspect}: {asset: Asset; inspectS
     </div>
     {!!inspection.warnings?.length&&<p className="text-amber-700">{inspection.warnings.join('；')}</p>}
     {!!inspection.attempts?.length&&<p>连接尝试：{inspection.attempts.map(a=>`${a.account}：${a.reason}`).join('；')}</p>}
-    {!!inspection.appPorts?.length&&<details><summary className="cursor-pointer font-medium">应用监听端口（{inspection.appPorts.length}）</summary>
-      <ul className="text-sm space-y-0.5">{inspection.appPorts.map((p,i)=><li key={i} title={`绑定地址：${p.addresses.join(', ')||'—'}；PID：${p.pids.join(', ')}`}>{p.app}{p.app!==p.kind?`（${p.kind}）`:''}：<code>{p.port}</code></li>)}</ul></details>}
+    <ListeningPortInventory inspection={inspection}/>
     {!!inspection.webapps&&<details><summary className="cursor-pointer font-medium">Webapps 应用目录（{inspection.webapps.apps.length}）</summary>
       <p className="text-sm text-muted-foreground">采集 /var/www/webapps 一级子目录；已忽略 __ 开头、_buff 结尾及日期时间戳后缀的备份目录 · {webappStatuses[inspection.webapps.status]||inspection.webapps.status}</p>
       {!!inspection.webapps.apps.length&&<Input className="my-2 max-w-xs" type="search" aria-label="按名称查找 Webapps 应用目录" placeholder="按应用名查找" value={webappQuery} onChange={e=>setWebappQuery(e.target.value)}/>}
@@ -223,7 +239,8 @@ function categoryCounts(rows: ProcessRow[]): [ProcessType,number][] {
 // 完全没有端口数据（旧快照）时返回 null，页面显示“—”。
 function listeningPorts(asset: Asset): number[]|null {
   const inspection=asset.inspection!;
-  if(inspection.appPorts)return inspection.appPorts.map(p=>p.port).sort((a,b)=>a-b);
+  if(inspection.portStatus==='failed'||inspection.portStatus==='not_collected')return null;
+  if(inspection.appPorts)return [...new Set(inspection.appPorts.map(p=>p.port))].sort((a,b)=>a-b);
   const ports=new Set<number>();let collected=false;
   for(const p of inspection.processes)if(p.ports){collected=true;for(const port of p.ports)ports.add(port);}
   return collected?[...ports].sort((a,b)=>a-b):null;
@@ -333,9 +350,13 @@ export function ServerInspections() {
   const tabClass=(active: boolean)=>`rounded-md px-4 py-2 text-sm border ${active?'bg-foreground text-background font-medium':'bg-background hover:bg-muted'}`;
   // 单条进程行（IP 详情框内复用原进程表的列，去掉 IP 列）。
   function processDetailRow(r: ProcessRow) {
-    // 业务应用（Tomcat/Java）与中间件（MySQL/Redis/Kafka/MongoDB 等）都需要上下游检测入口。
-    const checkButton = !r.workerCount && (['Tomcat','Java Jar','其他 Java'].includes(r.type) || isMiddlewareProcess(r.process))
-      ? <ApplicationCheckLink asset={r.asset.id} pid={r.process.pid} disabled={inspect[r.asset.id]?.busy} /> : null;
+    // 有监听端口的进程均可检测；保留原有 Java/中间件入口。
+    // worker 合并行绑定实际监听的最小 PID，避免将合并端口当作代表 PID 的监听证据。
+    const checkProcess = r.workerCount
+      ? r.asset.inspection!.processes.filter(p=>p.ports?.length&&processType(p)==='Nginx'&&/worker process/i.test(p.command)).sort((a,b)=>a.pid-b.pid)[0]
+      : r.process;
+    const checkButton = checkProcess && (checkProcess.ports?.length || (!r.workerCount && (['Tomcat','Java Jar','其他 Java'].includes(r.type) || isMiddlewareProcess(checkProcess))))
+      ? <ApplicationCheckLink asset={r.asset.id} pid={checkProcess.pid} disabled={inspect[r.asset.id]?.busy} /> : null;
     // 进程名增强：Tomcat 取 catalina 实例目录业务名（如
     // /opt/apache-tomcat_dolphin-webhook → dolphin-webhook），Java Jar 取 -jar 的
     // jar 文件名去 .jar/.war 后缀；能关联到在本机有部署记录的 DevOps 应用时，
@@ -360,7 +381,7 @@ export function ServerInspections() {
     const processNameNode=envLabel
       ? <>{namePart}<span className="inline-block rounded bg-muted px-1 text-xs text-muted-foreground">{envLabel}</span></>
       : <>{namePart}</>;
-    return <tr className="border-t align-top" key={r.asset.id+':'+(r.workerCount?'workers':r.process.pid)}><td className="p-3">{r.workerCount?<span title={`${r.workerCount} 个 Nginx worker 进程`}>×{r.workerCount}</span>:r.process.pid}</td><td className="p-3 break-all">{r.workerCount?<span>Nginx worker<small className="block text-muted-foreground">{r.type} · {r.process.user} · 共 {r.workerCount} 个进程</small></span>:<>{processNameNode}<small className="block text-muted-foreground">{r.type} · {r.process.user}</small></>}</td><td className="p-3 whitespace-nowrap text-right" title={r.process.cpuPercent!=null?`CPU ${r.process.cpuPercent}%`:'旧快照无 CPU 数据'}>{r.process.cpuPercent!=null?<span className={r.process.cpuPercent>=80?'text-red-600 font-medium':r.process.cpuPercent>=50?'text-amber-600':''}>{r.process.cpuPercent}%</span>:'—'}</td><td className="p-3 whitespace-nowrap text-right" title={r.process.memPercent!=null?`内存 ${r.process.memPercent}%${r.process.rssKB!=null?` · RSS ${(r.process.rssKB/1024).toFixed(0)}M`:''}`:'旧快照无内存数据'}>{r.process.memPercent!=null?<span className={r.process.memPercent>=80?'text-red-600 font-medium':r.process.memPercent>=50?'text-amber-600':''}>{r.process.memPercent}%</span>:'—'}</td><td className="p-3">{r.process.ports?.length?<code>{r.process.ports.join(', ')}</code>:'—'}</td><td className="p-3 whitespace-nowrap">{r.workerCount?'—':date(r.process.startedAt)}</td><td className="p-3 whitespace-nowrap" title={r.workerCount?'worker 进程启动时间各异，已合并展示':`采集时：${formatDuration(r.process.elapsedSeconds)}；采集时间：${date(r.asset.inspection!.checkedAt)}`}>{r.workerCount?'—':formatDuration(r.seconds)}</td><td className="p-3 min-w-80 max-w-2xl">{r.workerCount?<pre className="text-xs whitespace-pre-wrap break-all font-mono">{`nginx: worker process（共 ${r.workerCount} 个）`}</pre>:<ProcessCommand command={r.process.command} onExpand={setCommandDialog}/>}</td><td className="p-3">{r.type==='Nginx'&&<button className="border rounded p-2 whitespace-nowrap" title="查看该服务器的 Nginx 转发与原始配置" onClick={()=>setSelected(selected===r.asset.id?'':r.asset.id)}>Nginx</button>}{checkButton}</td></tr>;
+    return <tr className="border-t align-top" key={r.asset.id+':'+(r.workerCount?'workers':r.process.pid)}><td className="p-3">{r.workerCount?<span title={`${r.workerCount} 个 Nginx worker 进程`}>×{r.workerCount}</span>:r.process.pid}</td><td className="p-3 break-all">{r.workerCount?<span>Nginx worker<small className="block text-muted-foreground">{r.type} · {r.process.user} · 共 {r.workerCount} 个进程</small></span>:<>{processNameNode}<small className="block text-muted-foreground">{r.type} · {r.process.user}</small></>}</td><td className="p-3 whitespace-nowrap text-right" title={r.process.cpuPercent!=null?`CPU ${r.process.cpuPercent}%`:'旧快照无 CPU 数据'}>{r.process.cpuPercent!=null?<span className={r.process.cpuPercent>=80?'text-red-600 font-medium':r.process.cpuPercent>=50?'text-amber-600':''}>{r.process.cpuPercent}%</span>:'—'}</td><td className="p-3 whitespace-nowrap text-right" title={r.process.memPercent!=null?`内存 ${r.process.memPercent}%${r.process.rssKB!=null?` · RSS ${(r.process.rssKB/1024).toFixed(0)}M`:''}`:'旧快照无内存数据'}>{r.process.memPercent!=null?<span className={r.process.memPercent>=80?'text-red-600 font-medium':r.process.memPercent>=50?'text-amber-600':''}>{r.process.memPercent}%</span>:'—'}</td><td className="p-3"><ProcessListeningPorts process={r.process}/></td><td className="p-3 whitespace-nowrap">{r.workerCount?'—':date(r.process.startedAt)}</td><td className="p-3 whitespace-nowrap" title={r.workerCount?'worker 进程启动时间各异，已合并展示':`采集时：${formatDuration(r.process.elapsedSeconds)}；采集时间：${date(r.asset.inspection!.checkedAt)}`}>{r.workerCount?'—':formatDuration(r.seconds)}</td><td className="p-3 min-w-80 max-w-2xl">{r.workerCount?<pre className="text-xs whitespace-pre-wrap break-all font-mono">{`nginx: worker process（共 ${r.workerCount} 个）`}</pre>:<ProcessCommand command={r.process.command} onExpand={setCommandDialog}/>}</td><td className="p-3">{r.type==='Nginx'&&<button className="border rounded p-2 whitespace-nowrap" title="查看该服务器的 Nginx 转发与原始配置" onClick={()=>setSelected(selected===r.asset.id?'':r.asset.id)}>Nginx</button>}{checkButton}</td></tr>;
   }
   return <section className="panel p-6 space-y-5">
     <h2 className="text-lg font-semibold">服务器与进程</h2>
@@ -432,6 +453,7 @@ export function ServerInspections() {
               </tr>
               {open&&<tr className="border-t"><td colSpan={8} className="p-0">
                 <div className="ip-detail-box space-y-3">
+                  <ListeningPortInventory inspection={asset.inspection!}/>
                   <div role="tablist" aria-label={`${asset.ip} 的进程类别`} className="flex flex-wrap gap-2">
                     <button role="tab" aria-selected={viewType==='全部进程'} className={tabClass(viewType==='全部进程')} onClick={()=>setAssetView(asset.id,'全部进程',1)}>全部进程（{nonSystemRows.length}）</button>
                     {categories.map(([t,n])=><button key={t} role="tab" aria-selected={viewType===t} className={tabClass(viewType===t)} onClick={()=>setAssetView(asset.id,t,1)}>{t==='Java Jar'?'普通 Java Jar':t}（{n}）</button>)}

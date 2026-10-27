@@ -129,6 +129,21 @@ test('validator catches broken graph integrity and ambiguous count drift', async
   assert.equal(validation.valid, false);
 });
 
+test('inferred listener candidates never become exact runtime PID owners', async () => {
+  const { buildTopology } = await import('../lib/topology/topology-builder.ts');
+  const input = { devops:{apps:[]}, repositories:{repos:[]}, dns:{records:[]}, eip:{records:[]},
+    nat:{available:false}, clb:{available:false}, ecs:{instances:[]},
+    jumpserver:{assets:[{id:'mq-host',ip:'10.0.0.1',inspection:{appPorts:[{
+      app:'未知进程',kind:'未知',port:5672,addresses:['*'],pids:[],
+      candidatePids:[10],ownershipConfidence:'INFERRED',basis:'socket UID and RabbitMQ role'
+    }]}}]}};
+  const topology = buildTopology(input);
+  const endpoint = topology.nodes.find(node=>node.id==='endpoint:10.0.0.1:5672:tcp');
+  assert.ok(endpoint);
+  assert.deepEqual(endpoint.attributes.runtimePids,[]);
+  assert.equal(endpoint.attributes.runtimeApp,'未知进程');
+});
+
 test('appPorts enrich existing endpoints and create tcp endpoints with ON_HOST', async () => {
   const { buildTopology } = await import('../lib/topology/topology-builder.ts');
   const input = snapshotInput();

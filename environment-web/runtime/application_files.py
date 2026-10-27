@@ -115,7 +115,10 @@ def declared_log_scopes(content, process):
     return scopes[:12]
 
 
-def catalogue(terminal, process, application=None):
+def catalogue(terminal, process, application=None, kind=None):
+    if kind not in (None, 'config', 'log'):
+        raise ValueError('无效应用文件类型')
+    requested_kind = kind
     roots = roots_for(process, application)
     result = {'files': [], 'roots': {'config': [], 'log': []}, 'warnings': [], 'observedAt': check.now(),
               'pid': process['pid'], 'startTicks': process['startTicks'], 'logScopes': []}
@@ -130,7 +133,10 @@ def catalogue(terminal, process, application=None):
         if group:
             entry['logGroup'] = group
         result['files'].append(entry)
-    requests = [('config', 'list', roots['config'], None), ('log', 'list', roots['log'], None)]
+    # Logs still inspect Logback declarations to retain shared-directory scopes.
+    requests = [('config', 'list', roots['config'], None)]
+    if requested_kind != 'config':
+        requests.append(('log', 'list', roots['log'], None))
     while requests:
         kind, mode, paths, pattern = requests.pop(0)
         args = [kind, *([pattern] if pattern is not None else []), *paths]
@@ -166,7 +172,7 @@ def catalogue(terminal, process, application=None):
                 if not path.startswith(root+'/') or posixpath.normpath(path) != path:
                     raise ValueError('文件超出应用目录')
                 add_file(kind, path, root, size, modified, mode == 'list-match')
-        if kind == 'config':
+        if kind == 'config' and requested_kind != 'config':
             log_configs = [entry for entry in result['files'] if entry['kind'] == 'config' and
                 posixpath.basename(entry['path']).startswith('logback') and entry['path'].endswith('.xml')]
             scopes = []
@@ -190,8 +196,12 @@ def catalogue(terminal, process, application=None):
         if len(files) > 1000:
             result['warnings'].append(label+'文件列表超过 1000 项，已显示最近更新的文件')
         selected.extend(files[:1000])
-    result['files'] = selected
-    if not result['roots']['log']:
+    result['files'] = [entry for entry in selected if requested_kind is None or entry['kind'] == requested_kind]
+    if requested_kind == 'config':
+        result['roots']['log'] = []
+    if requested_kind == 'log':
+        result['roots']['config'] = []
+    if requested_kind != 'config' and not result['roots']['log']:
         result['warnings'].append('未找到该进程对应的日志目录；仅检查进程推导的目录，不扫描整台服务器')
     if process.get('kind') == 'Tomcat':
         result['warnings'].append('Tomcat JVM 可能承载多个应用，目录根据进程路径与已识别应用推导')

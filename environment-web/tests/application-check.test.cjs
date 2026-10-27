@@ -106,6 +106,19 @@ test('older reports without Docker metadata still render', () => {
   assert.doesNotMatch(html, /Docker 端口映射|容器内连接|Docker 代理/);
 });
 
+test('Docker proxy target displays the actual container service and unresolved candidates', () => {
+  const dockerTarget = { resolution: 'INFERRED', reason: '由实时监听定位服务进程', mappings: flow.dockerMappings,
+    processes: [{ pid: 500, processName: 'redis-server' }], pid: 500, processName: 'redis-server' };
+  const target = { pid: 600, processName: 'docker-proxy-cu', dockerTarget };
+  const html = render(flow, { target });
+  for (const text of ['Docker 代理入口：PID 600', '实际检测进程：PID 500', 'redis-server', '容器：redis-custom',
+    '检测该进程的全部 TCP 连接']) assert.ok(html.includes(text), text);
+  const unresolved = render(flow, { target: { ...target, dockerTarget: { ...dockerTarget, pid: undefined,
+    resolution: 'AMBIGUOUS', processes: [...dockerTarget.processes, { pid: 501, processName: null }] } } });
+  assert.match(unresolved, /监听候选：500 · redis-server；501 · 身份未确认/);
+  assert.doesNotMatch(unresolved, /实际检测进程/);
+});
+
 test('effective observation span is shown separately from sampling phase elapsed time', () => {
   const html = render(flow, { coverage: { actualSeconds: 8.2, samplingElapsedSeconds: 77.4, limitations: [] } });
   assert.match(html, /目标有效观察跨度 8.2 秒/);
