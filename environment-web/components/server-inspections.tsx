@@ -192,13 +192,19 @@ function ServerDetails({asset, inspectState, onInspect}: {asset: Asset; inspectS
     {inspection.serverUsage&&<p>CPU 使用率：<strong className={inspection.serverUsage.cpuPercent>=80?'text-red-600':inspection.serverUsage.cpuPercent>=50?'text-amber-600':''}>{inspection.serverUsage.cpuPercent}%</strong> · 内存使用率：<strong className={inspection.serverUsage.memPercent>=80?'text-red-600':inspection.serverUsage.memPercent>=50?'text-amber-600':''}>{inspection.serverUsage.memPercent}%</strong>（{inspection.serverUsage.memUsedMB>=1024?`${(inspection.serverUsage.memUsedMB/1024).toFixed(1)}G`:`${inspection.serverUsage.memUsedMB}M`} / {inspection.serverUsage.memTotalMB>=1024?`${(inspection.serverUsage.memTotalMB/1024).toFixed(1)}G`:`${inspection.serverUsage.memTotalMB}M`}）</p>}
     <div className="space-y-1">
       <button className="border rounded p-2 text-sm" disabled={inspectState?.busy} onClick={()=>onInspect(asset)}>{inspectState?.busy?'任务启动中…':'单独重新采集此服务器'}</button>
-      <p className="text-xs text-muted-foreground">仅重新采集这台服务器的进程、Nginx 配置与 Webapps 应用目录，不影响其他数据；完成后需刷新页面。提权失败的服务器会先弹出 root 密码填写框。</p>
+      <p className="text-xs text-muted-foreground">仅重新采集这台服务器的进程、Docker 容器、Nginx 配置与 Webapps 应用目录，不影响其他数据；完成后需刷新页面。提权失败的服务器会先弹出 root 密码填写框。</p>
       {inspectState?.message&&<p role="status" className="text-sm text-green-700">{inspectState.message}</p>}
       {inspectState?.error&&<p role="alert" className="text-sm text-red-700">{inspectState.error}</p>}
     </div>
     {!!inspection.warnings?.length&&<p className="text-amber-700">{inspection.warnings.join('；')}</p>}
     {!!inspection.attempts?.length&&<p>连接尝试：{inspection.attempts.map(a=>`${a.account}：${a.reason}`).join('；')}</p>}
     <ListeningPortInventory inspection={inspection}/>
+    {inspection.docker&&<details><summary className="cursor-pointer font-medium">Docker 运行中容器（{inspection.docker.containers.length}）</summary>
+      <p className="text-sm text-muted-foreground">状态：{({complete:'采集完整',partial:'部分采集',failed:'采集失败或无 Docker 权限',not_available:'Docker 命令不可用'} as Record<string,string>)[inspection.docker.status]}。PID 为容器 init 的宿主机 PID；端口为 Docker 配置，不能证明实际监听。</p>
+      {!!inspection.docker.containers.length&&<div className="overflow-auto"><table className="w-full text-sm text-left"><thead><tr>{['容器','宿主机 PID','镜像','启动命令','容器端口 / 宿主机发布'].map(h=><th className="p-2" key={h}>{h}</th>)}</tr></thead><tbody>
+        {inspection.docker.containers.map(c=><tr key={c.id} className="border-t"><td className="p-2">{c.name}</td><td className="p-2">{c.initPid}</td><td className="p-2 break-all">{c.image}</td><td className="p-2 break-all font-mono">{c.command}</td><td className="p-2">{c.ports.map((p,i)=><div key={i}>{p.containerPort}{p.hostPort?` → ${p.hostIp||'*'}:${p.hostPort}`:'（未发布）'}</div>)}</td></tr>)}
+      </tbody></table></div>}
+    </details>}
     {!!inspection.webapps&&<details><summary className="cursor-pointer font-medium">Webapps 应用目录（{inspection.webapps.apps.length}）</summary>
       <p className="text-sm text-muted-foreground">采集 /var/www/webapps 一级子目录；已忽略 __ 开头、_buff 结尾及日期时间戳后缀的备份目录 · {webappStatuses[inspection.webapps.status]||inspection.webapps.status}</p>
       {!!inspection.webapps.apps.length&&<Input className="my-2 max-w-xs" type="search" aria-label="按名称查找 Webapps 应用目录" placeholder="按应用名查找" value={webappQuery} onChange={e=>setWebappQuery(e.target.value)}/>}

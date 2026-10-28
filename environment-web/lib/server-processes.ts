@@ -5,7 +5,8 @@ export type AppPort = { app: string; kind: string; port: number; addresses: stri
 export type Webapp = { name: string; mtime: string | null };
 export type Webapps = { status: string; apps: Webapp[] };
 export type ServerUsage = { cpuPercent: number; memPercent: number; memTotalMB: number; memUsedMB: number };
-export type Inspection = { sudoStatus?: string; configurationCount?: number; configurationVersion?: string; checkedAt: string; loginStatus: string; reason: string; account?: string; processStatus: string; processes: Process[]; appPorts?: AppPort[]; portStatus?: 'complete' | 'failed' | 'not_collected'; webapps?: Webapps; nginxStatus: string; nginxRoutes: Route[]; warnings: string[]; serverUsage?: ServerUsage; attempts?: {account: string; reason: string}[] };
+export type DockerInventory = { status: 'complete' | 'partial' | 'failed' | 'not_available'; containers: {id: string; name: string; image: string; initPid: number; command: string; ports: {containerPort: string; hostIp: string; hostPort: string}[]}[] };
+export type Inspection = { sudoStatus?: string; configurationCount?: number; configurationVersion?: string; checkedAt: string; loginStatus: string; reason: string; account?: string; processStatus: string; processes: Process[]; appPorts?: AppPort[]; portStatus?: 'complete' | 'failed' | 'not_collected'; docker?: DockerInventory; webapps?: Webapps; nginxStatus: string; nginxRoutes: Route[]; warnings: string[]; serverUsage?: ServerUsage; attempts?: {account: string; reason: string}[] };
 export type Asset = { id: string; ip: string; hostname: string; inspection?: Inspection };
 // 把 location 修饰符翻译成给非 Nginx 读者看的匹配说明；无法识别时返回空串。
 export function locationHint(uri: string): string {

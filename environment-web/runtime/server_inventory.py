@@ -570,6 +570,78 @@ def redact(text):
     return re.sub(r'(?i)((?:password|passwd|pwd|secret|token|access[_-]?key)(?:\s*[=:]\s*|\s+))[^\s;]+', r'\1[REDACTED]', text)
 
 
+def redact_docker_command(path, args):
+    sensitive = re.compile(r'(?i)(password|passwd|pwd|secret|token|access[_-]?key)')
+    safe = []
+    hide_next = False
+    for value in [str(path)] + [str(arg) for arg in args]:
+        if hide_next:
+            safe.append('[REDACTED]')
+            hide_next = False
+        elif sensitive.search(value):
+            match = re.search(r'(?i)(password|passwd|pwd|secret|token|access[_-]?key)([=:])', value)
+            if match:
+                safe.append(value[:match.end()] + '[REDACTED]')
+            elif value.startswith('-'):
+                safe.append(value)
+                hide_next = True
+            else:
+                safe.append('[REDACTED]')
+        else:
+            safe.append(value)
+    return shlex.join(safe)
+
+
+# Inspect selected fields only: never transmit Docker's environment or full inspect.
+DOCKER_INVENTORY_COMMAND = r'''if ! command -v docker >/dev/null 2>&1; then printf 'DOCKER_INVENTORY_STATUS\tnot_available\n'; else
+ids=$(timeout 12 docker ps -q --no-trunc 2>/dev/null) || { printf 'DOCKER_INVENTORY_STATUS\tfailed\n'; exit 0; }
+if [ -z "$ids" ]; then printf 'DOCKER_INVENTORY_STATUS\tcomplete\n'; else
+fmt=$(printf '{{json .Id}}\t{{json .Name}}\t{{json .Config.Image}}\t{{json .State.Pid}}\t{{json .Path}}\t{{json .Args}}\t{{json .NetworkSettings.Ports}}')
+ok=1
+for id in $ids; do
+case "$id" in *[!0-9a-f]*|'') ok=0; continue;; esac
+row=$(timeout 12 docker inspect --type=container --format "$fmt" "$id" 2>/dev/null | base64 | tr -d '\n')
+if [ -n "$row" ]; then printf 'DOCKER_INVENTORY_ROW\t%s\n' "$row"; else ok=0; fi
+done
+if [ "$ok" = 1 ]; then printf 'DOCKER_INVENTORY_STATUS\tcomplete\n'; else printf 'DOCKER_INVENTORY_STATUS\tpartial\n'; fi
+fi; fi'''
+
+
+def collect_docker_inventory(terminal):
+    result = {'status': 'failed', 'containers': []}
+    try:
+        rc, body = terminal.run('bash -c ' + shlex.quote(DOCKER_INVENTORY_COMMAND), timeout=120)
+        status = re.search(r'DOCKER_INVENTORY_STATUS\t(complete|partial|failed|not_available)', body)
+        if rc != 0 or not status:
+            return result
+        result['status'] = status.group(1)
+        encoded_rows = re.findall(r'(?m)^DOCKER_INVENTORY_ROW\t([A-Za-z0-9+/=]+)\s*$', body)
+        if len(encoded_rows) != len(re.findall(r'(?m)^DOCKER_INVENTORY_ROW\t', body)):
+            result['status'] = 'partial'
+        for encoded in encoded_rows:
+            try:
+                fields = base64.b64decode(encoded, validate=True).decode().strip().split('\t')
+                container_id, name, image, pid, path, args, ports = map(json.loads, fields)
+                if not re.fullmatch(r'[0-9a-f]{64}', container_id) or not isinstance(pid, int) or pid <= 0 or not isinstance(args, list) or not isinstance(ports, (dict, type(None))):
+                    raise ValueError('invalid Docker fields')
+                command = redact_docker_command(path, args)
+                mappings = []
+                for target, bindings in (ports or {}).items():
+                    if not re.fullmatch(r'\d+/(tcp|udp|sctp)', target):
+                        raise ValueError('invalid port')
+                    if bindings:
+                        for binding in bindings:
+                            mappings.append({'containerPort': target, 'hostIp': str(binding.get('HostIp', '')), 'hostPort': str(binding.get('HostPort', ''))})
+                    else:
+                        mappings.append({'containerPort': target, 'hostIp': '', 'hostPort': ''})
+                result['containers'].append({'id': container_id, 'name': str(name).lstrip('/'), 'image': str(image), 'initPid': pid, 'command': command, 'ports': mappings})
+            except (ValueError, TypeError, UnicodeError, AttributeError):
+                result['status'] = 'partial'
+    except Exception:
+        return result
+    return result
+
+
 def parse_processes(body):
     rows, excluded, malformed = [], 0, 0
     for line in body.splitlines():
@@ -1340,6 +1412,7 @@ def inspect_asset(asset, accounts, cookie, folidev_pw, root_alt1, root_alt2, ip_
             print(f'{tag} 进程：{proc_label}（{len(rows)} 条，排除系统进程 {excluded}）', flush=True)
             if not elevated: result['warnings'].append('sudo 不可用，仅采集当前账号可见进程，完整性未确认')
             if malformed: result['warnings'].append(f'{malformed} 行进程无法解析')
+            result['docker'] = collect_docker_inventory(terminal)
             usage = collect_usage(terminal)
             if usage: result['serverUsage'] = usage
             # Host listeners remain useful even when ps returns no visible rows.

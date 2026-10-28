@@ -28,6 +28,34 @@ server { listen 443 ssl; server_name example.com *.example.com;
 '''
 
 class InventoryTests(unittest.TestCase):
+    def test_docker_inventory_parses_ports_and_redacts_arguments(self):
+        class Terminal:
+            def run(self, command, timeout):
+                self.command = command
+                fields = ['a'*64, '/orders', 'example/orders:1', 123, '/start',
+                          ['--password', 'two words', '--token=secret', '--port=8080'],
+                          {'8080/tcp': [{'HostIp':'127.0.0.1','HostPort':'18080'}], '9000/udp': None}]
+                line = '\t'.join(json.dumps(x) for x in fields)
+                return 0, 'DOCKER_INVENTORY_ROW\t'+base64.b64encode(line.encode()).decode()+'\nDOCKER_INVENTORY_STATUS\tcomplete'
+        terminal = Terminal()
+        result = inv.collect_docker_inventory(terminal)
+        self.assertEqual(result['status'], 'complete')
+        container = result['containers'][0]
+        self.assertEqual((container['name'], container['image'], container['initPid']), ('orders', 'example/orders:1', 123))
+        self.assertEqual(container['ports'], [{'containerPort':'8080/tcp','hostIp':'127.0.0.1','hostPort':'18080'}, {'containerPort':'9000/udp','hostIp':'','hostPort':''}])
+        self.assertNotIn('two words', container['command'])
+        self.assertNotIn('secret', container['command'])
+        self.assertIn('--port=8080', container['command'])
+        self.assertNotIn('.Config.Env', terminal.command)
+
+    def test_docker_inventory_keeps_failures_and_malformed_rows_distinct(self):
+        class Terminal:
+            def __init__(self, body): self.body=body
+            def run(self, command, timeout): return 0, self.body
+        self.assertEqual(inv.collect_docker_inventory(Terminal('DOCKER_INVENTORY_STATUS\tfailed'))['status'], 'failed')
+        self.assertEqual(inv.collect_docker_inventory(Terminal('DOCKER_INVENTORY_STATUS\tcomplete'))['containers'], [])
+        self.assertEqual(inv.collect_docker_inventory(Terminal('DOCKER_INVENTORY_ROW\tinvalid!\nDOCKER_INVENTORY_STATUS\tcomplete'))['status'], 'partial')
+
     def test_processes_retain_unknown_and_root_app(self):
         body=''' 1 0 root 40000000 Tue Sep  1 10:00:00 2026 systemd 0.0 0.0 0 0 /sbin/init
  2 0 root 40000000 Tue Sep  1 10:00:00 2026 kthreadd 0.0 0.0 0 0 [kthreadd]
