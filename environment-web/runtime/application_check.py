@@ -948,10 +948,8 @@ def collect_config(terminal, process):
             content = decode(fields[2])
             endpoints.extend(parse_config(content, path))
             if re.fullmatch(r'(?:application|bootstrap)(?:-[\w.-]+)?\.ya?ml', posixpath.basename(path), re.I):
-                declaration = nacos.declaration(content)
-                business, unresolved = nacos.business_declarations(content)
+                configs, unresolved = nacos.declarations(content, process)
                 warnings.extend(unresolved)
-                configs = ([declaration] if declaration else []) + business
                 if configs:
                     for declaration in configs:
                         requested = tuple(declaration[k] for k in ('address', 'namespace', 'group', 'dataId'))
@@ -976,8 +974,6 @@ def collect_config(terminal, process):
                                 warnings.append('Nacos 配置超过 20 项，未继续读取')
                         except ValueError as error:
                             warnings.append('Nacos 配置读取失败：'+path+' / '+declaration['dataId']+'；'+str(error))
-                elif re.search(r'(?m)^\s*nacos\s*:', content):
-                    warnings.append('Nacos 声明不完整或包含未支持的 YAML/变量，未读取')
         elif fields[0] == 'CONFIG_WARNING':
             warnings.append(fields[1])
     if config_rc or any('CONFIG_DONE' not in item for item in bodies):

@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import uuid
 from copy import deepcopy
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -532,46 +533,93 @@ class Service:
             raise
 
     def application_files(self, payload):
-        from application_files import catalogue, read_file, collect_nacos, read_nacos
+        from application_files import catalogue, read_file, collect_nacos, read_nacos, snapshot_configs, read_snapshot
         identifier, action = payload.get('id'), payload.get('action', 'list')
         if action == 'open': return self.open_application_file_session(payload)
         kind = payload.get('kind')
         if kind not in (None, 'config', 'log'): raise ValueError('无效应用文件类型')
-        self.application_file_context(identifier)
+        _, _, report = self.application_file_context(identifier)
         if action == 'archive': return self.start_log_archive(identifier, payload.get('group', 'all'))
         if action == 'cancel-archive':
             with self.lock:
                 if self.archive_job and self.archive_job['id'] == identifier and self.archive_job['status'] == 'running':
                     self.archive_cancel.set()
             return self.log_archive_state(identifier)
-        if action not in ('list', 'read'): raise ValueError('无效文件操作')
+        if action not in ('list', 'read', 'cached') or (action == 'cached' and kind != 'config'):
+            raise ValueError('无效文件操作')
         with self.lock:
             if self.check_job and self.check_job.get('status') == 'running': raise ValueError('请等待当前 TCP 连接检测完成后再读取文件')
             if self.job and self.job.get('status') == 'running' or any(j.get('status') == 'running' for j in self.extra_jobs):
                 raise ValueError('请等待当前采集或版本切换完成')
             if not self.files_lock.acquire(blocking=False): raise ValueError('正在读取或下载应用文件，请稍后重试')
         terminal = None
+        new_snapshot = None
         try:
-            terminal, process, application = self.open_application_files(identifier)
             path = DATA/'checks'/identifier/('files-'+kind+'.json' if kind else 'files.json')
+            if action == 'cached':
+                catalog = read(path, {})
+                snapshot_id = catalog.get('configSnapshotId', '')
+                expected = report.get('target', {}).get('startTicks')
+                if (not isinstance(snapshot_id, str) or not re.fullmatch(r'[0-9a-f]{32}', snapshot_id) or
+                        not catalog.get('startTicks') or (expected and catalog['startTicks'] != expected)):
+                    return {'catalogue':None}
+                snapshot = DATA/'checks'/identifier/'config-snapshots'/snapshot_id
+                if snapshot.is_symlink() or not snapshot.is_dir():
+                    return {'catalogue':None}
+                def available(entry):
+                    if entry.get('kind') != 'config' or entry.get('snapshotError'): return False
+                    if entry.get('source') == 'nacos':
+                        name = entry.get('storageName', '')
+                        folder, pattern = 'nacos', r'[0-9a-f]{64}\.(?:yaml|txt)'
+                    else:
+                        name = entry.get('snapshotName', '')
+                        folder, pattern = 'files', r'[0-9a-f]{32}'
+                        if name != entry.get('id'): return False
+                    if not isinstance(name, str) or not re.fullmatch(pattern, name): return False
+                    file = snapshot/folder/name
+                    return not file.is_symlink() and file.is_file()
+                return {'catalogue':catalog if any(available(entry) for entry in catalog.get('files', [])) else None}
             if action == 'list':
+                terminal, process, application = self.open_application_files(identifier)
                 result = catalogue(terminal, process, application, kind=kind)
                 if kind in (None, 'config'):
-                    collect_nacos(terminal, process, result, DATA/'checks'/identifier/'nacos')
+                    snapshot_id = uuid.uuid4().hex
+                    new_snapshot = DATA/'checks'/identifier/'config-snapshots'/snapshot_id
+                    new_snapshot.mkdir(parents=True, mode=0o700)
+                    snapshot_configs(terminal, process, result, new_snapshot/'files')
+                    collect_nacos(terminal, process, result, new_snapshot/'nacos', snapshot_folder=new_snapshot/'files')
+                    result['configSnapshotId'] = snapshot_id
+                old = read(path, {})
                 write(path, result)
+                new_snapshot = None
+                old_id = old.get('configSnapshotId', '')
+                other = read(DATA/'checks'/identifier/('files.json' if kind == 'config' else 'files-config.json'), {})
+                if re.fullmatch(r'[0-9a-f]{32}', old_id) and old_id != other.get('configSnapshotId'):
+                    shutil.rmtree(DATA/'checks'/identifier/'config-snapshots'/old_id, ignore_errors=True)
                 return result
             catalog = read(path)
-            if not catalog or catalog.get('startTicks') != process['startTicks']:
+            expected = report.get('target', {}).get('startTicks')
+            if not catalog or (expected and catalog.get('startTicks') != expected):
                 raise ValueError('请先刷新应用文件列表')
             entries = [f for f in catalog['files'] if f['id'] == payload.get('file')]
             if len(entries) != 1: raise ValueError('文件不在应用文件列表中')
-            if entries[0].get('source') == 'nacos':
-                return read_nacos(entries[0], DATA/'checks'/identifier/'nacos')
+            if entries[0]['kind'] == 'config':
+                snapshot_id = catalog.get('configSnapshotId', '')
+                if not re.fullmatch(r'[0-9a-f]{32}', snapshot_id):
+                    raise ValueError('配置快照不可用，请刷新配置文件')
+                snapshot = DATA/'checks'/identifier/'config-snapshots'/snapshot_id
+                if entries[0].get('source') == 'nacos':
+                    return read_nacos(entries[0], snapshot/'nacos')
+                return read_snapshot(entries[0], snapshot/'files')
+            terminal, process, application = self.open_application_files(identifier)
+            if catalog.get('startTicks') != process['startTicks']:
+                raise ValueError('请先刷新应用文件列表')
             return read_file(terminal, process, entries[0])
         except ValueError: raise
         except Exception: raise ValueError('通过 JumpServer 读取应用文件失败，请检查登录态和权限')
         finally:
             if terminal: terminal.close()
+            if new_snapshot: shutil.rmtree(new_snapshot, ignore_errors=True)
             self.files_lock.release()
 
     def log_archive_state(self, identifier):

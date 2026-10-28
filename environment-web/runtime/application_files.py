@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import glob
+import os
 import posixpath
 import re
 import shlex
@@ -16,6 +17,8 @@ import application_nacos as nacos
 
 MAX_ARCHIVE = 536870912
 CHUNK = 524288
+MAX_CONFIG_SNAPSHOT_FILE = 2 * 1024 * 1024
+MAX_CONFIG_SNAPSHOT_TOTAL = 128 * 1024 * 1024
 
 
 def roots_for(process, application=None):
@@ -224,9 +227,10 @@ def catalogue(terminal, process, application=None, kind=None):
     return result
 
 
-def redact_config(content):
+def redact_config(content, hide_password=True):
     """Mask common properties/YAML/XML secrets and URL authentication."""
-    secret = r'(?:password|passwd|pwd|secret|token|credential|access[-_.]?key|private[-_.]?key|api[-_.]?key)'
+    secret = (r'(?:password|passwd|pwd|secret|token|credential|access[-_.]?key|private[-_.]?key|api[-_.]?key)'
+              if hide_password else r'(?:secret|token|credential|access[-_.]?key|private[-_.]?key|api[-_.]?key)')
     content = re.sub(r'(?im)^([^\n:=]*'+secret+r'[^\n:=]*\s*[:=])[^\n]*', r'\1 ******', content)
     content = re.sub(r'(?is)(<(?:property|entry)\b[^>]*(?:name|key)=[\"\'][^\"\']*'+secret+r'[^\"\']*[\"\'][^>]*\bvalue=)[\"\'][^\"\']*[\"\']', r'\1"******"', content)
     content = re.sub(r'(?is)(<([\w:.-]*'+secret+r'[\w:.-]*)\b[^>]*>).*?(</\2\s*>)', r'\1******\3', content)
@@ -249,7 +253,7 @@ def redact_config(content):
         if re.match(r'\s*[\w.-]*'+secret+r'[\w.-]*\s*:', line, re.I):
             hidden_indent = indent
     content = ''.join(lines)
-    content = re.sub(r'(://)[^\s/<>\"\']+@', r'\1******@', content)
+    content = re.sub(r'(://)[^\s/<>\"\']+@' if hide_password else r'(://)[^\s/:<>\"\']+@', r'\1******@', content)
     content = re.sub(r'(?i)([?&]'+secret+r'=)[^&\s<>\"\']+', r'\1******', content)
     content = re.sub(r'(?s)-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----', '[私钥已隐藏]', content)
     return content
@@ -272,7 +276,82 @@ def read_file(terminal, process, entry, raw_config=False):
             'truncated': len(raw) >= 262144, 'redacted': entry['kind'] == 'config'}
 
 
-def collect_nacos(terminal, process, catalogue, folder):
+def snapshot_configs(terminal, process, catalogue, folder):
+    """Read listed files in bounded batches, preserving per-file failures."""
+    folder = Path(folder)
+    folder.mkdir(parents=True, mode=0o700, exist_ok=True)
+    entries = [e for e in catalogue['files'] if e.get('kind') == 'config' and e.get('source') != 'nacos']
+    batches, batch, batch_size = [], [], 0
+    for entry in entries:
+        size = max(0, int(entry.get('size', 0)))
+        if size > MAX_CONFIG_SNAPSHOT_FILE:
+            entry['snapshotError'] = '文件超过 2 MiB，未采集快照'
+            continue
+        if batch and (len(batch) >= 6 or batch_size + size > 4 * 1024 * 1024):
+            batches.append(batch)
+            batch, batch_size = [], 0
+        batch.append(entry)
+        batch_size += size
+    if batch: batches.append(batch)
+    saved_size = 0
+    for batch in batches:
+        args = [value for entry in batch for value in (entry['id'], entry['path'], entry['root'])]
+        body = run_script(terminal, 'application_files.sh', process['pid'], process['startTicks'], 'snapshot', *args)
+        if 'FILES_DONE' not in body.splitlines():
+            raise ValueError('配置快照读取不完整，请重试')
+        pending = {entry['id']: entry for entry in batch}
+        for line in body.splitlines():
+            fields = line.split('\t')
+            if fields[0] not in ('SNAPSHOT', 'SNAPSHOT_ERROR'):
+                continue
+            if len(fields) != (3 if fields[0] == 'SNAPSHOT' else 2) or fields[1] not in pending:
+                raise ValueError('远端返回无效配置快照')
+            entry = pending.pop(fields[1])
+            if fields[0] == 'SNAPSHOT_ERROR':
+                entry['snapshotError'] = '采集时文件不可读或已变化，请刷新配置文件'
+                continue
+            raw = base64.b64decode(fields[2], validate=True)
+            if len(raw) > MAX_CONFIG_SNAPSHOT_FILE + 1:
+                raise ValueError('远端配置快照超过单文件限制')
+            if len(raw) > MAX_CONFIG_SNAPSHOT_FILE:
+                entry['snapshotError'] = '文件超过 2 MiB，未采集快照'
+                continue
+            if saved_size + len(raw) > MAX_CONFIG_SNAPSHOT_TOTAL:
+                entry['snapshotError'] = '配置快照超过 128 MiB 总量限制，未采集该文件'
+                continue
+            saved_size += len(raw)
+            entry['snapshotTruncated'] = len(raw) > 262144
+            entry['snapshotName'] = entry['id']
+            entry['snapshotObservedAt'] = check.now()
+            fd = os.open(folder/entry['id'], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, 'wb') as out:
+                out.write(raw)
+        if pending:
+            raise ValueError('配置快照读取不完整，请重试')
+
+
+def read_snapshot(entry, folder, raw_config=False):
+    if config_ignore.is_ignored(entry['path']):
+        raise ValueError('该配置文件已在 ignorelist 中排除，请刷新应用文件列表')
+    if entry.get('snapshotError'):
+        raise ValueError(entry['snapshotError'])
+    name = entry.get('snapshotName', '')
+    if not re.fullmatch(r'[0-9a-f]{32}', name) or name != entry.get('id'):
+        raise ValueError('配置快照不可用，请刷新配置文件')
+    path = Path(folder)/name
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('配置快照不存在，请刷新配置文件')
+    raw = path.read_bytes()
+    if len(raw) > MAX_CONFIG_SNAPSHOT_FILE:
+        raise ValueError('配置快照超过大小限制')
+    content = raw[:262144].decode('utf-8', errors='replace')
+    return {'id':entry['id'], 'content':content if raw_config else redact_config(content, hide_password=False),
+            **({} if raw_config else {'redactedContent':redact_config(content), 'passwordsVisible':True}),
+            'observedAt':entry.get('snapshotObservedAt'), 'lines':None,
+            'truncated':bool(entry.get('snapshotTruncated')), 'redacted':not raw_config}
+
+
+def collect_nacos(terminal, process, catalogue, folder, snapshot_folder=None):
     candidates = [e for e in catalogue['files'] if e.get('kind') == 'config'
                   and re.fullmatch(r'(?:application|bootstrap)(?:-[\w.-]+)?\.ya?ml', posixpath.basename(e.get('path', '')), re.I)]
     if len(candidates) > 20:
@@ -281,17 +360,14 @@ def collect_nacos(terminal, process, catalogue, folder):
     attempted = set()
     for entry in candidates[:20]:
         try:
-            raw = read_file(terminal, process, entry, raw_config=True)
+            raw = (read_snapshot(entry, snapshot_folder, raw_config=True) if snapshot_folder is not None
+                   else read_file(terminal, process, entry, raw_config=True))
             if raw['truncated']:
                 catalogue['warnings'].append('应用 YAML 文件过大，未解析 Nacos 声明')
                 continue
-            declaration = nacos.declaration(raw['content'])
-            business, unresolved = nacos.business_declarations(raw['content'])
+            configs, unresolved = nacos.declarations(raw['content'], process)
             catalogue['warnings'].extend(unresolved)
-            configs = ([declaration] if declaration else []) + business
             if not configs:
-                if re.search(r'(?m)^\s*nacos\s*:', raw['content']):
-                    catalogue['warnings'].append('Nacos 声明不完整或包含未支持的 YAML/变量，未下载')
                 continue
             for config in configs:
                 requested = tuple(config[k] for k in ('address', 'namespace', 'group', 'dataId'))
@@ -311,7 +387,7 @@ def collect_nacos(terminal, process, catalogue, folder):
                     label = 'Nacos / '+config['namespace']+' / '+config['group']+' / '+config['dataId']
                     catalogue['files'].append({'id':hashlib.sha256(('nacos\0'+path.name).encode()).hexdigest()[:32],
                         'kind':'config', 'source':'nacos', 'storageName':path.name, 'path':label,
-                        'root':'Nacos', 'size':len(content), 'modifiedAt':int(time.time())})
+                        'root':'Nacos', 'size':len(content), 'modifiedAt':int(time.time()), 'snapshotObservedAt':check.now()})
                     catalogue['warnings'].append('Nacos 配置来自 '+entry['path']+' 的声明；未确认该 profile 实际生效')
                     if inferred_group:
                         catalogue['warnings'].append('Nacos Group 在可查询范围内唯一匹配；未确认应用实际使用该 Group：'+config['dataId'])
@@ -335,8 +411,10 @@ def read_nacos(entry, folder):
     raw = path.read_bytes()
     if len(raw) > nacos.MAX_CONTENT:
         raise ValueError('Nacos 文件超过大小限制')
-    return {'id':entry['id'], 'content':redact_config(raw.decode('utf-8')), 'lines':None,
-            'observedAt':check.now(), 'truncated':False, 'redacted':True}
+    content = raw.decode('utf-8')
+    return {'id':entry['id'], 'content':redact_config(content, hide_password=False),
+            'redactedContent':redact_config(content), 'passwordsVisible':True, 'lines':None,
+            'observedAt':entry.get('snapshotObservedAt') or check.now(), 'truncated':False, 'redacted':True}
 
 
 def archive_logs(terminal, process, roots, destination, progress=lambda *_:None, cancelled=lambda:False, group='all'):

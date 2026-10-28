@@ -35,6 +35,18 @@ if [[ "$mode" == list || "$mode" == list-match ]]; then
       [[ ! -s "$errors" ]] || printf 'WARNING\t部分目录无法完整列出，请检查读取权限\n'
     done
   done
+elif [[ "$mode" == snapshot ]]; then
+  while (($# >= 3)); do
+    id=$1; file=$2; root=$3; shift 3
+    [[ "$id" =~ ^[0-9a-f]{32}$ ]] || exit 5
+    if [[ "$(readlink -f -- "$file")" != "$file" || "$file" != "$root/"* || ! -f "$file" || ! -r "$file" ]]; then
+      printf 'SNAPSHOT_ERROR\t%s\n' "$id"
+      continue
+    fi
+    data=$(head -c 2097153 -- "$file" | base64 | tr -d '\n') || exit 5
+    printf 'SNAPSHOT\t%s\t%s\n' "$id" "$data"
+  done
+  (($# == 0)) || exit 5
 elif [[ "$mode" == config || "$mode" == log ]]; then
   file=$1; root=$2
   [[ "$(readlink -f -- "$file")" == "$file" && "$file" == "$root/"* && -f "$file" && -r "$file" ]] || exit 4

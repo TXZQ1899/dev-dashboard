@@ -17,6 +17,50 @@ import application_check as c
 
 
 class FileTests(unittest.TestCase):
+    def test_snapshot_reads_bounded_batches_and_marks_unreadable_files(self):
+        encode = lambda b: base64.b64encode(b).decode()
+        entries = [{'id':'a'*32, 'kind':'config', 'path':'/app/config/application.yml', 'root':'/app/config'},
+                   {'id':'b'*32, 'kind':'config', 'path':'/app/config/secret.yml', 'root':'/app/config'}]
+        body = 'SNAPSHOT\t'+entries[0]['id']+'\t'+encode(b'password: secret\n')+'\nSNAPSHOT_ERROR\t'+entries[1]['id']+'\nFILES_DONE'
+        with tempfile.TemporaryDirectory() as folder, patch.object(f, 'run_script', return_value=body):
+            f.snapshot_configs(None, process(), {'files':entries}, folder)
+            self.assertEqual((Path(folder)/entries[0]['id']).stat().st_mode & 0o777, 0o600)
+            self.assertIn('secret', f.read_snapshot(entries[0], folder)['content'])
+            self.assertNotIn('secret', f.read_snapshot(entries[0], folder)['redactedContent'])
+            self.assertIn('secret', f.read_snapshot(entries[0], folder, raw_config=True)['content'])
+            with self.assertRaisesRegex(ValueError, '不可读'): f.read_snapshot(entries[1], folder)
+        with tempfile.TemporaryDirectory() as folder, patch.object(f, 'run_script', return_value='SNAPSHOT_ERROR\t'+'f'*32+'\nFILES_DONE'):
+            with self.assertRaisesRegex(ValueError, '无效配置快照'):
+                f.snapshot_configs(None, process(), {'files':entries}, folder)
+
+    def test_snapshot_marks_truncated_content_and_requires_complete_frame(self):
+        entry = {'id':'c'*32, 'kind':'config', 'path':'/app/config/a.yml', 'root':'/app/config'}
+        body = 'SNAPSHOT\t'+entry['id']+'\t'+base64.b64encode(b'x'*262145).decode()+'\nFILES_DONE'
+        with tempfile.TemporaryDirectory() as folder, patch.object(f, 'run_script', return_value=body):
+            f.snapshot_configs(None, process(), {'files':[entry]}, folder)
+            self.assertTrue(f.read_snapshot(entry, folder)['truncated'])
+            self.assertEqual((Path(folder)/entry['id']).stat().st_size, 262145)
+        with tempfile.TemporaryDirectory() as folder, patch.object(f, 'run_script', return_value='FILES_DONE'):
+            with self.assertRaisesRegex(ValueError, '不完整'):
+                f.snapshot_configs(None, process(), {'files':[entry]}, folder)
+
+    def test_snapshot_rejects_oversized_files_without_discarding_other_files(self):
+        large = {'id':'d'*32, 'kind':'config', 'path':'/app/config/large.yml', 'root':'/app/config',
+                 'size':f.MAX_CONFIG_SNAPSHOT_FILE+1}
+        small = {'id':'e'*32, 'kind':'config', 'path':'/app/config/small.yml', 'root':'/app/config', 'size':10}
+        body = 'SNAPSHOT\t'+small['id']+'\t'+base64.b64encode(b'small').decode()+'\nFILES_DONE'
+        with tempfile.TemporaryDirectory() as folder, patch.object(f, 'run_script', return_value=body) as run:
+            f.snapshot_configs(None, process(), {'files':[large, small]}, folder)
+            self.assertIn('超过 2 MiB', large['snapshotError'])
+            self.assertEqual(f.read_snapshot(small, folder)['content'], 'small')
+            self.assertNotIn(large['path'], run.call_args.args)
+
+    def test_snapshot_honours_updated_ignore_rules(self):
+        entry = {'id':'a'*32, 'kind':'config', 'path':'/app/config/private.yml', 'snapshotName':'a'*32}
+        with tempfile.TemporaryDirectory() as folder, patch.object(f.config_ignore, 'is_ignored', return_value=True):
+            with self.assertRaisesRegex(ValueError, 'ignorelist'):
+                f.read_snapshot(entry, folder)
+
     def test_catalogue_follows_server_xml_docbase(self):
         encode = lambda value: base64.b64encode(value.encode()).decode()
         base = '/opt/apache-tomcat_dolphin-webhook'
@@ -120,6 +164,19 @@ spring.application.name=orders
         self.assertNotIn('secret-', result)
         self.assertIn('spring.application.name=orders', result)
         self.assertIn('db:3306', result)
+
+    def test_config_preview_reveals_passwords_but_masks_other_secrets(self):
+        text = ('db.password=pass-one\nredis:\n  passwd: pass-two\n'
+                '<property name="password" value="pass-three"/>\n<password>pass-four</password>\n'
+                '<user password="pass-five"/>\nurl=jdbc:mysql://name:pass-six@db:3306/db?password=pass-seven&token=token-one\n'
+                'api.token=token-two\n-----BEGIN PRIVATE KEY-----\nprivate-key\n-----END PRIVATE KEY-----\n')
+        preview = f.redact_config(text, hide_password=False)
+        for password in ('pass-one', 'pass-two', 'pass-three', 'pass-four', 'pass-five', 'pass-six', 'pass-seven'):
+            self.assertIn(password, preview)
+            self.assertNotIn(password, f.redact_config(text))
+        self.assertNotIn('token-one', preview)
+        self.assertNotIn('token-two', preview)
+        self.assertNotIn('private-key', preview)
 
     def test_catalogue_deduplicates_and_rejects_escaped_paths(self):
         b64 = lambda s: base64.b64encode(s.encode()).decode()

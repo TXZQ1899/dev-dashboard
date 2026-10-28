@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import tempfile
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -12,11 +13,119 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 MAX_CONTENT = 262144
 
 
+def documents(content):
+    """Split top-level YAML documents without combining profile-specific values."""
+    parts, current = [], []
+    for line in content.splitlines():
+        if re.fullmatch(r'(?:---|\.\.\.)(?:\s+#.*)?\s*', line):
+            if current:
+                parts.append('\n'.join(current))
+                current = []
+        else:
+            current.append(line)
+    if current:
+        parts.append('\n'.join(current))
+    return parts
+
+
+def declarations(content, process=None):
+    """Collect independent declarations while preserving unresolved documents."""
+    found, warnings = [], []
+    for document in documents(content):
+        config = declaration(document)
+        business, issues = business_declarations(document)
+        warnings.extend(issues)
+        if config:
+            found.append(config)
+        found.extend(business)
+        if not config and not business and re.search(r'(?m)^nacos\s*:', document):
+            warnings.append('Nacos 声明不完整或包含未支持的 YAML/变量')
+    spring, issues = spring_declarations(content, process or {})
+    found.extend(spring)
+    warnings.extend(issues)
+    return found, warnings
+
+
+def spring_scalars(document):
+    """Extract relevant literal scalar paths, rejecting duplicate/complex values."""
+    result, stack = {}, []
+    for line in document.splitlines():
+        if re.match(r'^ *\t', line):
+            raise ValueError('YAML 缩进含制表符')
+        match = re.match(r'^( *)([\w.-]+):(?:\s+(.*?))?\s*$', line)
+        if not match:
+            continue
+        level, key, value = len(match[1]), match[2], match[3]
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        path = '.'.join([item[1] for item in stack]+[key])
+        if value is None:
+            stack.append((level, key))
+            continue
+        if path not in ('spring.application.name', 'spring.profiles', 'spring.profiles.active',
+                        'spring.config.activate.on-profile') and not path.startswith('spring.cloud.nacos.config.'):
+            continue
+        value = re.sub(r'\s+#.*$', '', value).strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if path in result:
+            raise ValueError('Spring 配置包含重复字段')
+        result[path] = value
+    return result
+
+
+def spring_declarations(content, process):
+    """Resolve one explicitly selected Spring profile; never combine alternate profiles."""
+    try:
+        docs = [spring_scalars(document) for document in documents(content)]
+        relevant = [d for d in docs if any(k.startswith('spring.cloud.nacos.config.') for k in d)]
+        if not relevant:
+            return [], []
+        common = [d for d in docs if not (d.get('spring.profiles') or d.get('spring.config.activate.on-profile'))]
+        def single(key):
+            values = {d[key] for d in common if key in d}
+            if len(values) > 1: raise ValueError('多个 Spring 文档声明了不同的 '+key)
+            return next(iter(values), '')
+        name, profile = single('spring.application.name'), single('spring.profiles.active')
+        args = shlex.split(process.get('command', ''))
+        for key in ('spring.application.name', 'spring.profiles.active'):
+            values = [arg.split('=', 1)[1] for arg in args if arg.startswith(('-D'+key+'=', '--'+key+'='))]
+            if len(set(values)) > 1: raise ValueError('进程启动参数包含冲突的 '+key)
+            if values:
+                if key.endswith('.name'): name = values[0]
+                else: profile = values[0]
+        if not re.fullmatch(r'[\w.-]+', profile):
+            raise ValueError('无法确定唯一 Spring profile')
+        selected = [d for d in relevant if not (d.get('spring.profiles') or d.get('spring.config.activate.on-profile'))
+                    or d.get('spring.profiles') == profile or d.get('spring.config.activate.on-profile') == profile]
+        if len(selected) != 1:
+            raise ValueError('当前 profile 的 Nacos 声明不存在或不唯一')
+        config = selected[0]
+        get = lambda key: config.get('spring.cloud.nacos.config.'+key, '')
+        if get('enabled').lower() == 'false': return [], []
+        prefix = get('prefix') or get('name') or name
+        extension = get('file-extension') or get('fileExtension') or 'properties'
+        address = get('server-addr') or get('serverAddr')
+        group = get('group') or 'DEFAULT_GROUP'
+        namespace, username, password = get('namespace'), get('username'), get('password')
+        if (not re.fullmatch(r'[\w.-]+', prefix) or not re.fullmatch(r'[\w-]+', extension) or
+                not address or any('${' in value or (value and value[0] in '[{&*!|>')
+                                   for value in (address, group, namespace, username, password))):
+            raise ValueError('Spring Nacos 配置包含未解析的值')
+        base = {'address':address, 'group':group, 'namespace':namespace,
+                'username':username, 'password':password}
+        ids = [prefix, prefix+'.'+extension, prefix+'-'+profile+'.'+extension]
+        return [{**base, 'dataId':data_id} for data_id in ids], [
+            'Spring Nacos Data ID 根据声明和 profile '+profile+' 推导，环境变量和其他覆盖未核实']
+    except ValueError as error:
+        return [], ['Spring Nacos 声明无法解析：'+str(error)]
+
+
 def business_declarations(content):
     """Extract literal business Data IDs and retain an unknown group as empty."""
     values, indent = {}, None
     for line in content.splitlines():
-        if '\t' in line or line.strip() in ('---', '...'):
+        if re.match(r'^ *\t', line):
             return [], ['顶层 Nacos 声明使用未支持的 YAML 格式']
         if not line.strip() or line.lstrip().startswith('#'):
             continue
@@ -25,7 +134,7 @@ def business_declarations(content):
             continue
         level, key, value = len(match[1]), match[2], match[3]
         if indent is None:
-            if key == 'nacos' and value is None:
+            if level == 0 and key == 'nacos' and value is None:
                 indent = level
             continue
         if level <= indent:
@@ -66,7 +175,7 @@ def declaration(content):
     for line in content.splitlines():
         if not line.strip() or line.lstrip().startswith('#'):
             continue
-        if '\t' in line or line.strip() in ('---', '...'):
+        if re.match(r'^ *\t', line):
             return None
         m = re.match(r'^( *)([\w.-]+):(?:\s+(.*?))?\s*$', line)
         if not m:
@@ -78,7 +187,10 @@ def declaration(content):
         if value is None:
             stack.append((indent, key))
             continue
-        if not path.startswith('nacos.config.') and path != 'nacos.enabled':
+        if path not in ('nacos.enabled', 'nacos.config.enabled', 'nacos.config.server-addr',
+                        'nacos.config.serverAddr', 'nacos.config.data-id', 'nacos.config.dataId',
+                        'nacos.config.group', 'nacos.config.namespace', 'nacos.config.username',
+                        'nacos.config.password'):
             continue
         value = re.sub(r'\s+#.*$', '', value).strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":

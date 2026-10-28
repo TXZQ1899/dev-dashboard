@@ -282,6 +282,9 @@ class SettingsTests(unittest.TestCase):
         with patch.object(self.service, 'open_application_files', return_value=(Terminal(), {'startTicks':'54321'}, None)), \
              patch('application_files.catalogue', side_effect=lambda *_args, kind: {
                  'startTicks':'54321', 'files':[{'id':kind, 'kind':kind}]}) as catalogue, \
+             patch('application_files.snapshot_configs'), \
+             patch('application_files.collect_nacos'), \
+             patch('application_files.read_snapshot', return_value={'content':'preview'}) as read_snapshot, \
              patch('application_files.read_file', return_value={'content':'preview'}) as read_file:
             for kind in ('config', 'log'):
                 result = self.service.application_files({'id':identifier, 'action':'list', 'kind':kind})
@@ -291,7 +294,8 @@ class SettingsTests(unittest.TestCase):
                 self.assertEqual(self.service.application_files({'id':identifier, 'action':'read', 'kind':kind, 'file':kind}), {'content':'preview'})
             with self.assertRaisesRegex(ValueError, '文件不在'):
                 self.service.application_files({'id':identifier, 'action':'read', 'kind':'config', 'file':'log'})
-            self.assertEqual(read_file.call_count, 2)
+            self.assertEqual(read_file.call_count, 1)
+            self.assertEqual(read_snapshot.call_count, 1)
         self.assertFalse(self.service.files_lock.locked())
         s.write(self.data/'current.json', {'id':'unrelated-version'})
         self.assertEqual(self.service.application_file_context(identifier)[0]['id'], 'server')
@@ -301,14 +305,80 @@ class SettingsTests(unittest.TestCase):
         class Terminal:
             def close(self): pass
         entry = {'id':'nacos-id', 'kind':'config', 'source':'nacos', 'storageName':'a'*64+'.yaml'}
-        with patch.object(self.service, 'open_application_files', return_value=(Terminal(), {'startTicks':'54321'}, None)), \
+        with patch.object(self.service, 'open_application_files', return_value=(Terminal(), {'startTicks':'54321'}, None)) as remote, \
              patch('application_files.catalogue', return_value={'startTicks':'54321', 'files':[], 'warnings':[]}), \
-             patch('application_files.collect_nacos', side_effect=lambda _t, _p, result, _f: result['files'].append(entry)), \
+             patch('application_files.snapshot_configs'), \
+             patch('application_files.collect_nacos', side_effect=lambda _t, _p, result, _f, **_kw: result['files'].append(entry)), \
              patch('application_files.read_nacos', return_value={'content':'redacted'}) as read_nacos:
             self.service.application_files({'id':identifier, 'action':'list', 'kind':'config'})
             result = self.service.application_files({'id':identifier, 'action':'read', 'kind':'config', 'file':'nacos-id'})
+            self.assertEqual(remote.call_count, 1)
         self.assertEqual(result['content'], 'redacted')
-        self.assertEqual(read_nacos.call_args.args[1], self.data/'checks'/identifier/'nacos')
+        self.assertEqual(read_nacos.call_args.args[1].name, 'nacos')
+        self.assertEqual(read_nacos.call_args.args[1].parent.parent.name, 'config-snapshots')
+
+    def test_config_snapshot_read_does_not_reconnect_and_failed_refresh_preserves_snapshot(self):
+        identifier = self.service.application_files({**self.application_check_fixture(), 'action':'open'})['id']
+        entry = {'id':'a'*32, 'kind':'config', 'path':'/app/config/application.yml', 'root':'/app/config'}
+        class Terminal:
+            def close(self): pass
+        def capture(_terminal, _process, result, folder):
+            folder.mkdir(parents=True)
+            (folder/entry['id']).write_text('password: secret\nvalue: first')
+            result['files'][0].update(snapshotName=entry['id'], snapshotObservedAt='2026-10-28T00:00:00Z')
+        with patch.object(self.service, 'open_application_files', return_value=(Terminal(), {'startTicks':'54321'}, None)) as open_remote, \
+             patch('application_files.catalogue', side_effect=lambda *_args, **_kw: {'startTicks':'54321','files':[entry.copy()],'warnings':[]}), \
+             patch('application_files.snapshot_configs', side_effect=capture), \
+             patch('application_files.collect_nacos'):
+            result = self.service.application_files({'id':identifier, 'action':'list', 'kind':'config'})
+            cached = self.service.application_files({'id':identifier, 'action':'cached', 'kind':'config'})
+            self.assertEqual(cached['catalogue']['configSnapshotId'], result['configSnapshotId'])
+            preview = self.service.application_files({'id':identifier, 'action':'read', 'kind':'config', 'file':entry['id']})
+            self.assertEqual(open_remote.call_count, 1)
+            self.assertIn('secret', preview['content'])
+            self.assertNotIn('secret', preview['redactedContent'])
+            self.assertIn('value: first', preview['content'])
+            self.assertEqual(preview['observedAt'], '2026-10-28T00:00:00Z')
+            with patch('application_files.snapshot_configs', side_effect=ValueError('读取失败')):
+                with self.assertRaisesRegex(ValueError, '读取失败'):
+                    self.service.application_files({'id':identifier, 'action':'list', 'kind':'config'})
+            self.assertEqual(s.read(self.data/'checks'/identifier/'files-config.json')['configSnapshotId'], result['configSnapshotId'])
+            preview = self.service.application_files({'id':identifier, 'action':'read', 'kind':'config', 'file':entry['id']})
+            self.assertIn('value: first', preview['content'])
+            old_snapshot = self.data/'checks'/identifier/'config-snapshots'/result['configSnapshotId']
+            self.assertTrue(old_snapshot.is_dir())
+            replacement = self.service.application_files({'id':identifier, 'action':'list', 'kind':'config'})
+            self.assertNotEqual(replacement['configSnapshotId'], result['configSnapshotId'])
+            self.assertFalse(old_snapshot.exists())
+
+    def test_legacy_config_list_requires_refresh_without_remote_access(self):
+        identifier = self.service.application_files({**self.application_check_fixture(), 'action':'open'})['id']
+        s.write(self.data/'checks'/identifier/'files-config.json', {'startTicks':'54321','files':[{'id':'x','kind':'config'}]})
+        with patch.object(self.service, 'open_application_files') as remote:
+            self.assertIsNone(self.service.application_files({'id':identifier, 'action':'cached', 'kind':'config'})['catalogue'])
+            with self.assertRaisesRegex(ValueError, '刷新配置文件'):
+                self.service.application_files({'id':identifier, 'action':'read', 'kind':'config', 'file':'x'})
+            remote.assert_not_called()
+
+    def test_cached_config_requires_available_identity_bound_snapshot(self):
+        identifier = self.service.application_files({**self.application_check_fixture(), 'action':'open'})['id']
+        folder = self.data/'checks'/identifier
+        sid, file_id = 'b'*32, 'a'*32
+        snapshot = folder/'config-snapshots'/sid/'files'
+        snapshot.mkdir(parents=True)
+        (snapshot/file_id).write_text('content')
+        s.write(folder/'identity.json', {'startTicks':'54321'})
+        catalog = {'configSnapshotId':sid, 'startTicks':'54321', 'files':[{'id':file_id, 'kind':'config', 'snapshotName':file_id}]}
+        with patch.object(self.service, 'open_application_files') as remote:
+            s.write(folder/'files-config.json', catalog)
+            self.assertEqual(self.service.application_files({'id':identifier, 'action':'cached', 'kind':'config'})['catalogue'], catalog)
+            s.write(folder/'identity.json', {'startTicks':'99999'})
+            self.assertIsNone(self.service.application_files({'id':identifier, 'action':'cached', 'kind':'config'})['catalogue'])
+            s.write(folder/'identity.json', {'startTicks':'54321'})
+            (snapshot/file_id).unlink()
+            self.assertIsNone(self.service.application_files({'id':identifier, 'action':'cached', 'kind':'config'})['catalogue'])
+            with self.assertRaises(ValueError): self.service.application_files({'id':identifier, 'action':'cached', 'kind':'log'})
+            remote.assert_not_called()
 
     def test_standalone_files_and_collection_or_tcp_checks_are_mutually_exclusive(self):
         payload = self.application_check_fixture()

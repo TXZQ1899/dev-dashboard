@@ -4,13 +4,36 @@ import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { formatBeijingTime } from '@/lib/datetime';
 
-type Entry = { id: string; kind: 'config' | 'log'; logGroup?: 'current' | 'history'; path: string; size: number; modifiedAt: number };
+type Entry = { id: string; kind: 'config' | 'log'; source?: string; snapshotError?: string; logGroup?: 'current' | 'history'; path: string; size: number; modifiedAt: number };
 type Catalogue = { files: Entry[]; roots: { config: string[]; log: string[] }; warnings: string[]; observedAt: string };
 type Content = { content: string; truncated: boolean; redacted: boolean; observedAt: string };
 type Archive = { status: string; logGroup?: 'all' | 'history'; phase?: string; transferred?: number; total?: number; fileCount?: number; size?: number; warnings?: string[] };
 const api = '/api/settings/application-files';
 function size(bytes: number) { return bytes < 1024 ? `${bytes} B` : bytes < 1048576 ? `${(bytes / 1024).toFixed(1)} KiB` : `${(bytes / 1048576).toFixed(1)} MiB`; }
 function isCurrentLog(file: Entry) { return file.kind === 'log' && file.logGroup !== 'history' && /\.(log|out|txt)$/.test(file.path); }
+function localConfigProfile(file: Entry) {
+  if (!file.path.startsWith('/')) return '';
+  const name = file.path.split('/').pop() || '';
+  return /^(?:application|bootstrap)-([A-Za-z0-9][A-Za-z0-9_.-]*)\.(?:ya?ml|properties)$/i.exec(name)?.[1] || '';
+}
+const configProfiles = ['dev', 'prod', 'test', 'uat'];
+const configTabLabels: Record<string, string> = {
+  webinf: '/var/www/webapps/WEB-INF', tomcat: '/opt/apache_tomcat', nacos: 'Nacos',
+  'profile:dev': 'dev', 'profile:prod': 'prod', 'profile:test': 'test', 'profile:uat': 'uat', other: 'other',
+};
+function configGroup(file: Entry) {
+  if (file.source !== 'nacos') {
+    const profile = localConfigProfile(file);
+    if (profile) return configProfiles.includes(profile.toLowerCase()) ? 'profile:' + profile.toLowerCase() : 'other';
+    if (/^\/var\/www\/webapps\/(?:[^/]+\/)*WEB-INF\//.test(file.path)) return 'webinf';
+    if (/^\/opt\/apache[-_]tomcat[^/]*(?:\/|$)/i.test(file.path)) return 'tomcat';
+    return 'other';
+  }
+  const dataId = file.path.split(' / ').slice(3).join(' / ');
+  const stem = dataId.replace(/\.(?:ya?ml|properties)$/i, '');
+  const profile = stem !== dataId ? configProfiles.find((name) => stem.toLowerCase().endsWith('-' + name)) : undefined;
+  return profile ? 'profile:' + profile : 'nacos';
+}
 
 export function ApplicationFiles({ asset, pid, kind }: { asset: string; pid: number; kind: 'config' | 'log' }) {
   const [session, setSession] = useState<{ asset?: string; pid?: number; id?: string; error?: string }>({});
@@ -36,9 +59,10 @@ export function ApplicationFileBrowser({ id, kind }: { id: string; kind: 'config
   const [catalogue, setCatalogue] = useState<Catalogue | null>(null);
   const [contents, setContents] = useState<Record<string, Content>>({});
   const [selected, setSelected] = useState('');
-  const [busy, setBusy] = useState('');
+  const [busy, setBusy] = useState(kind === 'config' ? 'cached' : '');
   const [error, setError] = useState('');
   const [archive, setArchive] = useState<Archive>({ status: 'loading' });
+  const [configTab, setConfigTab] = useState('');
   const running = archive.status === 'running';
 
   const request = useCallback(async <T,>(body: Record<string, unknown>) => {
@@ -70,8 +94,23 @@ export function ApplicationFileBrowser({ id, kind }: { id: string; kind: 'config
 
   useEffect(() => {
     if (kind === 'config') {
-      const timer = setTimeout(() => void load(), 0);
-      return () => clearTimeout(timer);
+      let live = true;
+      const timer = setTimeout(() => {
+        setBusy('cached'); setError('');
+        void request<{ catalogue: Catalogue | null }>({ action: 'cached' }).then((result) => {
+          if (!live) return;
+          if (result.catalogue) {
+            setCatalogue(result.catalogue);
+            setContents({});
+            setBusy('');
+          } else {
+            void load();
+          }
+        }).catch((e: unknown) => {
+          if (live) { setError(e instanceof Error ? e.message : '读取历史配置失败'); setBusy(''); }
+        });
+      }, 0);
+      return () => { live = false; clearTimeout(timer); };
     }
     let live = true;
     void fetch(api + '/logs?id=' + encodeURIComponent(id), { cache: 'no-store' }).then(async (r) => {
@@ -84,7 +123,7 @@ export function ApplicationFileBrowser({ id, kind }: { id: string; kind: 'config
       if (result.status !== 'running') void load();
     }).catch((error: Error) => { if (live) { setArchive({ status: 'idle' }); setError(error.message); } });
     return () => { live = false; };
-  }, [id, load, kind]);
+  }, [id, load, kind, request]);
 
   useEffect(() => {
     if (!running) return;
@@ -105,13 +144,15 @@ export function ApplicationFileBrowser({ id, kind }: { id: string; kind: 'config
     catch (e) { setError(e instanceof Error ? e.message : '日志打包失败'); }
     finally { setBusy(''); }
   }
-  function downloadConfig(file: Entry, content: Content) {
-    const url = URL.createObjectURL(new Blob([content.content], { type: 'text/plain;charset=utf-8' }));
-    const link = document.createElement('a');
-    link.href = url; link.download = (file.path.split('/').pop() || 'config') + '.redacted.txt'; link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
   const configs = catalogue?.files.filter((f) => f.kind === 'config') || [];
+  const fixedGroups = ['webinf', 'tomcat', 'nacos', ...configProfiles.map((profile) => 'profile:' + profile)];
+  const configGroups = new Map<string, Entry[]>(fixedGroups.map((key) => [key, []]));
+  for (const file of configs) {
+    const group = configGroup(file);
+    configGroups.set(group, [...(configGroups.get(group) || []), file]);
+  }
+  const groupKeys = [...configGroups.keys()];
+  const currentConfigTab = configGroups.has(configTab) ? configTab : groupKeys.find((key) => configGroups.get(key)?.length) || groupKeys[0];
   const logs = catalogue?.files.filter(isCurrentLog) || [];
   const history = catalogue?.files.filter((f) => f.kind === 'log' && f.logGroup === 'history') || [];
   const current = contents[selected];
@@ -119,17 +160,23 @@ export function ApplicationFileBrowser({ id, kind }: { id: string; kind: 'config
   return <section className="check-files" aria-label={kind === 'config' ? '应用配置文件' : '应用日志文件'}>
     <div className="check-heading"><h3>{kind === 'config' ? `当前应用的配置文件${catalogue ? ` · ${configs.length} 个` : ''}` : '应用日志'}</h3><Button variant="outline" disabled={!!busy || running} onClick={() => void load()}>{kind === 'config' ? '刷新配置文件' : '刷新日志文件'}</Button></div>
     {error && <p className="check-error" role="alert">{error}</p>}
-    {busy === 'list' && <output>正在通过 JumpServer 读取文件列表…</output>}
+    {busy === 'cached' && <output>正在读取历史配置快照…</output>}
+    {busy === 'list' && <output>{kind === 'config' ? '正在采集配置文件快照…' : '正在通过 JumpServer 读取文件列表…'}</output>}
     {kind === 'config' && <>
-    <p className="check-note">点击文件展开配置详情；常见密码、令牌和私钥字段已遮盖，可下载本次读取的已脱敏内容。Nacos 配置原文保存在服务端数据卷中。</p>
+    <p className="check-note">显示最近一次采集的配置快照{catalogue?.observedAt ? `（${formatBeijingTime(catalogue.observedAt, '—')}）` : ''}，点击刷新可重新采集。按文件名中的 profile 分组，不代表该 profile 已生效。预览明文显示密码，令牌和私钥等仍会遮盖。</p>
     {catalogue && !configs.length && <p>已检查目录中没有找到配置文件。</p>}
-    <div className="check-config-list">{configs.map((file) => <details className="check-file" key={file.id} onToggle={(event) => {
+    {catalogue && <Tabs value={currentConfigTab} onValueChange={(value) => setConfigTab(value ?? '')} className="check-config-tabs">
+      <div className="check-config-tab-scroll"><TabsList aria-label="配置文件 profile" variant="line">
+        {groupKeys.map((group) => <TabsTrigger key={group} value={group}>{configTabLabels[group]}（{configGroups.get(group)?.length}）</TabsTrigger>)}
+      </TabsList></div>
+      {groupKeys.map((group) => <TabsContent key={group} value={group}>{!configGroups.get(group)?.length && <p>该分类暂无配置文件。</p>}<div className="check-config-list">{configGroups.get(group)?.map((file) => <details className="check-file" key={file.id} onToggle={(event) => {
       if (event.currentTarget.open && !contents[file.id] && !busy && !running) void readFile(file.id);
-    }}><summary>{file.path}<small>{size(file.size)} · {formatBeijingTime(file.modifiedAt * 1000, '—')}</small></summary>
-      {contents[file.id] ? <><Button variant="outline" onClick={() => downloadConfig(file, contents[file.id])}>下载已脱敏内容</Button><pre>{contents[file.id].content}</pre>{contents[file.id].truncated && <p>文件较大，仅展示和下载前 256 KiB 的已脱敏内容。</p>}</> : <Button variant="outline" disabled={!!busy || running} onClick={() => void readFile(file.id)}>{busy === file.id ? '正在读取…' : '读取配置内容'}</Button>}
-    </details>)}</div>
+    }}><summary>{file.path}<small>{size(file.size)} · {formatBeijingTime(file.modifiedAt * 1000, '—')}{file.snapshotError && ` · ${file.snapshotError}`}</small></summary>
+      {contents[file.id] ? <><pre>{contents[file.id].content}</pre>{contents[file.id].truncated && <p>文件较大，仅展示前 256 KiB 的内容。</p>}</> : <Button variant="outline" disabled={!!busy || running} onClick={() => void readFile(file.id)}>{busy === file.id ? '正在读取…' : '读取配置内容'}</Button>}
+    </details>)}</div></TabsContent>)}
+    </Tabs>}
     </>}
-    {catalogue?.warnings.map((warning, i) => <p className="check-note" key={i}>{warning}</p>)}
+    {kind === 'log' && catalogue?.warnings.map((warning, i) => <p className="check-note" key={i}>{warning}</p>)}
     {kind === 'log' && <Tabs defaultValue="current" className="check-log-tabs">
       <TabsList aria-label="应用日志分类" variant="line">
         <TabsTrigger value="current">当前日志{catalogue ? `（${logs.length}）` : ''}</TabsTrigger>

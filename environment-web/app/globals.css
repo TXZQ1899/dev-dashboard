@@ -1952,6 +1952,7 @@ h2 {
 .check-log-history td:not(:first-child) { white-space: nowrap; }
 @media (max-width: 700px) { .check-page { padding: 16px 12px; } .check-page .application-check-panel { padding: 16px 12px; } .check-heading h2 { font-size: 20px; } }
 .check-config-list { max-height: 480px; overflow: auto; padding-right: 6px; }
+.check-config-tab-scroll { max-width: 100%; overflow-x: auto; }
 .check-config-list:empty { display: none; }
 .check-files output { display: block; }
 

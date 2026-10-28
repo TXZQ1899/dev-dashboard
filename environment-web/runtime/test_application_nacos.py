@@ -21,8 +21,104 @@ YAML = '''nacos:
   dataId: "unrelated:one,unrelated:two"
 '''
 
+SPRING_YAML = '''spring:
+  application:
+    name: example-offline
+  profiles:
+    active: dev
+---
+spring:
+  profiles: dev
+  cloud:
+    nacos:
+      config:
+        server-addr: 192.0.2.10:8848 # server
+        file-extension: yaml
+        username: user
+        password: example-password
+        namespace: test-namespace
+        group: DEFAULT_GROUP
+---
+spring:
+  profiles: prod
+  cloud:
+    nacos:
+      config:
+        server-addr: 192.0.2.20:8848
+        file-extension: yaml
+        username: user
+        password: another-password
+        namespace: prod-namespace
+        group: DEFAULT_GROUP
+'''
+
 
 class NacosTests(unittest.TestCase):
+    def test_spring_bootstrap_selects_profile_and_derives_data_ids(self):
+        entries, warnings = nacos.declarations(SPRING_YAML, {'command':'java -jar app.jar'})
+        self.assertEqual([e['dataId'] for e in entries], ['example-offline', 'example-offline.yaml', 'example-offline-dev.yaml'])
+        self.assertEqual({e['address'] for e in entries}, {'192.0.2.10:8848'})
+        self.assertEqual({e['namespace'] for e in entries}, {'test-namespace'})
+        self.assertEqual(entries[0]['password'], 'example-password')
+        self.assertTrue(any('未核实' in warning for warning in warnings))
+        entries, _ = nacos.declarations(SPRING_YAML, {'command':'java -Dspring.profiles.active=prod -jar app.jar'})
+        self.assertEqual({e['address'] for e in entries}, {'192.0.2.20:8848'})
+        self.assertEqual(entries[-1]['dataId'], 'example-offline-prod.yaml')
+
+    def test_spring_unknown_profile_does_not_cross_environments(self):
+        for command in ('java -Dspring.profiles.active=unknown',
+                        'java -Dspring.profiles.active=dev,prod',
+                        'java -Dspring.profiles.active=dev -Dspring.profiles.active=prod'):
+            entries, warnings = nacos.declarations(SPRING_YAML, {'command':command})
+            self.assertEqual(entries, [])
+            self.assertTrue(any('Spring Nacos' in warning for warning in warnings))
+
+    def test_spring_bootstrap_catalogue_fetches_selected_profile(self):
+        entry = {'id':'a','kind':'config','path':'/a/b/WEB-INF/classes/config/bootstrap.yml'}
+        result = {'files':[entry], 'warnings':[]}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(files, 'read_file', return_value={'content':SPRING_YAML, 'truncated':False}), \
+             patch.object(nacos, 'fetch', return_value=b'redis.host: 192.0.2.25') as fetch:
+            files.collect_nacos(None, {'command':'java'}, result, directory)
+        self.assertEqual(len(result['files']), 4)
+        self.assertEqual({call.args[0]['namespace'] for call in fetch.call_args_list}, {'test-namespace'})
+        self.assertFalse(any('未支持的 YAML' in warning for warning in result['warnings']))
+
+    def test_multi_document_yaml_collects_independent_configs(self):
+        content = YAML.replace('  enabled: true\n  dataId: "unrelated:one,unrelated:two"', '')
+        content += '\n---\nspring:\n  profiles: other\n' + YAML.replace('dolphin-webhook-prod.yaml', 'other.yaml').replace('  enabled: true\n  dataId: "unrelated:one,unrelated:two"', '')
+        found, warnings = nacos.declarations(content)
+        self.assertEqual([item['dataId'] for item in found], ['dolphin-webhook-prod.yaml', 'other.yaml'])
+        self.assertEqual(warnings, [])
+
+    def test_documents_do_not_merge_incomplete_coordinates(self):
+        content = '''nacos:\n  config:\n    server-addr: 192.0.2.10:8848\n---\nnacos:\n  config:\n    data-id: orphan.yaml\n'''
+        found, warnings = nacos.declarations(content)
+        self.assertEqual(found, [])
+        self.assertEqual(len(warnings), 2)
+
+    def test_unrelated_placeholders_do_not_invalidate_nacos(self):
+        content = YAML.replace('    bootstrap:', '    ignored-setting: ${unresolved}\n    bootstrap:')
+        self.assertEqual(nacos.declaration(content)['dataId'], 'dolphin-webhook-prod.yaml')
+
+    def test_multidocument_catalogue_and_endpoint_probe(self):
+        content = 'spring:\n  profiles: default\n---\n' + YAML.replace('  dataId: "unrelated:one,unrelated:two"', '')
+        entry = {'id':'a', 'kind':'config', 'path':'/a/b/config/bootstrap.yml'}
+        result = {'files':[entry], 'warnings':[]}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(files, 'read_file', return_value={'content':content, 'truncated':False}), \
+             patch.object(nacos, 'fetch', return_value=b'redis.host: 192.0.2.25\nredis.port: 6379'):
+            files.collect_nacos(None, {}, result, directory)
+            self.assertEqual(len(result['files']), 2)
+            self.assertFalse(any('未支持' in warning for warning in result['warnings']))
+            class Terminal:
+                def run(self, *args, **kwargs):
+                    encode = lambda s: base64.b64encode(s.encode()).decode()
+                    return 0, 'CONFIG_FILE\t'+encode(entry['path'])+'\t'+encode(content)+'\nCONFIG_DONE'
+            with patch.object(check, 'config_roots', return_value=['/a/b/config']):
+                report = check.collect_config(Terminal(), {'command':'java'})
+            self.assertTrue(any(e['host'] == '192.0.2.25' for e in report['endpoints']))
+
     def test_declaration_uses_config_identity_separately_from_business_dataids(self):
         result = nacos.declaration(YAML)
         self.assertEqual(result['dataId'], 'dolphin-webhook-prod.yaml')
@@ -131,7 +227,9 @@ class NacosTests(unittest.TestCase):
             self.assertEqual(saved.stat().st_mode & 0o777, 0o600)
             self.assertIn('secret', saved.read_text())
             preview = files.read_nacos(item, directory)
-            self.assertNotIn('secret', preview['content'])
+            self.assertIn('secret', preview['content'])
+            self.assertNotIn('secret', preview['redactedContent'])
+            self.assertTrue(preview['passwordsVisible'])
             self.assertTrue(preview['redacted'])
             with self.assertRaises(ValueError): files.read_nacos(item | {'storageName':'../secret'}, directory)
 
