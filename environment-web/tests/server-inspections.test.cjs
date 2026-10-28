@@ -49,6 +49,29 @@ function render(assets,options={}) {
 const process={pid:2,ppid:1,user:'app',name:'java',kind:'Java',elapsedSeconds:365*86400,startedAt:'2025-09-17T12:00:00Z',command:'java -jar /srv/app-api.jar --port=8080'};
 const inspection={checkedAt:'2026-09-17T12:00:00Z',loginStatus:'can_login',reason:'',processStatus:'partial',nginxStatus:'partial',warnings:['权限不足'],processes:[process],nginxRoutes:[{domains:['example.com'],listen:['443 ssl'],uri:'/api',directive:'proxy_pass',target:'http://up',upstream:'up',backends:[{host:'10.0.0.1',port:'8080',resolution:'ip'}]}]};
 const asset={id:'a',ip:'10.0.0.2',hostname:'server',inspection};
+test('Docker 容器 init、子进程和代理在进程列表中显示证据和容器信息',()=>{
+ const container={id:'container1',name:'redis4',image:'redis:5',initPid:100,command:'redis-server --port 6379',ports:[{containerPort:'6379/tcp',hostIp:'0.0.0.0',hostPort:'6379'}]};
+ const init={...process,pid:100,ppid:1,name:'redis-server',command:'redis-server'};
+ const child={...process,pid:101,ppid:100,name:'worker',command:'worker'};
+ const proxy={...process,pid:102,ppid:1,name:'docker-proxy-cu',command:'/usr/bin/docker-proxy-current -proto tcp -host-ip 0.0.0.0 -host-port 6379 -container-ip 172.17.0.2 -container-port 6379',ports:[6379]};
+ const a={...asset,inspection:{...inspection,processes:[init,child,proxy],docker:{status:'complete',containers:[container]}}};
+ const rows=lib.processRows([a],now);
+ assert.equal(rows.find(r=>r.process.pid===100).docker.basis,'init');
+ assert.equal(rows.find(r=>r.process.pid===101).docker.basis,'descendant');
+ assert.equal(rows.find(r=>r.process.pid===102).docker.basis,'proxy');
+ const html=render([a],{expanded:{a:{type:'全部进程',page:1}}});
+ for(const text of ['redis4','redis:5','init PID 匹配','进程树推断','端口映射推断','容器启动命令','docker-proxy-cu'])assert.ok(html.includes(text),text);
+ assert.equal(lib.filterProcesses(rows,'redis:5','all').length,3);
+ assert.equal(lib.matchesProcessQuery(rows[0],'redis4'),true);
+});
+test('Docker 映射冲突或端口协议不一致时不猜测容器',()=>{
+ const c={id:'c1',name:'one',image:'image',initPid:100,command:'app',ports:[{containerPort:'80/tcp',hostIp:'0.0.0.0',hostPort:'8080'}]};
+ const proxy={...process,pid:102,ppid:1,name:'docker-proxy-cu',command:'docker-proxy -proto tcp -host-ip 0.0.0.0 -host-port 8080 -container-port 80'};
+ const duplicate={...c,id:'c2',name:'two',initPid:101};
+ const make=containers=>({...asset,inspection:{...inspection,processes:[proxy],docker:{status:'complete',containers}}});
+ assert.equal(lib.processRows([make([c,duplicate])],now)[0].docker,undefined);
+ assert.equal(lib.processRows([make([{...c,ports:[{...c.ports[0],containerPort:'80/udp'}]}])],now)[0].docker,undefined);
+});
 test('old snapshots remain unchecked and never become failed logins',()=>{
  const html=render([{id:'a',ip:'10.0.0.1',hostname:'legacy'}]);
  assert.match(html,/未检查（1 台）/);assert.match(html,/不可登录（0 台）/);assert.match(html,/没有服务器采集结果/);

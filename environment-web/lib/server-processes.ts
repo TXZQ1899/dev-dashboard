@@ -129,15 +129,49 @@ export function formatCommand(command: string): string {
   }
   return lines.join('\n');
 }
-export type ProcessRow = { asset: Asset; process: Process; type: ProcessType; name: string; seconds: number; workerCount?: number };
+export type DockerAssociation = { container: DockerInventory['containers'][number]; basis: 'init' | 'descendant' | 'proxy' };
+export type ProcessRow = { asset: Asset; process: Process; type: ProcessType; name: string; seconds: number; workerCount?: number; docker?: DockerAssociation };
+function dockerAssociations(inspection: Inspection): Map<number, DockerAssociation> {
+  const containers=inspection.docker?.containers||[];
+  const byPid=new Map(inspection.processes.map(p=>[p.pid,p]));
+  const inits=new Map<number,DockerInventory['containers'][number]>();
+  const duplicateInits=new Set<number>();
+  for(const c of containers) {
+    if(inits.has(c.initPid))duplicateInits.add(c.initPid);
+    else inits.set(c.initPid,c);
+  }
+  const result=new Map<number,DockerAssociation>();
+  for(const process of inspection.processes) {
+    let pid=process.pid;
+    const visited=new Set<number>();
+    while(pid>1&&!visited.has(pid)) {
+      visited.add(pid);
+      if(duplicateInits.has(pid))break;
+      const container=inits.get(pid);
+      if(container) { result.set(process.pid,{container,basis:pid===process.pid?'init':'descendant'}); break; }
+      const parent=byPid.get(pid);
+      if(!parent)break;
+      pid=parent.ppid;
+    }
+    if(result.has(process.pid)||!/^docker-proxy(?:[-\w.]*)$/.test(process.name))continue;
+    const tokens=args(process.command);
+    const option=(name: string)=>{const index=tokens.indexOf(name); return index>=0?tokens[index+1]:undefined;};
+    const proto=option('-proto'), hostIp=option('-host-ip'), hostPort=option('-host-port'), containerPort=option('-container-port');
+    if(!proto||!hostIp||!hostPort||!containerPort)continue;
+    const matches=containers.filter(c=>c.ports.some(p=>p.hostIp===hostIp&&p.hostPort===hostPort&&p.containerPort===`${containerPort}/${proto}`));
+    if(matches.length===1)result.set(process.pid,{container:matches[0],basis:'proxy'});
+  }
+  return result;
+}
 function isNginxWorker(process: Process): boolean {
   return processType(process)==='Nginx' && /worker process/i.test(process.command);
 }
 export function processRows(assets: Asset[], now: number): ProcessRow[] {
   return assets.filter(a=>a.inspection?.loginStatus==='can_login').flatMap(asset=>{
     const processes=asset.inspection!.processes;
-    const workers=processes.filter(isNginxWorker);
-    const rows: ProcessRow[]=processes.filter(p=>!isNginxWorker(p)).map(process=>({asset,process,type:processType(process),name:jarName(process)||process.name,seconds:runningSeconds(process,asset.inspection!.checkedAt,now)}));
+    const docker=dockerAssociations(asset.inspection!);
+    const workers=processes.filter(p=>isNginxWorker(p)&&!docker.has(p.pid));
+    const rows: ProcessRow[]=processes.filter(p=>!isNginxWorker(p)||docker.has(p.pid)).map(process=>({asset,process,type:processType(process),name:jarName(process)||process.name,seconds:runningSeconds(process,asset.inspection!.checkedAt,now),docker:docker.get(process.pid)}));
     if(workers.length) {
       // 同一台服务器的所有 Nginx worker 进程合并为一条记录，提示 worker 数量；
       // 用 PID 最小的 worker 作为代表（通常最早启动），合并各 worker 的监听端口。
@@ -150,7 +184,7 @@ export function processRows(assets: Asset[], now: number): ProcessRow[] {
 }
 export function filterProcesses(rows: ProcessRow[], query: string, duration: Duration, type: ProcessType='全部进程') {
   const words=query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  return rows.filter(r=> (type==='全部进程'||r.type===type) && matchesDuration(r.seconds,duration) && words.every(word=>`${r.asset.ip} ${r.asset.hostname} ${r.process.pid} ${r.name} ${r.process.command}`.toLowerCase().includes(word)))
+  return rows.filter(r=> (type==='全部进程'||r.type===type) && matchesDuration(r.seconds,duration) && words.every(word=>`${r.asset.ip} ${r.asset.hostname} ${r.process.pid} ${r.name} ${r.process.command} ${r.docker?.container.name||''} ${r.docker?.container.image||''}`.toLowerCase().includes(word)))
     .sort((a,b)=>b.seconds-a.seconds||a.asset.ip.localeCompare(b.asset.ip)||a.process.pid-b.process.pid||a.asset.id.localeCompare(b.asset.id));
 }
 // 服务器详情框内的进程搜索：按 PID、进程名（含业务名）、监听端口与详细命令匹配；
@@ -159,7 +193,7 @@ export function matchesProcessQuery(row: ProcessRow, query: string) {
   const words=query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if(!words.length)return true;
   const ports=[...(row.process.ports||[]),...(row.process.inferredPorts||[]).map(p=>p.port)].join(' ');
-  const haystack=`${row.process.pid} ${row.process.name} ${row.name} ${ports} ${row.process.command}`.toLowerCase();
+  const haystack=`${row.process.pid} ${row.process.name} ${row.name} ${ports} ${row.process.command} ${row.docker?.container.name||''} ${row.docker?.container.image||''}`.toLowerCase();
   return words.every(word=>haystack.includes(word));
 }
 export function paginate<T>(rows: T[], page: number, size: number) {
