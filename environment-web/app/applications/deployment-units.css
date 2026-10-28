@@ -1,6 +1,6 @@
 .deployment-catalog { display: grid; gap: 16px; }
 .catalog-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.catalog-heading h2 { display: flex; align-items: center; gap: 8px; font-size: 18px; font-weight: 650; color: #254d39; }
+.catalog-heading h1 { display: flex; align-items: center; gap: 8px; font-size: 18px; font-weight: 650; color: #254d39; }
 .catalog-heading p { color: #7b8f81; font-size: 12px; margin-top: 6px; }
 .catalog-summary { display: flex; flex-wrap: wrap; gap: 16px 28px; padding: 16px 20px; border: 1px solid var(--border); border-radius: 9px; background: white; color: #789080; font-size: 12px; }
 .catalog-summary b { margin-left: 6px; color: #315d43; font-size: 18px; }

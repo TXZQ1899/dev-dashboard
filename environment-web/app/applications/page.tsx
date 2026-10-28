@@ -27,8 +27,6 @@ import {
   TooltipProvider,
 } from '@/components/ui/tooltip';
 import { Input } from '@/components/ui/input';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import DeploymentUnits from './deployment-units';
 import {
   Table,
   TableHeader,
@@ -216,7 +214,9 @@ function AppList() {
   const router = useRouter();
   const params = useSearchParams();
   const targetId = params.get('appId');
-  const activeTab = params.get('tab') === 'deployment-units' ? 'deployment-units' : 'applications';
+  useEffect(() => {
+    if (params.get('tab') === 'deployment-units') window.location.replace('/deployment-units');
+  }, [params]);
   const [query, setQuery] = useState('');
   const [repoQuery, setRepoQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
@@ -395,17 +395,6 @@ function AppList() {
             </div>
             <span className="subtle-tag">APPLICATIONS / ENVIRONMENTS</span>
           </div>
-          <Tabs value={activeTab} onValueChange={(value) => {
-            const next = new URLSearchParams(params.toString());
-            if (value === 'deployment-units') next.set('tab', 'deployment-units');
-            else next.delete('tab');
-            router.replace(`/applications${next.size ? '?' + next.toString() : ''}`);
-          }}>
-            <TabsList aria-label="应用管理视图" className="mb-4">
-              <TabsTrigger value="applications">应用列表</TabsTrigger>
-              <TabsTrigger value="deployment-units">部署单元</TabsTrigger>
-            </TabsList>
-            <TabsContent value="applications">
           <div className="list-notice">
             <CircleAlert size={16} />
             <span>
@@ -857,9 +846,6 @@ function AppList() {
               快照时间：{formatBeijingTime(inventoryDate)}
             </span>
           </footer>
-            </TabsContent>
-            <TabsContent value="deployment-units"><DeploymentUnits /></TabsContent>
-          </Tabs>
         </main>
       </TooltipProvider>
     </Shell>

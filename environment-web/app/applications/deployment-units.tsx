@@ -112,7 +112,7 @@ export default function DeploymentUnits() {
   const historical = result ? isHistoricalCatalog(result) : false;
   return <div className="deployment-catalog">
     <div className="catalog-heading">
-      <div><h2><Layers3 size={19} />部署单元</h2><p>一个应用对应一个逻辑单元，按测试、仿真、生产环境管理部署实例。</p></div>
+      <div><h1><Layers3 size={19} />部署单元</h1><p>一个应用对应一个逻辑单元，按测试、仿真、生产环境管理部署实例。</p></div>
       <Button onClick={importCurrent} disabled={pending || historical}><RefreshCw size={15} className={pending ? 'catalog-spinning' : ''} />{pending ? '正在更新…' : '从当前快照创建 / 更新'}</Button>
     </div>
     {result && <div className="catalog-summary">

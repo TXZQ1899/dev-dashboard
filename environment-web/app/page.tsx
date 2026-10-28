@@ -7,6 +7,7 @@ import {
   Boxes,
   LayoutDashboard,
   List,
+  Layers3,
   Route,
   Maximize,
   Server,
@@ -34,6 +35,7 @@ import {
 import { repositorySnapshot } from '@/lib/repositories';
 import { jumpserver } from '@/lib/jumpserver';
 import { SettingsLink } from '@/components/settings-link';
+import { ServerTabs } from '@/components/server-tabs';
 import { fetchedAt as ecsDate } from '@/lib/ecs';
 import { fetchedAt as specsDate } from '@/lib/server-specs';
 import { clb } from '@/lib/clb';
@@ -54,7 +56,7 @@ export function Shell({
           ? formatBeijingDate(jumpserver.collectedAt)
           : active === 'datacenter'
             ? formatBeijingDate(specsDate, '未采集')
-            : active.startsWith('ecs-')
+            : (active.startsWith('ecs-') || active.startsWith('server-'))
               ? formatBeijingDate(ecsDate)
               : active === 'repos'
                 ? formatBeijingDate(repositorySnapshot.accessDate)
@@ -80,6 +82,10 @@ export function Shell({
             <List size={18} />
             应用列表
           </a>
+          <a className={active === 'deployment-units' ? 'active' : ''} href="/deployment-units">
+            <Layers3 size={18} />
+            部署单元
+          </a>
           <a className={active === 'topology' ? 'active' : ''} href="/topology">
             <Route size={18} />
             拓扑路径查询
@@ -92,11 +98,11 @@ export function Shell({
             代码库全景
           </a>
           <a
-            className={active.startsWith('ecs-') ? 'active' : ''}
-            href="/aliyun/instances"
+            className={active.startsWith('ecs-') || active.startsWith('server-') || active === 'datacenter' ? 'active' : ''}
+            href="/servers"
           >
             <Server size={18} />
-            阿里云ECS资源
+            服务器资源
           </a>
           <a className={active === 'dms' ? 'active' : ''} href="/aliyun/dms">
             <Database size={18} />
@@ -115,13 +121,6 @@ export function Shell({
           >
             <Server size={18} />
             JumpServer 纳管服务器
-          </a>
-          <a
-            className={active === 'datacenter' ? 'active' : ''}
-            href="/datacenter"
-          >
-            <Server size={18} />
-            本地机房资源
           </a>
           <a
             className={active === 'resources' ? 'active' : ''}
@@ -151,8 +150,8 @@ export function Shell({
                 ? 'Settings · 数据同步'
                 : active === 'jumpserver'
                   ? 'JumpServer 纳管服务器'
-                  : active === 'datacenter'
-                    ? '本地机房资源'
+                  : active === 'datacenter' || active.startsWith('server-')
+                    ? '服务器资源'
                     : active === 'ecs-summary'
                       ? '阿里云ECS资源汇总'
                       : active === 'ecs-list'
@@ -161,6 +160,8 @@ export function Shell({
                           ? '代码库全景'
                           : active === 'apps'
                             ? '应用列表'
+                            : active === 'deployment-units'
+                              ? '部署单元'
                             : '环境总览'}
           </span>
           <span className="snapshot">
@@ -169,6 +170,7 @@ export function Shell({
             {snapshotDate}
           </span>
         </header>
+        {(active.startsWith('server-') || active === 'datacenter') && <ServerTabs active={active} />}
         {children}
       </div>
     </div>

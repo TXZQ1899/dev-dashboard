@@ -1,0 +1,10 @@
+.server-overview-metrics, .server-pies, .server-site-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+.server-overview-metrics { margin-bottom: 24px; }.server-overview-metric { padding: 22px; }
+.server-overview-metric > span { display: flex; justify-content: space-between; color: #62736c; }.server-overview-metric strong { display: block; margin-top: 16px; font-size: 30px; }
+.server-overview-metric small, .server-site small { margin-left: 5px; color: #7a8982; font-size: 13px; font-weight: 400; }
+.server-overview-section { padding: 24px; margin-bottom: 24px; }.server-overview-section h2 { font-size: 18px; font-weight: 700; }.server-overview-section > p { margin: 6px 0 20px; color: #7a8982; font-size: 13px; }
+.server-pie-card { padding: 16px; border: 1px solid var(--border); border-radius: 12px; }.server-pie-card h3, .server-site h3 { font-weight: 600; }
+.server-pie { width: 160px; height: 160px; margin: 20px auto; border-radius: 50%; display: grid; place-items: center; }.server-pie > div { width: 100px; height: 100px; border-radius: 50%; background: white; display: flex; flex-direction: column; align-items: center; justify-content: center; }.server-pie strong { font-size: 22px; }.server-pie small { color: #7a8982; }
+.server-legend > div, .server-site > div { display: flex; justify-content: space-between; gap: 8px; margin-top: 12px; font-size: 13px; }.server-legend span, .server-site h3 { display: flex; align-items: center; gap: 8px; }.server-legend i, .server-site i { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.server-site-grid { margin-top: 20px; }.server-site { border: 1px solid var(--border); border-radius: 12px; padding: 18px; }.server-site > div span { color: #728078; }.server-overview-note { color: #728078; font-size: 13px; line-height: 1.7; }
+@media (max-width: 900px) { .server-overview-metrics, .server-pies, .server-site-grid { grid-template-columns: 1fr; } }

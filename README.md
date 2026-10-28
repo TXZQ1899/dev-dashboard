@@ -163,7 +163,7 @@ envscope-data
 
 ### 3.2 部署单元目录
 
-应用列表现提供「部署单元」Tab（`/applications?tab=deployment-units`），使用已有应用快照自动建立部署单元与分环境实例。Compose 增加 MySQL 8.4 服务及独立持久卷 `envscope-mysql`；领域、系统先建空表，归属待维护。采集仍写原有 JSON 快照，数据库作为独立管理目录，不改变 snapshot 定义。启动、配置、更新及备份方式见 [`environment-web/SETTINGS.md`](environment-web/SETTINGS.md#部署单元与-mysql)，本期规则见 [`Analysis/06-deployment-catalog-implementation.md`](Analysis/06-deployment-catalog-implementation.md)。
+工作空间提供「部署单元」菜单（`/deployment-units`），使用已有应用快照自动建立部署单元与分环境实例。Compose 增加 MySQL 8.4 服务及独立持久卷 `envscope-mysql`；领域、系统先建空表，归属待维护。采集仍写原有 JSON 快照，数据库作为独立管理目录，不改变 snapshot 定义。启动、配置、更新及备份方式见 [`environment-web/SETTINGS.md`](environment-web/SETTINGS.md#部署单元与-mysql)，本期规则见 [`Analysis/06-deployment-catalog-implementation.md`](Analysis/06-deployment-catalog-implementation.md)。
 
 ### 3.3 单应用上下游核验
 

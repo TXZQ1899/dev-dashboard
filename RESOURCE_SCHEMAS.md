@@ -1433,7 +1433,7 @@ Spring Cloud Alibaba 的 `spring.cloud.nacos.config` 支持从无 profile 文档
 
 ## 部署管理目录（MySQL，独立于采集快照）
 
-入口为应用页「部署单元」Tab。数据来自当前已完成版本 `versions/<id>/snapshot.json`，不改变该文件的任何定义。MySQL 8.4 库默认 `envscope`；迁移文件为 `environment-web/runtime/migrations/001_deployment_catalog.sql`，使用 `catalog_schema_migration` 记录迁移校验和。MySQL 数据保存在独立的 `envscope-mysql` 卷。
+入口为「部署单元」菜单（`/deployment-units`）。数据来自当前已完成版本 `versions/<id>/snapshot.json`，不改变该文件的任何定义。MySQL 8.4 库默认 `envscope`；迁移文件为 `environment-web/runtime/migrations/001_deployment_catalog.sql`，使用 `catalog_schema_migration` 记录迁移校验和。MySQL 数据保存在独立的 `envscope-mysql` 卷。
 
 | 表 | 语义与身份 |
 |---|---|

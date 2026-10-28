@@ -51,6 +51,7 @@ import {
   type Instance,
   type Group,
 } from '@/lib/ecs';
+import { partitionCloud, type CloudSite } from '@/lib/server-resources';
 import './ecs.css';
 
 function Picker({
@@ -246,7 +247,7 @@ function subscribeUrl(callback: () => void) {
 }
 const readUrl = () => window.location.search;
 const serverUrl = () => '';
-export default function EcsView({ detail = false }: { detail?: boolean }) {
+export default function EcsView({ detail = false, site }: { detail?: boolean; site?: CloudSite }) {
   const search = useSyncExternalStore(subscribeUrl, readUrl, serverUrl);
   const [editedFilters, setFilters] = useState<Filters | null>(null);
   const filters = editedFilters ?? filtersFromQuery(search);
@@ -263,7 +264,10 @@ export default function EcsView({ detail = false }: { detail?: boolean }) {
       );
     }
   }, [filters, editedFilters]);
-  const shown = filterInstances(instances, filters);
+  const scopedInstances = site ? partitionCloud(instances, tenantSnapshots)[site] : instances;
+  const scopedIds = new Set(scopedInstances.map(row => row.tenantId || 'legacy-aliyun'));
+  const shown = filterInstances(scopedInstances, filters);
+  const basePath = site ? `/servers/${site}` : '/aliyun/instances';
   const tree = groupInstances(shown, [
     'project',
     ...levels.map((k) => `tag:${k}`),
@@ -274,7 +278,7 @@ export default function EcsView({ detail = false }: { detail?: boolean }) {
   const link = (path: string) => path + (query ? `?${query}` : '');
   const totals = summarize(shown);
   const projectStats = projects
-    .filter((p) => (!filters.tenant || (p.tenantId || 'legacy-aliyun') === filters.tenant) &&
+    .filter((p) => (!site || scopedIds.has(p.tenantId || 'legacy-aliyun')) && (!filters.tenant || (p.tenantId || 'legacy-aliyun') === filters.tenant) &&
       (!filters.project || projectToken(p.id, p.tenantId) === filters.project || JSON.stringify(p.id) === filters.project))
     .map((p) => ({
       ...p,
@@ -295,7 +299,7 @@ export default function EcsView({ detail = false }: { detail?: boolean }) {
     setOpen(next);
   }
   return (
-    <Shell active={detail ? 'ecs-list' : 'ecs-summary'}>
+    <Shell active={site ? `server-${site}` : detail ? 'ecs-list' : 'ecs-summary'}>
       <main className="ecs-page">
         <div className="page-heading">
           <div>
@@ -307,17 +311,18 @@ export default function EcsView({ detail = false }: { detail?: boolean }) {
           </div>
           <a
             className="ecs-page-link"
-            href={link(detail ? '/aliyun' : '/aliyun/instances')}
+            href={link(site ? (detail ? `${basePath}/summary` : basePath) : (detail ? '/aliyun' : '/aliyun/instances'))}
           >
             {detail ? '查看资源汇总' : '查看详细资源'}
             <ArrowUpRight size={17} />
           </a>
         </div>
+        {site && !scopedInstances.length && <p className="settings-hint">当前快照中没有可归属此账号的 ECS。请核对租户名称和采集状态；无法确认账号的资源可在服务器资源总览中查看。</p>}
         <section className="panel ecs-filters" aria-label="资源筛选">
-          {tenantSnapshots.filter(t => !filters.tenant || t.tenantId === filters.tenant).map(t =>
+          {tenantSnapshots.filter(t => (!site || scopedIds.has(t.tenantId)) && (!filters.tenant || t.tenantId === filters.tenant)).map(t =>
             <p key={`${t.tenantId}/${t.region}`} className="settings-hint">{t.tenantName} · {t.region} · 采集：{formatBeijingTime(t.collectedAt, '时间未知')}</p>)}
           <div className="ecs-filter-row">
-            <TenantFilter rows={instances} value={filters.tenant || ''} onChange={tenant => set({ tenant })} />
+            {!site && <TenantFilter rows={instances} value={filters.tenant || ''} onChange={tenant => set({ tenant })} />}
             <label className="ecs-field ecs-search" htmlFor="ecs-search">
               <span>搜索</span>
               <Input
@@ -334,7 +339,7 @@ export default function EcsView({ detail = false }: { detail?: boolean }) {
               onChange={(value) => set({ project: value })}
             >
               <option value="">全部项目</option>
-              {projects.map((p) => (
+              {projects.filter(p => !site || scopedIds.has(p.tenantId || 'legacy-aliyun')).map((p) => (
                 <option key={projectToken(p.id, p.tenantId)} value={projectToken(p.id, p.tenantId)}>
                   {p.tenantName ? `${p.tenantName} · ` : ''}{p.name}
                 </option>
@@ -427,7 +432,7 @@ export default function EcsView({ detail = false }: { detail?: boolean }) {
             </Button>
             <span>多个条件同时满足</span>
             <output>
-              匹配 {shown.length} / {instances.length} 台
+              匹配 {shown.length} / {scopedInstances.length} 台
             </output>
           </div>
         </section>
@@ -543,7 +548,7 @@ export default function EcsView({ detail = false }: { detail?: boolean }) {
                     <TableRow key={projectToken(p.id, p.tenantId)}>
                       <TableCell>
                         <a
-                          href={`/aliyun/instances?${filtersQuery({ ...filters, project: projectToken(p.id, p.tenantId) })}`}
+                          href={`${basePath}?${filtersQuery({ ...filters, project: projectToken(p.id, p.tenantId) })}`}
                         >
                           <b>{p.name}</b>
                           <ArrowUpRight size={14} />
@@ -579,7 +584,7 @@ export default function EcsView({ detail = false }: { detail?: boolean }) {
               {envStats.map((g) => (
                 <a
                   key={g.key}
-                  href={`/aliyun/instances?${filtersQuery({ ...filters, tags: [...filters.tags, { key: 'env', value: g.key }] })}`}
+                  href={`${basePath}?${filtersQuery({ ...filters, tags: [...filters.tags, { key: 'env', value: g.key }] })}`}
                 >
                   <div>
                     <b>{g.label}</b>
