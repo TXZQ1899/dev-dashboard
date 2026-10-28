@@ -382,6 +382,31 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(roots, ['/opt/tomcat-orders/conf', '/opt/tomcat-orders/webapps'])
         self.assertEqual(c.config_roots(process(command='java -jar app.jar') | {'cwd': '/'}), [])
 
+    def test_tomcat_context_docbases(self):
+        p = process(command='java -Dcatalina.base=/opt/apache-tomcat_dolphin-webhook')
+        xml = '''<Server><Service><Engine><Host appBase="/srv/apps">
+          <Context path="/dolphin-webhook" docBase="/var/www/webapps/dolphin-webhook"/>
+          <Context docBase="orders"/><Context docBase="${unknown}"/>
+          <Context docBase="archive.war"/>
+        </Host></Engine></Service></Server>'''
+        self.assertEqual(c.tomcat_docbase_roots(xml, p),
+                         ['/var/www/webapps/dolphin-webhook/WEB-INF', '/srv/apps/orders/WEB-INF'])
+        self.assertEqual(c.tomcat_docbase_roots('<Server>', p), [])
+        self.assertEqual(c.tomcat_docbase_roots('<!DOCTYPE Server><Server/>', p), [])
+
+    def test_config_probe_follows_server_xml_docbase(self):
+        encode = lambda s: base64.b64encode(s.encode()).decode()
+        base = '/opt/apache-tomcat_dolphin-webhook'
+        xml = '<Server><Service><Engine><Host><Context docBase="/var/www/webapps/dolphin-webhook"/></Host></Engine></Service></Server>'
+        first = 'CONFIG_FILE\t'+encode(base+'/conf/server.xml')+'\t'+encode(xml)+'\nCONFIG_DONE'
+        second = 'CONFIG_FILE\t'+encode('/var/www/webapps/dolphin-webhook/WEB-INF/classes/db.properties')+'\t'+encode('redis.host=10.0.0.2\nredis.port=6379')+'\nCONFIG_DONE'
+        class Terminal:
+            def __init__(self): self.responses = iter([(0, first), (0, second)])
+            def run(self, *args, **kwargs): return next(self.responses)
+        result = c.collect_config(Terminal(), process(command='java -Dcatalina.base='+base))
+        self.assertIn('/var/www/webapps/dolphin-webhook/WEB-INF', result['roots'])
+        self.assertEqual([(x['host'], x['port']) for x in result['endpoints']], [('10.0.0.2', 6379)])
+
 
 class OrchestrationTests(unittest.TestCase):
     def test_partial_failure_retains_observed_duration_and_last_valid_process_identity(self):

@@ -17,6 +17,18 @@ import application_check as c
 
 
 class FileTests(unittest.TestCase):
+    def test_catalogue_follows_server_xml_docbase(self):
+        encode = lambda value: base64.b64encode(value.encode()).decode()
+        base = '/opt/apache-tomcat_dolphin-webhook'
+        conf, webinf = base+'/conf', '/var/www/webapps/dolphin-webhook/WEB-INF'
+        server = conf+'/server.xml'
+        first = 'ROOT\tconfig\t'+encode(conf)+'\nFILE\tconfig\t'+encode(server)+'\t100\t100\t'+encode(conf)+'\nFILES_DONE'
+        second = 'ROOT\tconfig\t'+encode(webinf)+'\nFILE\tconfig\t'+encode(webinf+'/classes/db.properties')+'\t10\t100\t'+encode(webinf)+'\nFILES_DONE'
+        xml = '<Server><Service><Engine><Host><Context docBase="/var/www/webapps/dolphin-webhook"/></Host></Engine></Service></Server>'
+        with patch.object(f, 'run_script', side_effect=[first, second]), patch.object(f, 'read_file', return_value={'content': xml}):
+            result = f.catalogue(None, process(command='java -Dcatalina.base='+base), kind='config')
+        self.assertEqual({entry['path'] for entry in result['files']}, {server, webinf+'/classes/db.properties'})
+
     def test_config_catalogue_does_not_list_or_read_logs(self):
         with patch.object(f, 'run_script', return_value='FILES_DONE') as run:
             result = f.catalogue(None, process(), kind='config')

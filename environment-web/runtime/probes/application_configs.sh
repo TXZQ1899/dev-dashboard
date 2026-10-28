@@ -5,7 +5,8 @@ set -uo pipefail
 export LC_ALL=C
 count=0
 total=0
-for root in "$@"; do
+for input in "$@"; do
+  root=$(readlink -f -- "$input")
   [[ "$root" == /* && "$root" != / && -d "$root" ]] || continue
   while IFS= read -r -d '' file; do
     count=$((count+1))

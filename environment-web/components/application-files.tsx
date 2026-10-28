@@ -121,7 +121,7 @@ export function ApplicationFileBrowser({ id, kind }: { id: string; kind: 'config
     {error && <p className="check-error" role="alert">{error}</p>}
     {busy === 'list' && <output>正在通过 JumpServer 读取文件列表…</output>}
     {kind === 'config' && <>
-    <p className="check-note">点击文件展开配置详情；常见密码、令牌和私钥字段已遮盖，可下载本次读取的已脱敏内容。</p>
+    <p className="check-note">点击文件展开配置详情；常见密码、令牌和私钥字段已遮盖，可下载本次读取的已脱敏内容。Nacos 配置原文保存在服务端数据卷中。</p>
     {catalogue && !configs.length && <p>已检查目录中没有找到配置文件。</p>}
     <div className="check-config-list">{configs.map((file) => <details className="check-file" key={file.id} onToggle={(event) => {
       if (event.currentTarget.open && !contents[file.id] && !busy && !running) void readFile(file.id);

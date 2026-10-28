@@ -12,6 +12,7 @@ from pathlib import Path
 import application_check as check
 import application_config_ignore as config_ignore
 import application_log_policy as log_policy
+import application_nacos as nacos
 
 MAX_ARCHIVE = 536870912
 CHUNK = 524288
@@ -135,6 +136,7 @@ def catalogue(terminal, process, application=None, kind=None):
         result['files'].append(entry)
     # Logs still inspect Logback declarations to retain shared-directory scopes.
     requests = [('config', 'list', roots['config'], None)]
+    discovered_tomcat = False
     if requested_kind != 'config':
         requests.append(('log', 'list', roots['log'], None))
     while requests:
@@ -172,7 +174,21 @@ def catalogue(terminal, process, application=None, kind=None):
                 if not path.startswith(root+'/') or posixpath.normpath(path) != path:
                     raise ValueError('文件超出应用目录')
                 add_file(kind, path, root, size, modified, mode == 'list-match')
-        if kind == 'config' and requested_kind != 'config':
+        if kind == 'config' and not discovered_tomcat:
+            discovered_tomcat = True
+            try:
+                args = shlex.split(process.get('command', ''))
+                base = next((a.split('=', 1)[1] for a in args if a.startswith('-Dcatalina.base=')), '')
+                server_path = posixpath.normpath(posixpath.join(base, 'conf/server.xml')) if base.startswith('/') else ''
+                server = next((entry for entry in result['files'] if entry['kind'] == 'config' and entry['path'] == server_path), None)
+                if server:
+                    content = read_file(terminal, process, server)['content']
+                    extra = [root for root in check.tomcat_docbase_roots(content, process) if root not in roots['config']]
+                    if extra:
+                        requests.insert(0, ('config', 'list', extra, None))
+            except (ValueError, OSError):
+                result['warnings'].append('Tomcat server.xml 读取失败，无法发现其声明的应用目录')
+        if kind == 'config' and requested_kind != 'config' and not any(request[0] == 'config' for request in requests):
             log_configs = [entry for entry in result['files'] if entry['kind'] == 'config' and
                 posixpath.basename(entry['path']).startswith('logback') and entry['path'].endswith('.xml')]
             scopes = []
@@ -239,7 +255,7 @@ def redact_config(content):
     return content
 
 
-def read_file(terminal, process, entry):
+def read_file(terminal, process, entry, raw_config=False):
     if entry['kind'] == 'config' and config_ignore.is_ignored(entry['path']):
         raise ValueError('该配置文件已在 ignorelist 中排除，请刷新应用文件列表')
     if entry['kind'] == 'log' and log_policy.group_for(entry['path']) != 'current':
@@ -251,9 +267,76 @@ def read_file(terminal, process, entry):
         raise ValueError('文件内容传输不完整')
     raw = base64.b64decode(''.join(match[1].split()), validate=True)
     content = raw.decode('utf-8', errors='replace')
-    return {'id': entry['id'], 'content': redact_config(content) if entry['kind'] == 'config' else content,
+    return {'id': entry['id'], 'content': redact_config(content) if entry['kind'] == 'config' and not raw_config else content,
             'lines': 100 if entry['kind'] == 'log' else None, 'observedAt': check.now(),
             'truncated': len(raw) >= 262144, 'redacted': entry['kind'] == 'config'}
+
+
+def collect_nacos(terminal, process, catalogue, folder):
+    candidates = [e for e in catalogue['files'] if e.get('kind') == 'config'
+                  and re.fullmatch(r'(?:application|bootstrap)(?:-[\w.-]+)?\.ya?ml', posixpath.basename(e.get('path', '')), re.I)]
+    if len(candidates) > 20:
+        catalogue['warnings'].append('Nacos 声明只检查最近的 20 个应用 YAML 文件')
+    seen = set()
+    attempted = set()
+    for entry in candidates[:20]:
+        try:
+            raw = read_file(terminal, process, entry, raw_config=True)
+            if raw['truncated']:
+                catalogue['warnings'].append('应用 YAML 文件过大，未解析 Nacos 声明')
+                continue
+            declaration = nacos.declaration(raw['content'])
+            business, unresolved = nacos.business_declarations(raw['content'])
+            catalogue['warnings'].extend(unresolved)
+            configs = ([declaration] if declaration else []) + business
+            if not configs:
+                if re.search(r'(?m)^\s*nacos\s*:', raw['content']):
+                    catalogue['warnings'].append('Nacos 声明不完整或包含未支持的 YAML/变量，未下载')
+                continue
+            for config in configs:
+                requested = tuple(config[k] for k in ('address', 'namespace', 'group', 'dataId'))
+                if requested in attempted: continue
+                if len(attempted) >= 20:
+                    catalogue['warnings'].append('Nacos 配置超过 20 项，未继续下载')
+                    break
+                attempted.add(requested)
+                try:
+                    inferred_group = not config['group']
+                    config = nacos.resolve_group(config)
+                    identity = tuple(config[k] for k in ('address', 'namespace', 'group', 'dataId'))
+                    if identity in seen: continue
+                    seen.add(identity)
+                    content = nacos.fetch(config)
+                    path = nacos.save(folder, config, content)
+                    label = 'Nacos / '+config['namespace']+' / '+config['group']+' / '+config['dataId']
+                    catalogue['files'].append({'id':hashlib.sha256(('nacos\0'+path.name).encode()).hexdigest()[:32],
+                        'kind':'config', 'source':'nacos', 'storageName':path.name, 'path':label,
+                        'root':'Nacos', 'size':len(content), 'modifiedAt':int(time.time())})
+                    catalogue['warnings'].append('Nacos 配置来自 '+entry['path']+' 的声明；未确认该 profile 实际生效')
+                    if inferred_group:
+                        catalogue['warnings'].append('Nacos Group 在可查询范围内唯一匹配；未确认应用实际使用该 Group：'+config['dataId'])
+                except ValueError as error:
+                    catalogue['warnings'].append('Nacos 配置读取失败：'+entry['path']+' / '+config['dataId']+'；'+str(error))
+                except OSError:
+                    catalogue['warnings'].append('Nacos 配置读取或保存失败：'+entry['path']+' / '+config['dataId'])
+        except ValueError as error:
+            catalogue['warnings'].append('Nacos 配置读取失败：'+entry['path']+'；'+str(error))
+        except OSError:
+            catalogue['warnings'].append('Nacos 配置读取或保存失败：'+entry['path'])
+
+
+def read_nacos(entry, folder):
+    name = entry.get('storageName', '')
+    if not re.fullmatch(r'[0-9a-f]{64}\.(?:yaml|txt)', name):
+        raise ValueError('无效 Nacos 文件')
+    path = Path(folder)/name
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('Nacos 文件不存在，请刷新配置列表')
+    raw = path.read_bytes()
+    if len(raw) > nacos.MAX_CONTENT:
+        raise ValueError('Nacos 文件超过大小限制')
+    return {'id':entry['id'], 'content':redact_config(raw.decode('utf-8')), 'lines':None,
+            'observedAt':check.now(), 'truncated':False, 'redacted':True}
 
 
 def archive_logs(terminal, process, roots, destination, progress=lambda *_:None, cancelled=lambda:False, group='all'):

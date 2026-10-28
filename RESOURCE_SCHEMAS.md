@@ -1399,6 +1399,10 @@ STALE
 
 `configuration.endpoints[]` 仅保存 `{ host, port, protocol, kind, file, key, line, resolvedIps? }`，不保存 URL 认证、查询参数、密码或原始配置。读取限定为进程推导目录，最多 20 个文件、单文件 128 KiB、总量 1 MiB，最多解析 8 个域名；配置中心、占位符、生效 profile 与 jar 内配置暂不展开。
 
+Tomcat 配置检测和实时文件列表会读取该实例 `conf/server.xml` 中 Host 下明确声明的 Context `docBase`，采集其展开目录的 `WEB-INF`；相对 `docBase` 相对于 Host 的 `appBase`（默认 `catalina.base/webapps`）。未展开的 WAR、包含变量的路径和无效 XML 不作猜测；多 Context 仅表示同一 JVM 的声明，不证明应用归属。检测仍受上述文件和大小限额约束，发现的目录优先读取。目录符号链接在远端解析。
+
+`application*.yml/yaml` 和 `bootstrap*.yml/yaml` 中明确的 `nacos.config` 简单 YAML 声明支持 `server-addr`、`data-id`、`group`、`namespace` 及可选 `username` / `password`；仅访问声明的单个服务器，使用容器网络和 Nacos v1 配置 API，默认组为 `DEFAULT_GROUP`。顶层 `nacos.dataId` 按逗号拆分为完整 Data ID（包含冒号），使用顶层 `nacosUrl` 和 `namespace`；若顶层未声明 `group`，通过 Nacos 配置列表查询该命名空间和完整 Data ID，只有结果完整且可见 Group 唯一时才读取，并提示查询结果不证明应用实际使用该 Group。无权限、未匹配、多个 Group 和截断均保留警告。不推测变量、多个服务器、复杂 YAML、其他客户端配置格式或生效 profile。检测时配置内容仅用于提取 Endpoint，不写入报告；配置文件列表刷新时成功获取的原文写入 `checks/<id>/nacos/<identity-hash>.yaml|txt`（权限 `0600`），列表记录来源和不透明存储名，预览和浏览器下载仍脱敏。每次最多读取 20 项，单文件最多 256 KiB，连接超时 5 秒，失败保留警告；容器必须能够访问 Nacos。原文可能包含凭据，应保护数据卷及其备份。
+
 配置读取与实时配置文件列表共用 `runtime/application-config.ignorelist`，并追加数据卷 `${ENVSCOPE_DATA:-/data}/application-config.ignorelist` 中的规则。每行是按完整路径匹配的 glob（空行与 `#` 注释忽略），匹配目录在远端剪枝，匹配文件在列表输出和内容读取前排除，不占用文件数/大小限额；规则每次请求重新读取。默认排除 `classes/mapper`、`mybatis-config` / `mybatis-config.*`、Tomcat 通用配置文件及 `WEB-INF/web.xml`，保留 `server.xml`、`context.xml` 和业务配置。旧列表中的已忽略配置也不可继续读取；日志操作不应用这些规则。报告和文件列表的响应字段不变。
 
 `coverage` 明确记录 TCP 周期采样、实际观察时长与局限。短连接可能漏采；最多 100 条连接，所有已发现且能唯一匹配资产的对端均参与周期连接采样，不按对端台数截断；目标服务器上的同机对端另行核验。未解析下游的唯一资产在采样结束后追加一次监听端口核验，按主机合并查询、最多并发 4 台并遍历全部待查主机，不查询上游临时客户端端口；取消检测后不再启动核验。结果统计独立写入可选 `coverage.listenerChecks[]`，包含 `serverIp`、`status` 和观察统计，不计入原始连接采样覆盖。未纳管托管数据库、CLB/NAT 地址和共享 Tomcat JVM 不能强制归属到一个应用。

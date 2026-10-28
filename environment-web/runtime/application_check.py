@@ -16,6 +16,7 @@ import re
 import shlex
 import threading
 import time
+import xml.etree.ElementTree as ET
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ from urllib.request import Request, build_opener, HTTPRedirectHandler
 
 import server_inventory as si
 import application_config_ignore as config_ignore
+import application_nacos as nacos
 
 ENVIRONMENTS = ('PRODUCT', 'TEST', 'SIMULATION')
 PROBES = Path(__file__).with_name('probes')
@@ -815,6 +817,35 @@ def config_roots(process):
     return safe[:6]
 
 
+def tomcat_docbase_roots(content, process):
+    """Resolve literal Context docBases declared in this process's server.xml."""
+    try:
+        args = shlex.split(process.get('command', ''))
+        base = next((a.split('=', 1)[1] for a in args if a.startswith('-Dcatalina.base=')), '')
+        if not base.startswith('/') or '<!DOCTYPE' in content.upper() or '<!ENTITY' in content.upper():
+            return []
+        tree = ET.fromstring(content)
+    except (ValueError, ET.ParseError):
+        return []
+    roots = []
+    for host in tree.iter('Host'):
+        appbase = host.get('appBase', 'webapps')
+        if '${' in appbase or '\0' in appbase:
+            continue
+        appbase = posixpath.normpath(posixpath.join(base, appbase))
+        for context in host.iter('Context'):
+            docbase = context.get('docBase', '').strip()
+            if not docbase or '${' in docbase or '\0' in docbase:
+                continue
+            path = posixpath.normpath(posixpath.join(appbase, docbase))
+            if not path.startswith('/') or len([x for x in path.split('/') if x]) < 3 or path.lower().endswith('.war'):
+                continue
+            root = posixpath.join(path, 'WEB-INF')
+            if root not in roots:
+                roots.append(root)
+    return roots[:16]
+
+
 def config_kind(key, scheme=''):
     value = (key+' '+scheme).lower()
     for name, pattern in (('MySQL', 'mysql'), ('PostgreSQL', 'postgres'), ('Redis', 'redis'),
@@ -888,23 +919,68 @@ def parse_config(content, path):
 
 def collect_config(terminal, process):
     roots = config_roots(process)
-    warnings = ['配置为声明信息，未确认生效 profile；占位符、配置中心和 jar 内配置未展开']
+    warnings = ['配置为声明信息，未确认生效 profile；占位符和 jar 内配置未展开']
     if not roots:
         return {'status': 'not_collected', 'roots': [], 'endpoints': [], 'warnings': warnings+['无法确定应用配置目录']}
     script = config_ignore.probe_script('application_configs.sh')
     config_rc, body = terminal.run('timeout 20 bash -c '+shlex.quote(script)+' _ '+shlex.join(roots), timeout=25)
+    bodies = [body]
+    server = next((decode(line.split('\t')[2]) for line in body.splitlines()
+                   if line.startswith('CONFIG_FILE\t') and len(line.split('\t')) == 3
+                   and posixpath.basename(decode(line.split('\t')[1])) == 'server.xml'
+                   and posixpath.dirname(decode(line.split('\t')[1])) in roots), None)
+    extra = [root for root in tomcat_docbase_roots(server, process) if root not in roots] if server else []
+    if extra:
+        roots = extra + roots
+        rc, extra_body = terminal.run('timeout 20 bash -c '+shlex.quote(script)+' _ '+shlex.join(roots), timeout=25)
+        config_rc = config_rc or rc
+        bodies = [extra_body]
     endpoints = []
-    for line in body.splitlines():
+    nacos_seen = set()
+    nacos_attempted = set()
+    for line in '\n'.join(bodies).splitlines():
         fields = line.split('\t')
         if fields[0] == 'CONFIG_FILE' and len(fields) == 3:
             path = decode(fields[1])
             # Ignore unrelated XML files under Tomcat webapps; WEB-INF is in scope.
             if '/webapps/' in path and '/WEB-INF/' not in path and not posixpath.basename(path).startswith('application'):
                 continue
-            endpoints.extend(parse_config(decode(fields[2]), path))
+            content = decode(fields[2])
+            endpoints.extend(parse_config(content, path))
+            if re.fullmatch(r'(?:application|bootstrap)(?:-[\w.-]+)?\.ya?ml', posixpath.basename(path), re.I):
+                declaration = nacos.declaration(content)
+                business, unresolved = nacos.business_declarations(content)
+                warnings.extend(unresolved)
+                configs = ([declaration] if declaration else []) + business
+                if configs:
+                    for declaration in configs:
+                        requested = tuple(declaration[k] for k in ('address', 'namespace', 'group', 'dataId'))
+                        if requested in nacos_attempted: continue
+                        if len(nacos_attempted) >= 20:
+                            warnings.append('Nacos 配置超过 20 项，未继续读取')
+                            break
+                        nacos_attempted.add(requested)
+                        try:
+                            inferred_group = not declaration['group']
+                            declaration = nacos.resolve_group(declaration)
+                            identity = tuple(declaration[k] for k in ('address', 'namespace', 'group', 'dataId'))
+                            if identity not in nacos_seen and len(nacos_seen) < 20:
+                                nacos_seen.add(identity)
+                                remote = nacos.fetch(declaration).decode('utf-8')
+                                source = 'Nacos / '+declaration['namespace']+' / '+declaration['group']+' / '+declaration['dataId']
+                                endpoints.extend(parse_config(remote, source))
+                                warnings.append('Nacos 配置来自 '+path+' 的声明，未确认该 profile 生效')
+                                if inferred_group:
+                                    warnings.append('Nacos Group 在可查询范围内唯一匹配；未确认应用实际使用该 Group：'+declaration['dataId'])
+                            elif identity not in nacos_seen:
+                                warnings.append('Nacos 配置超过 20 项，未继续读取')
+                        except ValueError as error:
+                            warnings.append('Nacos 配置读取失败：'+path+' / '+declaration['dataId']+'；'+str(error))
+                elif re.search(r'(?m)^\s*nacos\s*:', content):
+                    warnings.append('Nacos 声明不完整或包含未支持的 YAML/变量，未读取')
         elif fields[0] == 'CONFIG_WARNING':
             warnings.append(fields[1])
-    if config_rc or 'CONFIG_DONE' not in body:
+    if config_rc or any('CONFIG_DONE' not in item for item in bodies):
         warnings.append('配置读取未完成')
     # Resolve names on the application host, not using the container's DNS view.
     names = sorted({x['host'] for x in endpoints if not normal_ip(x['host'])})

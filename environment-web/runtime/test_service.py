@@ -296,6 +296,20 @@ class SettingsTests(unittest.TestCase):
         s.write(self.data/'current.json', {'id':'unrelated-version'})
         self.assertEqual(self.service.application_file_context(identifier)[0]['id'], 'server')
 
+    def test_nacos_catalogue_read_uses_session_storage(self):
+        identifier = self.service.application_files({**self.application_check_fixture(), 'action':'open'})['id']
+        class Terminal:
+            def close(self): pass
+        entry = {'id':'nacos-id', 'kind':'config', 'source':'nacos', 'storageName':'a'*64+'.yaml'}
+        with patch.object(self.service, 'open_application_files', return_value=(Terminal(), {'startTicks':'54321'}, None)), \
+             patch('application_files.catalogue', return_value={'startTicks':'54321', 'files':[], 'warnings':[]}), \
+             patch('application_files.collect_nacos', side_effect=lambda _t, _p, result, _f: result['files'].append(entry)), \
+             patch('application_files.read_nacos', return_value={'content':'redacted'}) as read_nacos:
+            self.service.application_files({'id':identifier, 'action':'list', 'kind':'config'})
+            result = self.service.application_files({'id':identifier, 'action':'read', 'kind':'config', 'file':'nacos-id'})
+        self.assertEqual(result['content'], 'redacted')
+        self.assertEqual(read_nacos.call_args.args[1], self.data/'checks'/identifier/'nacos')
+
     def test_standalone_files_and_collection_or_tcp_checks_are_mutually_exclusive(self):
         payload = self.application_check_fixture()
         identifier = self.service.application_files({**payload, 'action':'open'})['id']

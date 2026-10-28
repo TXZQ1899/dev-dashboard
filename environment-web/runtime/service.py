@@ -532,7 +532,7 @@ class Service:
             raise
 
     def application_files(self, payload):
-        from application_files import catalogue, read_file
+        from application_files import catalogue, read_file, collect_nacos, read_nacos
         identifier, action = payload.get('id'), payload.get('action', 'list')
         if action == 'open': return self.open_application_file_session(payload)
         kind = payload.get('kind')
@@ -556,6 +556,8 @@ class Service:
             path = DATA/'checks'/identifier/('files-'+kind+'.json' if kind else 'files.json')
             if action == 'list':
                 result = catalogue(terminal, process, application, kind=kind)
+                if kind in (None, 'config'):
+                    collect_nacos(terminal, process, result, DATA/'checks'/identifier/'nacos')
                 write(path, result)
                 return result
             catalog = read(path)
@@ -563,6 +565,8 @@ class Service:
                 raise ValueError('请先刷新应用文件列表')
             entries = [f for f in catalog['files'] if f['id'] == payload.get('file')]
             if len(entries) != 1: raise ValueError('文件不在应用文件列表中')
+            if entries[0].get('source') == 'nacos':
+                return read_nacos(entries[0], DATA/'checks'/identifier/'nacos')
             return read_file(terminal, process, entries[0])
         except ValueError: raise
         except Exception: raise ValueError('通过 JumpServer 读取应用文件失败，请检查登录态和权限')
