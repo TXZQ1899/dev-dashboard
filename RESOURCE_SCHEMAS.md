@@ -629,12 +629,19 @@ AccessKey 采集按 LB 隔离故障。列表或详情明确为 `inactive` / `loc
 | `excludedSystemProcesses` | `number?` | 条件 | 排除的系统进程行数 |
 | `appPorts` | `AppPort[]` | 是 | 应用监听端口，按 (应用名, 端口) 归并；未采集或无应用端口为空数组 |
 | `portStatus` | `string?` | 条件 | TCP 监听端口查询状态：complete / failed / not_collected；与 PID 是否可见独立。failed 的空列表不能解释为没有监听；旧快照缺失时不补采集结论 |
+| `docker` | `DockerInventory?` | 条件 | 运行中 Docker 容器清单；旧快照或登录失败时不存在 |
 | `nginxStatus` | `string` | 是 | complete / partial / failed / not_running 等 |
 | `nginxRoutes` | `Route[]` | 是 | 静态解析出的 Nginx 路由 |
 | `configurationCount` | `number?` | 条件 | 原始配置文件数 |
 | `configurationVersion` | `string?` | 条件 | 配置归档版本 ID |
 | `warnings` | `string[]` | 是 | 采集警告 |
 | `attempts` | `{ account, reason }[]?` | 条件 | 登录尝试 |
+
+### JumpServer 页面纳管总览
+
+总览基于当前版本快照派生，不回写采集数据。JumpServer 图按授权资产计数，ECS 图按实例计数；两图统计范围不同。使用 JumpServer 资产地址与 ECS 私网 / 公网地址的有效 IPv4 建立双向唯一匹配，未匹配仅表示在当前可见清单中找不到对应地址。地址缺失或格式未识别、多候选、以及本地机房网段与 ECS 证据冲突保留为「关联待确认」；不推断停机或真实纳管状态。本地机房按 `datacenter-networks.ts` 已确认网段识别。
+
+登录分类基于每个资产最新检查：`can_login` 且 `sudoStatus` 为 root / passwordless / password 表示已提权；denied / password_error / sudo_password_error / password_required 表示本次仅普通账号权限；其他提权状态为未知。不可登录和未检查单独显示。ECS 的 Running / Stopped / Starting / Stopping 分别归入运行中、已停止、过渡中，其余状态为未知。ECS 和 JumpServer 的采集时间可能不同，多租户按各切片展示时间，不将根时间视为所有租户时间。
 
 ### `Process`
 
@@ -665,6 +672,12 @@ AccessKey 采集按 LB 隔离故障。列表或详情明确为 `inactive` / `loc
 | `basis` | `string?` | 条件 | socket UID、启动参数或服务角色等匹配依据；UID 优先使用同一 `ss` 监听行的 `uid:`，不覆盖直接观察到的 PID |
 
 无 root 时仍采集主机 TCP 监听端口，PID 不可见的端口保留为 `未知进程`（`pids=[]`），不因进程列表为空而跳过。共享 UID 本身不足以识别服务角色；仅有 root UID 也不生成进程候选。RabbitMQ 的 `5672/15672/25672` 仅在 socket UID 一致、命令为 `beam.smp ... -s rabbit boot` 的主进程候选唯一时加入 `inferredPorts`；同 UID 的 EPMD / Erlang 辅助进程不因此获得这些端口。多个 RabbitMQ 主进程保留 AMBIGUOUS；缺少 UID 时不按常用端口强配 RabbitMQ。此处不执行协议握手，不查询容器网络空间，容器内部监听不能从宿主机发布端口强行关联。页面同时展示服务器端口清单与进程推断标记。
+
+### `DockerInventory`
+
+`status` 为 `complete`、`partial`、`failed` 或 `not_available`；失败和未采集不代表没有容器。通过 JumpServer 登录后的 Docker CLI 只枚举运行中容器，定向读取容器 ID、名称、配置镜像、init 宿主机 PID、运行时 Path/Args 和端口配置，不读取环境变量或完整 inspect。每个 `containers[]` 包含 `id`、`name`、`image`、`initPid`、`command`、`ports[]`；命令按敏感参数规则脱敏，不能还原原始 docker run / Compose 命令。端口项为 `{containerPort, hostIp, hostPort}`，容器端口含协议；宿主机端口为空表示未发布。这些是 Docker 配置，不证明进程实际监听；init PID 也不代表容器内所有业务进程。需要有权访问目标服务器的 Docker daemon，容器变化和权限不足可能导致部分或失败。
+
+进程列表使用同次采集中的 init PID 和父子进程关系展示容器名称、镜像及启动命令；Docker 代理仅在命令中的协议、宿主机地址与端口、容器端口和唯一容器发布配置完全一致时展示对应容器，并标注端口映射推断。子进程归属也标注为进程树推断。进程与容器采集并非原子操作，不能据此断言当前状态或将 Docker 代理视作业务进程；候选不唯一时不关联。容器信息不直接用于关联 DevOps 应用。
 
 ### `Route`
 

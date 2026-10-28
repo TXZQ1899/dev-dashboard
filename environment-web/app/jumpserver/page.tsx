@@ -2,6 +2,7 @@
 import { useRef, useState, useEffect } from 'react';
 import { ChevronRight, Search, Download, ListChecks } from 'lucide-react';
 import { ServerInspections } from '@/components/server-inspections';
+import { JumpserverOverview } from '@/components/jumpserver-overview';
 import { ApplicationCheckLink } from '@/components/application-check-link';
 import { IpMetaCell } from '@/components/ip-meta-cell';
 import { Shell } from '@/app/page';
@@ -568,6 +569,7 @@ export default function JumpServerPage() {
             <p>当前账号授权资产 · 登录状态、进程类型、运行时间与命令搜索</p>
           </div>
         </div>
+        <JumpserverOverview />
         <ServerInspections />
         <div className="mt-6">
           <IpManagedQueryPanel />
