@@ -291,6 +291,69 @@ test('classifies tomcat, jar, kafka and node without classifying argument substr
  assert.equal(classify('nginx: master process /usr/sbin/nginx','nginx','Nginx'),'Nginx');
  assert.equal(lib.jarName({...process,command:`java -jar '/srv/application api.jar'`}), 'application api.jar');
 });
+test('classifies common middleware by its process entry point before generic runtimes',()=>{
+ const classify=(command,name='java')=>lib.processType({...process,command,name});
+ const cases=[
+  ['java -cp /usr/share/elasticsearch/lib/* org.elasticsearch.bootstrap.Elasticsearch','Elasticsearch'],
+  ['/opt/elasticsearch/jdk/bin/java -Des.path.home=/opt/elasticsearch','Elasticsearch'],
+  ['java -m org.elasticsearch.server/org.elasticsearch.bootstrap.Elasticsearch','Elasticsearch'],
+  ['java -cp /opt/zookeeper/* org.apache.zookeeper.server.quorum.QuorumPeerMain /etc/zoo.cfg','ZooKeeper'],
+  ['java -jar /home/nacos/target/nacos-server.jar','Nacos'],
+  ['java -cp /opt/canal/lib/* com.alibaba.otter.canal.deployer.CanalLauncher','Canal'],
+  ['java -cp libs/* org.apache.rocketmq.broker.BrokerStartup','RocketMQ'],
+  ['java -cp libs/* org.apache.activemq.console.Main start','ActiveMQ'],
+ ];
+ for(const [command,type] of cases) assert.equal(classify(command),type,command);
+ for(const [command,name,type] of [
+  ['/usr/lib/erlang/erts/bin/beam.smp -W w -s rabbit boot','beam.smp','RabbitMQ'],
+  ['nginx: master process /usr/local/openresty/nginx/sbin/nginx -p /usr/local/kong/ -c nginx.conf','nginx','Kong'],
+  ['/usr/bin/mongod --config /etc/mongod.conf','mongod','MongoDB'],
+ ]) assert.equal(classify(command,name),type,command);
+ assert.equal(classify('java -jar /app/orders.jar --nacos-server=localhost --elasticsearch.host=localhost'),'Java Jar');
+ assert.equal(classify('java -Des.path.home=/opt/elasticsearch -jar /app/orders.jar'),'Java Jar');
+ assert.equal(classify('java -cp /lib/elasticsearch-client.jar com.example.Main'),'其他 Java');
+ assert.equal(classify('java -cp /lib/zookeeper.jar com.example.Main'),'其他 Java');
+ assert.equal(classify('node /srv/rabbitmq-consumer.js','node'),'Node');
+ assert.equal(classify('nginx: master process /usr/sbin/nginx -c /etc/kong/nginx.conf','nginx'),'Nginx');
+});
+test('Docker process classification uses the observed process rather than the image name',()=>{
+ const zk={...process,pid:100,name:'java',command:'java org.apache.zookeeper.server.quorum.QuorumPeerMain /conf/zoo.cfg'};
+ const container={id:'c',name:'service',image:'unrelated:latest',initPid:100,command:'entrypoint',ports:[]};
+ const rows=lib.processRows([{...asset,inspection:{...inspection,processes:[zk],docker:{status:'complete',containers:[container]}}}],now);
+ assert.equal(rows[0].type,'ZooKeeper');
+ assert.equal(rows[0].docker.basis,'init');
+});
+test('Docker init and uniquely mapped proxies use container evidence while children retain their own type',()=>{
+ const init={...process,pid:7374,ppid:1,name:'entrypoint',command:'/entrypoint.sh'};
+ const child={...init,pid:7375,ppid:7374,name:'helper',command:'/helper'};
+ const proxy={...init,pid:7376,name:'docker-proxy',command:'docker-proxy -proto tcp -host-ip 0.0.0.0 -host-port 5672 -container-port 5672'};
+ const container={id:'c',name:'rabbitmq',image:'registry.example/rabbitmq:3-management',initPid:7374,command:'/entrypoint.sh',ports:[{containerPort:'5672/tcp',hostIp:'0.0.0.0',hostPort:'5672'}]};
+ const a={...asset,inspection:{...inspection,processes:[init,child,proxy],docker:{status:'complete',containers:[container]}}};
+ const rows=lib.processRows([a],now);
+ assert.equal(rows.find(r=>r.process.pid===7374).type,'RabbitMQ');
+ assert.equal(rows.find(r=>r.process.pid===7374).typeBasis,'container-image');
+ assert.equal(rows.find(r=>r.process.pid===7375).type,'其他进程');
+ assert.equal(rows.find(r=>r.process.pid===7376).type,'RabbitMQ');
+ assert.equal(rows.find(r=>r.process.pid===7376).typeBasis,'container-image');
+ const html=render([a],{expanded:{a:{type:'RabbitMQ',page:1}}});
+ assert.ok(html.includes('RabbitMQ（2）'));
+ assert.ok(html.includes('容器推断'));
+ assert.ok(html.includes('根据容器镜像推断'));
+ assert.ok(html.includes('Docker 端口代理 · 容器 RabbitMQ'));
+ const cmdRows=lib.processRows([{...a,inspection:{...a.inspection,docker:{status:'complete',containers:[{...container,image:'unknown',command:'rabbitmq-server'}]}}}],now);
+ assert.equal(cmdRows[0].type,'RabbitMQ');
+ assert.equal(cmdRows[0].typeBasis,'container-command');
+ const unrelated=lib.processRows([{...a,inspection:{...a.inspection,docker:{status:'complete',containers:[{...container,image:'rabbitmq-client',command:'/entrypoint.sh'}]}}}],now);
+ assert.equal(unrelated[0].type,'其他进程');
+});
+test('the reported RabbitMQ proxy is categorized using its uniquely mapped container command',()=>{
+ const proxy={...process,pid:7374,ppid:1060,name:'docker-proxy-cu',command:'/usr/libexec/docker/docker-proxy-current -proto tcp -host-ip 0.0.0.0 -host-port 61614 -container-ip 172.17.0.2 -container-port 61614'};
+ const container={id:'c',name:'rabbitmq',image:'private/custom:1',initPid:7494,command:'docker-entrypoint.sh rabbitmq-server',ports:[{containerPort:'61614/tcp',hostIp:'0.0.0.0',hostPort:'61614'}]};
+ const rows=lib.processRows([{...asset,inspection:{...inspection,processes:[proxy],docker:{status:'complete',containers:[container]}}}],now);
+ assert.equal(rows[0].docker.basis,'proxy');
+ assert.equal(rows[0].type,'RabbitMQ');
+ assert.equal(rows[0].typeBasis,'container-command');
+});
 test('middleware processes are recognized for upstream/downstream detection',()=>{
  const p=(over)=>lib.isMiddlewareProcess({...process,...over});
  assert.equal(p({command:'/usr/sbin/mysqld --defaults-file=/etc/my.cnf',name:'mysqld',kind:'MySQL'}),true,'MySQL');

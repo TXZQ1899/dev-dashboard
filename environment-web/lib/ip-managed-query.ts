@@ -166,7 +166,17 @@ function classifyProcess(p: Process): ProcessKind {
     case 'Nginx':
       return { type: 'Nginx', middleware: true };
     case 'Kafka':
+    case 'RabbitMQ':
+    case 'RocketMQ':
+    case 'ActiveMQ':
       return { type: 'MQ', middleware: true };
+    case 'Kong':
+    case 'Elasticsearch':
+    case 'ZooKeeper':
+    case 'Nacos':
+    case 'Canal':
+    case 'MongoDB':
+      return { type: processType(p), middleware: true };
     case 'Redis':
       return { type: 'Redis', middleware: true };
     case 'MySQL':

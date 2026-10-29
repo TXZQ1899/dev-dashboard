@@ -4,8 +4,8 @@ import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { formatBeijingTime } from '@/lib/datetime';
 
-type Entry = { id: string; kind: 'config' | 'log'; source?: string; snapshotError?: string; logGroup?: 'current' | 'history'; path: string; size: number; modifiedAt: number };
-type Catalogue = { files: Entry[]; roots: { config: string[]; log: string[] }; warnings: string[]; observedAt: string };
+type Entry = { id: string; kind: 'config' | 'log'; source?: string; snapshotError?: string; logGroup?: 'current' | 'history'; path: string; size: number; modifiedAt: number; discoveryEvidence?: string };
+type Catalogue = { files: Entry[]; roots: { config: string[]; log: string[] }; warnings: string[]; observedAt: string; processType?: string; typeConfidence?: string; typeEvidence?: string };
 type Content = { content: string; truncated: boolean; redacted: boolean; observedAt: string };
 type Archive = { status: string; logGroup?: 'all' | 'history'; phase?: string; transferred?: number; total?: number; fileCount?: number; size?: number; warnings?: string[] };
 const api = '/api/settings/application-files';
@@ -145,10 +145,11 @@ export function ApplicationFileBrowser({ id, kind }: { id: string; kind: 'config
     finally { setBusy(''); }
   }
   const configs = catalogue?.files.filter((f) => f.kind === 'config') || [];
-  const fixedGroups = ['webinf', 'tomcat', 'nacos', ...configProfiles.map((profile) => 'profile:' + profile)];
+  const isZooKeeper = catalogue?.processType === 'ZOOKEEPER';
+  const fixedGroups = isZooKeeper ? ['primary'] : ['webinf', 'tomcat', 'nacos', ...configProfiles.map((profile) => 'profile:' + profile)];
   const configGroups = new Map<string, Entry[]>(fixedGroups.map((key) => [key, []]));
   for (const file of configs) {
-    const group = configGroup(file);
+    const group = isZooKeeper ? 'primary' : configGroup(file);
     configGroups.set(group, [...(configGroups.get(group) || []), file]);
   }
   const groupKeys = [...configGroups.keys()];
@@ -158,20 +159,22 @@ export function ApplicationFileBrowser({ id, kind }: { id: string; kind: 'config
   const current = contents[selected];
   const selectedFile = logs.find((file) => file.id === selected);
   return <section className="check-files" aria-label={kind === 'config' ? '应用配置文件' : '应用日志文件'}>
-    <div className="check-heading"><h3>{kind === 'config' ? `当前应用的配置文件${catalogue ? ` · ${configs.length} 个` : ''}` : '应用日志'}</h3><Button variant="outline" disabled={!!busy || running} onClick={() => void load()}>{kind === 'config' ? '刷新配置文件' : '刷新日志文件'}</Button></div>
+    <div className="check-heading"><h3>{kind === 'config' ? `当前进程的配置文件${catalogue ? ` · ${configs.length} 个` : ''}` : '应用日志'}</h3><Button variant="outline" disabled={!!busy || running} onClick={() => void load()}>{kind === 'config' ? '刷新配置文件' : '刷新日志文件'}</Button></div>
     {error && <p className="check-error" role="alert">{error}</p>}
     {busy === 'cached' && <output>正在读取历史配置快照…</output>}
     {busy === 'list' && <output>{kind === 'config' ? '正在采集配置文件快照…' : '正在通过 JumpServer 读取文件列表…'}</output>}
     {kind === 'config' && <>
-    <p className="check-note">显示最近一次采集的配置快照{catalogue?.observedAt ? `（${formatBeijingTime(catalogue.observedAt, '—')}）` : ''}，点击刷新可重新采集。按文件名中的 profile 分组，不代表该 profile 已生效。预览明文显示密码，令牌和私钥等仍会遮盖。</p>
-    {catalogue && !configs.length && <p>已检查目录中没有找到配置文件。</p>}
+    <p className="check-note">显示最近一次采集的配置快照{catalogue?.observedAt ? `（${formatBeijingTime(catalogue.observedAt, '—')}）` : ''}，点击刷新可重新采集。{isZooKeeper ? '配置文件由进程启动参数定位，不代表已确认生效。' : '按文件名中的 profile 分组，不代表该 profile 已生效。'}预览明文显示密码，令牌和私钥等仍会遮盖。</p>
+    {isZooKeeper && <p className="check-note">进程类型：ZooKeeper（{catalogue?.typeConfidence === 'EXACT' ? '已识别' : '待确认'}）· {catalogue?.typeEvidence}</p>}
+    {isZooKeeper && catalogue?.warnings.map((warning, i) => <p className="check-note" key={i}>{warning}</p>)}
+    {catalogue && !configs.length && <p>{isZooKeeper ? '未能读取 ZooKeeper 主配置文件，请查看上述原因。' : '已检查目录中没有找到配置文件。'}</p>}
     {catalogue && <Tabs value={currentConfigTab} onValueChange={(value) => setConfigTab(value ?? '')} className="check-config-tabs">
       <div className="check-config-tab-scroll"><TabsList aria-label="配置文件 profile" variant="line">
-        {groupKeys.map((group) => <TabsTrigger key={group} value={group}>{configTabLabels[group]}（{configGroups.get(group)?.length}）</TabsTrigger>)}
+        {groupKeys.map((group) => <TabsTrigger key={group} value={group}>{group === 'primary' ? '主配置' : configTabLabels[group]}（{configGroups.get(group)?.length}）</TabsTrigger>)}
       </TabsList></div>
       {groupKeys.map((group) => <TabsContent key={group} value={group}>{!configGroups.get(group)?.length && <p>该分类暂无配置文件。</p>}<div className="check-config-list">{configGroups.get(group)?.map((file) => <details className="check-file" key={file.id} onToggle={(event) => {
       if (event.currentTarget.open && !contents[file.id] && !busy && !running) void readFile(file.id);
-    }}><summary>{file.path}<small>{size(file.size)} · {formatBeijingTime(file.modifiedAt * 1000, '—')}{file.snapshotError && ` · ${file.snapshotError}`}</small></summary>
+    }}><summary>{file.path}<small>{size(file.size)} · {formatBeijingTime(file.modifiedAt * 1000, '—')}{file.discoveryEvidence && ` · ${file.discoveryEvidence}`}{file.snapshotError && ` · ${file.snapshotError}`}</small></summary>
       {contents[file.id] ? <><pre>{contents[file.id].content}</pre>{contents[file.id].truncated && <p>文件较大，仅展示前 256 KiB 的内容。</p>}</> : <Button variant="outline" disabled={!!busy || running} onClick={() => void readFile(file.id)}>{busy === file.id ? '正在读取…' : '读取配置内容'}</Button>}
     </details>)}</div></TabsContent>)}
     </Tabs>}

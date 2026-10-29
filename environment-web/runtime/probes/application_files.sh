@@ -6,7 +6,18 @@ pid=$1; expected=$2; mode=$3; shift 3
 ticks() { sed 's/^.*) //' "/proc/$pid/stat" 2>/dev/null | awk '{print $20}'; }
 [[ "$pid" =~ ^[1-9][0-9]*$ && -n "$expected" && "$(ticks)" == "$expected" ]] || exit 3
 b64() { base64 | tr -d '\n'; }
-if [[ "$mode" == list || "$mode" == list-match ]]; then
+if [[ "$mode" == process-args ]]; then
+  [[ -r "/proc/$pid/cmdline" ]] || exit 4
+  printf 'ARGV\t%s\n' "$(base64 < "/proc/$pid/cmdline" | tr -d '\n')"
+  printf 'CWD\t%s\n' "$(readlink -f -- "/proc/$pid/cwd" 2>/dev/null | b64)"
+elif [[ "$mode" == list-file ]]; then
+  file=$1
+  if [[ "$file" == /* && "$(readlink -f -- "$file")" == "$file" && -f "$file" && -r "$file" ]]; then
+    printf 'EXACT_FILE\t%s\t%s\t%s\n' "$(printf '%s' "$file" | b64)" "$(stat -c '%s' -- "$file")" "$(stat -c '%Y' -- "$file")"
+  else
+    printf 'WARNING\tZooKeeper 主配置文件不存在、不可读或路径包含符号链接\n'
+  fi
+elif [[ "$mode" == list || "$mode" == list-match ]]; then
   errors=$(mktemp) || exit 2
   trap 'rm -f -- "$errors"' EXIT
   kind=$1; shift
@@ -39,7 +50,7 @@ elif [[ "$mode" == snapshot ]]; then
   while (($# >= 3)); do
     id=$1; file=$2; root=$3; shift 3
     [[ "$id" =~ ^[0-9a-f]{32}$ ]] || exit 5
-    if [[ "$(readlink -f -- "$file")" != "$file" || "$file" != "$root/"* || ! -f "$file" || ! -r "$file" ]]; then
+    if [[ "$(readlink -f -- "$file")" != "$file" || ( "$root" != / && "$file" != "$root/"* ) || ( "$root" == / && "$file" != /* ) || ! -f "$file" || ! -r "$file" ]]; then
       printf 'SNAPSHOT_ERROR\t%s\n' "$id"
       continue
     fi

@@ -918,6 +918,10 @@ def parse_config(content, path):
 
 
 def collect_config(terminal, process):
+    import zookeeper_config
+    if zookeeper_config.is_server(process):
+        return {'status': 'not_collected', 'roots': [], 'endpoints': [],
+                'warnings': ['ZooKeeper 配置的上下游解析尚不支持；配置文件可在配置文件页查看']}
     roots = config_roots(process)
     warnings = ['配置为声明信息，未确认生效 profile；占位符和 jar 内配置未展开']
     if not roots:

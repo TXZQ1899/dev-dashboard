@@ -17,8 +17,8 @@ vm.runInNewContext(ts.transpileModule(fs.readFileSync('lib/datetime.ts', 'utf8')
 const current = { id: 'current', kind: 'log', logGroup: 'current', path: '/app/logs/app.log', size: 4, modifiedAt: 10 };
 const history = { id: 'history', kind: 'log', logGroup: 'history', path: '/app/logs/app.log.tar.gz', size: 80, modifiedAt: 100 };
 const config = { id: 'config', kind: 'config', path: '/app/config/application.yml', size: 20, modifiedAt: 100 };
-function harness({ files = [history, current], tab = 'current', configTab = '', kind = 'log', archive = { status: 'idle' }, fetch, contents, warnings = [] } = {}) {
-  const catalogue = { files, roots: { config: [], log: ['/app/logs'] }, warnings };
+function harness({ files = [history, current], tab = 'current', configTab = '', kind = 'log', archive = { status: 'idle' }, fetch, contents, warnings = [], processType, typeEvidence, typeConfidence } = {}) {
+  const catalogue = { files, roots: { config: [], log: ['/app/logs'] }, warnings, processType, typeEvidence, typeConfidence };
   const state = [catalogue, contents || { current: { content: 'latest log line', observedAt: '2026-10-16T00:00:00Z' } }, 'current', '', '', archive, configTab];
   const effects = [], changes = [], sandbox = { exports: {}, fetch, setTimeout, clearTimeout };
   let index = 0;
@@ -230,6 +230,15 @@ test('configuration catalogue warnings are hidden while log warnings remain visi
   for (const warning of warnings) assert.ok(!configuration.html.includes(warning));
   const log = harness({ kind:'log', files:[current], warnings:['日志目录不可读'] });
   assert.match(log.html, /日志目录不可读/);
+});
+
+test('ZooKeeper configuration shows primary file and discovery warnings', () => {
+  const html = harness({ kind:'config', processType:'ZOOKEEPER', typeConfidence:'EXACT', typeEvidence:'QuorumPeerMain', warnings:['关联配置尚未采集'], files:[{...config, path:'/etc/zk/zoo.cfg', discoveryEvidence:'启动参数指定'}] }).html;
+  for (const text of ['主配置（1）', '/etc/zk/zoo.cfg', '启动参数指定', 'ZooKeeper', '关联配置尚未采集']) assert.ok(html.includes(text), text);
+  assert.ok(!html.includes('profile:dev'));
+  const empty = harness({ kind:'config', processType:'ZOOKEEPER', files:[], warnings:['路径不可读'] }).html;
+  assert.match(empty, /路径不可读/);
+  assert.match(empty, /未能读取 ZooKeeper 主配置文件/);
 });
 
 test('reusable file capability opens a process session without starting a TCP job', async () => {

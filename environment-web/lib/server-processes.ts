@@ -45,7 +45,7 @@ export function findLocationBlock(content: string, uri: string): {start: number;
   }
   return null;
 }
-export const processTypes = ['全部进程','Tomcat','Java Jar','其他 Java','Nginx','Kafka','Node','Redis','MySQL','PostgreSQL','Python','其他进程','系统进程'] as const;
+export const processTypes = ['全部进程','Tomcat','Java Jar','其他 Java','Nginx','Kong','Elasticsearch','ZooKeeper','Nacos','Canal','Kafka','RabbitMQ','RocketMQ','ActiveMQ','MongoDB','Redis','MySQL','PostgreSQL','Node','Python','其他进程','系统进程'] as const;
 export type ProcessType = typeof processTypes[number];
 export const durations = [
   ['all','全部运行时间'],['week','未超过1星期（≤7天）'],['fortnight','未超过2星期（≤14天）'],
@@ -60,13 +60,28 @@ export function jarName(process: Process) {
 }
 export function processType(process: Process): ProcessType {
   if(process.system)return '系统进程';
-  const command=process.command;const executable=(args(command)[0]||'').split('/').pop()||'';
+  const command=process.command;const tokens=args(command);const executable=(tokens[0]||'').split('/').pop()||'';
   const java=/^(?:java|jsvc)$/i.test(process.name)||/^(?:java|jsvc)$/i.test(executable);
   if(java) {
+    // Match entry classes or the actual executable jar, not arbitrary application arguments or classpath dependencies.
+    const entry=(pattern: RegExp)=>tokens.some(token=>pattern.test(token));
+    const jar=jarName(process)||'';
+    if(entry(/^(?:org\.elasticsearch\.server\/)?org\.elasticsearch\.bootstrap\.Elasticsearch$/i)||
+      (!jar&&entry(/^-Des\.path\.home=\S+$/i)))return 'Elasticsearch';
+    if(entry(/^org\.apache\.zookeeper\.server\.(?:quorum\.QuorumPeerMain|ZooKeeperServerMain)$/i))return 'ZooKeeper';
+    if(entry(/^com\.alibaba\.nacos\.Nacos$/i)||/^nacos-server(?:[-.][\w.-]+)?\.jar$/i.test(jar))return 'Nacos';
+    if(entry(/^com\.alibaba\.otter\.canal\.(?:deployer\.CanalLauncher|admin\.CanalAdminApplication)$/i)||/^canal\.(?:deployer|admin)(?:[-.][\w.-]+)?\.jar$/i.test(jar))return 'Canal';
+    if(entry(/^org\.apache\.rocketmq\.(?:broker\.BrokerStartup|namesrv\.NamesrvStartup|controller\.ControllerStartup|proxy\.ProxyStartup)$/i))return 'RocketMQ';
+    if(entry(/^org\.apache\.activemq\.(?:console\.Main|broker\.BrokerService)$/i))return 'ActiveMQ';
     if(/\b(?:org\.apache\.catalina\.|-Dcatalina\.(?:base|home)=)/.test(command))return 'Tomcat';
     if(/\b(?:kafka\.(?:Kafka|server\.|tools\.)|org\.apache\.kafka\.)/.test(command))return 'Kafka';
     return jarName(process)?'Java Jar':'其他 Java';
   }
+  const named=(pattern: RegExp)=>pattern.test(executable)||pattern.test(process.name);
+  if(named(/^(?:kong|kong-server)$/i)||(/^nginx(?::|$)/i.test(executable)&&/(?:^|\s)-p\s+\S*\/kong\/?(?:\s|$)/i.test(command)))return 'Kong';
+  if(named(/^elasticsearch$/i))return 'Elasticsearch';
+  if(named(/^(?:rabbitmq-server|rabbitmq)$/i)||(/^(?:beam\.smp|beam)$/i.test(executable)&&/(?:^|\s)-s\s+rabbit\s+boot(?:\s|$)/i.test(command)))return 'RabbitMQ';
+  if(named(/^(?:mongod|mongos)$/i))return 'MongoDB';
   if(/^nginx(?::|$)/i.test(executable)||process.name==='nginx')return 'Nginx';
   if(/^(node|nodejs)$/.test(executable)||/^(node|nodejs)$/.test(process.name))return 'Node';
   if(/^redis-server/.test(executable)||process.name==='redis-server')return 'Redis';
@@ -79,7 +94,7 @@ export function processType(process: Process): ProcessType {
 // 应用，但同样处于业务链路中，需要与业务应用一样提供“检测上下游”入口。
 // 已单独归类的中间件按类型判断；MongoDB/Elasticsearch/原生 RabbitMQ 等未归类的
 // 中间件按可执行文件名或命令行关键字识别。
-const middlewareTypes=new Set<ProcessType>(['MySQL','PostgreSQL','Redis','Kafka']);
+const middlewareTypes=new Set<ProcessType>(['MySQL','PostgreSQL','Redis','Kafka','Elasticsearch','ZooKeeper','Nacos','Kong','Canal','RabbitMQ','RocketMQ','ActiveMQ','MongoDB']);
 export function isMiddlewareProcess(process: Process): boolean {
   if(process.system)return false;
   if(middlewareTypes.has(processType(process)))return true;
@@ -130,7 +145,18 @@ export function formatCommand(command: string): string {
   return lines.join('\n');
 }
 export type DockerAssociation = { container: DockerInventory['containers'][number]; basis: 'init' | 'descendant' | 'proxy' };
-export type ProcessRow = { asset: Asset; process: Process; type: ProcessType; name: string; seconds: number; workerCount?: number; docker?: DockerAssociation };
+export type ProcessRow = { asset: Asset; process: Process; type: ProcessType; name: string; seconds: number; workerCount?: number; docker?: DockerAssociation; typeBasis?: 'container-command' | 'container-image' };
+function containerProcessType(process: Process, docker?: DockerAssociation): {type: ProcessType; typeBasis?: ProcessRow['typeBasis']} {
+  const type=processType(process);
+  if(!docker||(docker.basis!=='init'&&docker.basis!=='proxy')||(type!=='其他进程'&&type!=='其他 Java'))return {type};
+  const containerArgs=args(docker.container.command);
+  const command=/(?:^|\/)docker-entrypoint(?:\.sh)?$/i.test(containerArgs[0]||'')&&containerArgs[1] ? containerArgs.slice(1).join(' ') : docker.container.command;
+  const commandType=processType({...process, name:'', command});
+  if(commandType!=='其他进程'&&commandType!=='其他 Java'&&commandType!=='系统进程'&&commandType!=='Java Jar'&&commandType!=='Python'&&commandType!=='Node')return {type:commandType,typeBasis:'container-command'};
+  const image=docker.container.image.split('@')[0].split('/').pop()?.split(':')[0].toLowerCase();
+  const images: Record<string,ProcessType>={rabbitmq:'RabbitMQ',elasticsearch:'Elasticsearch',zookeeper:'ZooKeeper',nacos:'Nacos','nacos-server':'Nacos',kong:'Kong','canal-server':'Canal',kafka:'Kafka',redis:'Redis',mysql:'MySQL',mariadb:'MySQL',postgres:'PostgreSQL',mongo:'MongoDB',mongodb:'MongoDB',rocketmq:'RocketMQ',activemq:'ActiveMQ'};
+  return image&&images[image]?{type:images[image],typeBasis:'container-image'}:{type};
+}
 function dockerAssociations(inspection: Inspection): Map<number, DockerAssociation> {
   const containers=inspection.docker?.containers||[];
   const byPid=new Map(inspection.processes.map(p=>[p.pid,p]));
@@ -171,7 +197,7 @@ export function processRows(assets: Asset[], now: number): ProcessRow[] {
     const processes=asset.inspection!.processes;
     const docker=dockerAssociations(asset.inspection!);
     const workers=processes.filter(p=>isNginxWorker(p)&&!docker.has(p.pid));
-    const rows: ProcessRow[]=processes.filter(p=>!isNginxWorker(p)||docker.has(p.pid)).map(process=>({asset,process,type:processType(process),name:jarName(process)||process.name,seconds:runningSeconds(process,asset.inspection!.checkedAt,now),docker:docker.get(process.pid)}));
+    const rows: ProcessRow[]=processes.filter(p=>!isNginxWorker(p)||docker.has(p.pid)).map(process=>{const association=docker.get(process.pid);return {asset,process,...containerProcessType(process,association),name:jarName(process)||process.name,seconds:runningSeconds(process,asset.inspection!.checkedAt,now),docker:association};});
     if(workers.length) {
       // 同一台服务器的所有 Nginx worker 进程合并为一条记录，提示 worker 数量；
       // 用 PID 最小的 worker 作为代表（通常最早启动），合并各 worker 的监听端口。

@@ -558,6 +558,10 @@ class Service:
             path = DATA/'checks'/identifier/('files-'+kind+'.json' if kind else 'files.json')
             if action == 'cached':
                 catalog = read(path, {})
+                from zookeeper_config import is_server as is_zookeeper_server
+                _, selected_process, _ = self.application_file_context(identifier)
+                if is_zookeeper_server(selected_process) and catalog.get('discoveryVersion') != 'zookeeper-v1':
+                    return {'catalogue':None}
                 snapshot_id = catalog.get('configSnapshotId', '')
                 expected = report.get('target', {}).get('startTicks')
                 if (not isinstance(snapshot_id, str) or not re.fullmatch(r'[0-9a-f]{32}', snapshot_id) or
@@ -587,7 +591,8 @@ class Service:
                     new_snapshot = DATA/'checks'/identifier/'config-snapshots'/snapshot_id
                     new_snapshot.mkdir(parents=True, mode=0o700)
                     snapshot_configs(terminal, process, result, new_snapshot/'files')
-                    collect_nacos(terminal, process, result, new_snapshot/'nacos', snapshot_folder=new_snapshot/'files')
+                    if result.get('processType') != 'ZOOKEEPER':
+                        collect_nacos(terminal, process, result, new_snapshot/'nacos', snapshot_folder=new_snapshot/'files')
                     result['configSnapshotId'] = snapshot_id
                 old = read(path, {})
                 write(path, result)

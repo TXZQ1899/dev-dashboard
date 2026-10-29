@@ -261,6 +261,20 @@ test('Kafka 与 RocketMQ Java 进程归类为 MQ 中间件', () => {
   assert.ok(rows.every((r) => r.appId === DASH));
 });
 
+test('新识别的共享组件保留类型且不关联同名业务应用', () => {
+  const processes = [
+    proc({ pid: 1, name: 'java', command: 'java org.elasticsearch.bootstrap.Elasticsearch' }),
+    proc({ pid: 2, name: 'java', command: 'java org.apache.zookeeper.server.quorum.QuorumPeerMain zoo.cfg' }),
+    proc({ pid: 3, name: 'java', command: 'java -jar nacos-server.jar' }),
+    proc({ pid: 4, name: 'java', command: 'java com.alibaba.otter.canal.deployer.CanalLauncher' }),
+    proc({ pid: 5, name: 'beam.smp', command: 'beam.smp -s rabbit boot' }),
+  ];
+  const rows = lib.buildIpManagedRows(['10.58.0.10'], [app({name:'java'})], undefined,
+    deps({procsByIp:{'10.58.0.10':processes}}));
+  assert.equal(rows.map(r=>r.appType).join(','), 'Elasticsearch,ZooKeeper,Nacos,Canal,MQ');
+  assert.ok(rows.every(r=>r.appId===DASH));
+});
+
 test('node 进程详细取脚本路径并附带 PID', () => {
   const node = proc({
     pid: 810,

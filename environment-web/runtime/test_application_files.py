@@ -14,9 +14,46 @@ import application_files as f
 import application_log_policy as log_policy
 from test_application_check import process, app, socket
 import application_check as c
+import zookeeper_config as zk
 
 
 class FileTests(unittest.TestCase):
+    def test_zookeeper_discovery_uses_live_argv_and_exact_file_only(self):
+        encode = lambda value: base64.b64encode(value).decode()
+        path = '/etc/zookeeper/my zoo.cfg'
+        args = b'java\0'+zk.MAIN_CLASS.encode()+b'\0'+path.encode()+b'\0'
+        frames = 'ARGV\t'+encode(args)+'\nCWD\t'+encode(b'/opt/zookeeper')+'\nFILES_DONE'
+        metadata = 'EXACT_FILE\t'+encode(path.encode())+'\t42\t100\nFILES_DONE'
+        with patch.object(f, 'run_script', side_effect=[frames, metadata]) as run:
+            result = f.catalogue(None, process(command='java '+zk.MAIN_CLASS+' /untrusted'), kind='config')
+        self.assertEqual(result['processType'], 'ZOOKEEPER')
+        self.assertEqual(result['files'][0]['path'], path)
+        self.assertEqual(result['files'][0]['role'], 'primary')
+        self.assertEqual(run.call_args.args[-2:], ('list-file', path))
+        self.assertEqual(zk.discover(['java', zk.MAIN_CLASS, 'conf/zoo.cfg'], '/opt/zk')[0], '/opt/zk/conf/zoo.cfg')
+        self.assertIsNone(zk.discover(['java', zk.MAIN_CLASS, 'conf/zoo.cfg'], '')[0])
+        self.assertIsNone(zk.discover(['java', zk.MAIN_CLASS, '/etc/zoo.cfg', 'extra'], '/')[0])
+        self.assertFalse(zk.is_server(process(command='java -jar app.jar --zookeeper=host:2181')))
+
+    def test_zookeeper_unresolved_and_ignored_do_not_scan_directories(self):
+        encode = lambda value: base64.b64encode(value).decode()
+        args = b'java\0'+zk.MAIN_CLASS.encode()+b'\0relative.cfg\0'
+        frames = 'ARGV\t'+encode(args)+'\nCWD\t\nFILES_DONE'
+        with patch.object(f, 'run_script', return_value=frames) as run:
+            result = f.catalogue(None, process(command='java '+zk.MAIN_CLASS+' relative.cfg'), kind='config')
+        self.assertEqual(run.call_count, 1)
+        self.assertIn('工作目录不可用', result['warnings'][0])
+        self.assertEqual(result['files'], [])
+        with patch.object(f, 'run_script', return_value=frames.replace('CWD\t\n', 'CWD\t'+encode(b'/etc')+'\n')) as run, patch.object(f.config_ignore, 'is_ignored', return_value=True):
+            result = f.catalogue(None, process(command='java '+zk.MAIN_CLASS+' relative.cfg'), kind='config')
+        self.assertEqual(run.call_count, 1)
+        self.assertIn('ignorelist', result['warnings'][0])
+
+    def test_zookeeper_does_not_use_business_endpoint_parser(self):
+        result = c.collect_config(None, process(command='java '+zk.MAIN_CLASS+' /etc/zoo.cfg'))
+        self.assertEqual(result['status'], 'not_collected')
+        self.assertEqual(result['endpoints'], [])
+
     def test_snapshot_reads_bounded_batches_and_marks_unreadable_files(self):
         encode = lambda b: base64.b64encode(b).decode()
         entries = [{'id':'a'*32, 'kind':'config', 'path':'/app/config/application.yml', 'root':'/app/config'},
@@ -263,6 +300,25 @@ class LinuxFileTests(unittest.TestCase):
                 r=subprocess.run(command,shell=True,capture_output=True,text=True,timeout=timeout)
                 return r.returncode,r.stdout
         self.terminal=Terminal()
+
+    def test_exact_config_probe_rejects_symlinks_and_snapshots_only_listed_file(self):
+        path = self.root/'zoo config.cfg'
+        path.write_text('clientPort=2181\n')
+        alias = self.root/'alias.cfg'
+        alias.symlink_to(path)
+        body = f.run_script(self.terminal, 'application_files.sh', self.pid, self.ticks, 'list-file', str(path))
+        self.assertIn('EXACT_FILE\t', body)
+        denied = f.run_script(self.terminal, 'application_files.sh', self.pid, self.ticks, 'list-file', str(alias))
+        self.assertIn('WARNING\t', denied)
+        entry = {'id':'a'*32, 'kind':'config', 'path':str(path), 'root':str(self.root), 'size':path.stat().st_size}
+        with tempfile.TemporaryDirectory() as folder:
+            f.snapshot_configs(self.terminal, self.process, {'files':[entry]}, folder)
+            self.assertEqual(f.read_snapshot(entry, folder)['content'], 'clientPort=2181\n')
+            path.unlink()
+            path.symlink_to('/etc/passwd')
+            entry.pop('snapshotName')
+            f.snapshot_configs(self.terminal, self.process, {'files':[entry]}, Path(folder)/'again')
+            self.assertIn('不可读或已变化', entry['snapshotError'])
 
     def test_list_preview_archive_and_symlink_boundaries(self):
         log=self.logs/'app with spaces.log';log.write_text(''.join(f'line {i}\n' for i in range(250)))
