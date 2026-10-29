@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { ApplicationCheckLink } from '@/components/application-check-link';
 import { IpMetaCell } from '@/components/ip-meta-cell';
+import { loginClass } from '@/lib/jumpserver-overview';
 
 import { processType, processTypes, durations, processRows, filterProcesses, matchesProcessQuery, formatDuration, paginate, locationHint, findLocationBlock, isMiddlewareProcess, formatCommand, COMMAND_COLLAPSE_THRESHOLD, type Asset, type Inspection, type ProcessRow, type ProcessType, type Duration } from '@/lib/server-processes';
 import { ipSpecSummary, tomcatInstanceName, tomcatProcessApp, jarBusinessName, jarProcessApp, ipDeployEnvironments, appDeployEnvironments } from '@/lib/process-comparison';
@@ -259,7 +260,7 @@ function specScore(ip: string): number {
   if(!cpu&&!mem)return -1;
   return (cpu?parseInt(cpu[1],10):0)*1000+(mem?parseFloat(mem[1]):0);
 }
-export function ServerInspections() {
+export function ServerInspections({processRequest}: {processRequest?: {ip: string} | null}) {
   const [login,setLogin]=useState('can_login');
   const [query,setQuery]=useState('');
   const [duration,setDuration]=useState<Duration>('all');
@@ -284,6 +285,12 @@ export function ServerInspections() {
   const [commandDialog,setCommandDialog]=useState<string|null>(null);
   // Stable SSR/hydration; after mount advance to the browser clock once a minute.
   const [now,setNow]=useState(()=>Date.parse(jumpserver.collectedAt));
+  useEffect(()=>{
+    if(!processRequest)return;
+    setLogin('can_login');setQuery(processRequest.ip);setDuration('all');setEnv('all');setPage(1);setSelected('');
+    setExpanded(Object.fromEntries((jumpserver.assets as Asset[]).filter(asset=>asset.ip===processRequest.ip).map(asset=>[asset.id,{type:'全部进程',page:1}] )));
+    setProcQuery({});
+  },[processRequest]);
   useEffect(()=>{setNow(Date.now());const timer=setInterval(()=>setNow(Date.now()),60000);return ()=>clearInterval(timer);},[]);
   useEffect(()=>{if(selected)document.getElementById('selected-server-details')?.scrollIntoView({behavior:'smooth',block:'start'});},[selected]);
   const assets=jumpserver.assets as Asset[];
@@ -316,8 +323,6 @@ export function ServerInspections() {
   const serverPage=paginate(serverRows,page,size);
   const current=login==='can_login'?ipPage:serverPage;
   const selectedAsset=assets.find(a=>a.id===selected);
-  // 提权失败（sudo 与 root 密码均验证错误）导致采集不完整的服务器，仅列出 IP。
-  const elevationFailed=assets.filter(a=>a.inspection?.loginStatus==='can_login'&&a.inspection.processStatus!=='complete'&&a.inspection.sudoStatus==='password_error');
   function reset() {setPage(1);setSelected('');}
   function cycleSort(field: 'ip'|'spec'|'cpu'|'mem') {
     setSort(prev=>prev.field===field?{field,dir:prev.dir==='asc'?'desc':'asc'}:{field,dir:'desc'});
@@ -387,7 +392,7 @@ export function ServerInspections() {
     const processNameNode=envLabel
       ? <>{namePart}<span className="inline-block rounded bg-muted px-1 text-xs text-muted-foreground">{envLabel}</span></>
       : <>{namePart}</>;
-    return <tr className="border-t align-top" key={r.asset.id+':'+(r.workerCount?'workers':r.process.pid)}><td className="p-3">{r.workerCount?<span title={`${r.workerCount} 个 Nginx worker 进程`}>×{r.workerCount}</span>:r.process.pid}</td><td className="p-3 break-all">{r.workerCount?<span>Nginx worker<small className="block text-muted-foreground">{r.type} · {r.process.user} · 共 {r.workerCount} 个进程</small></span>:<>{processNameNode}<small className="block text-muted-foreground">{r.type} · {r.process.user}</small>{r.docker&&<small className="block text-muted-foreground">Docker · {r.process.name} · {r.docker.basis==='proxy'?'端口映射推断':r.docker.basis==='init'?'init PID 匹配':'进程树推断'} · {r.docker.container.image}</small>}</>}</td><td className="p-3 whitespace-nowrap text-right" title={r.process.cpuPercent!=null?`CPU ${r.process.cpuPercent}%`:'旧快照无 CPU 数据'}>{r.process.cpuPercent!=null?<span className={r.process.cpuPercent>=80?'text-red-600 font-medium':r.process.cpuPercent>=50?'text-amber-600':''}>{r.process.cpuPercent}%</span>:'—'}</td><td className="p-3 whitespace-nowrap text-right" title={r.process.memPercent!=null?`内存 ${r.process.memPercent}%${r.process.rssKB!=null?` · RSS ${(r.process.rssKB/1024).toFixed(0)}M`:''}`:'旧快照无内存数据'}>{r.process.memPercent!=null?<span className={r.process.memPercent>=80?'text-red-600 font-medium':r.process.memPercent>=50?'text-amber-600':''}>{r.process.memPercent}%</span>:'—'}</td><td className="p-3"><ProcessListeningPorts process={r.process}/></td><td className="p-3 whitespace-nowrap">{r.workerCount?'—':date(r.process.startedAt)}</td><td className="p-3 whitespace-nowrap" title={r.workerCount?'worker 进程启动时间各异，已合并展示':`采集时：${formatDuration(r.process.elapsedSeconds)}；采集时间：${date(r.asset.inspection!.checkedAt)}`}>{r.workerCount?'—':formatDuration(r.seconds)}</td><td className="p-3 min-w-80 max-w-2xl">{r.workerCount?<pre className="text-xs whitespace-pre-wrap break-all font-mono">{`nginx: worker process（共 ${r.workerCount} 个）`}</pre>:<><ProcessCommand command={r.process.command} onExpand={setCommandDialog}/>{r.docker&&<div className="mt-2 text-xs"><span className="text-muted-foreground">容器启动命令：</span><ProcessCommand command={r.docker.container.command} onExpand={setCommandDialog}/></div>}</>}</td><td className="p-3">{r.type==='Nginx'&&<button className="border rounded p-2 whitespace-nowrap" title="查看该服务器的 Nginx 转发与原始配置" onClick={()=>setSelected(selected===r.asset.id?'':r.asset.id)}>Nginx</button>}{checkButton}</td></tr>;
+    return <tr className="border-t align-top" key={r.asset.id+':'+(r.workerCount?'workers':r.process.pid)}><td className="p-3">{r.workerCount?<span title={`${r.workerCount} 个 Nginx worker 进程`}>×{r.workerCount}</span>:r.process.pid}</td><td className="p-3 break-all">{r.workerCount?<span>Nginx worker<small className="block text-muted-foreground">{r.type} · {r.process.user} · 共 {r.workerCount} 个进程</small></span>:<>{processNameNode}<small className="block text-muted-foreground">{r.type} · {r.process.user}</small>{r.docker&&<span className="inline-block rounded bg-muted px-1 text-xs text-muted-foreground" title={r.docker.container.image}>Docker</span>}</>}</td><td className="p-3 whitespace-nowrap text-right" title={r.process.cpuPercent!=null?`CPU ${r.process.cpuPercent}%`:'旧快照无 CPU 数据'}>{r.process.cpuPercent!=null?<span className={r.process.cpuPercent>=80?'text-red-600 font-medium':r.process.cpuPercent>=50?'text-amber-600':''}>{r.process.cpuPercent}%</span>:'—'}</td><td className="p-3 whitespace-nowrap text-right" title={r.process.memPercent!=null?`内存 ${r.process.memPercent}%${r.process.rssKB!=null?` · RSS ${(r.process.rssKB/1024).toFixed(0)}M`:''}`:'旧快照无内存数据'}>{r.process.memPercent!=null?<span className={r.process.memPercent>=80?'text-red-600 font-medium':r.process.memPercent>=50?'text-amber-600':''}>{r.process.memPercent}%</span>:'—'}</td><td className="p-3"><ProcessListeningPorts process={r.process}/></td><td className="p-3 whitespace-nowrap">{r.workerCount?'—':date(r.process.startedAt)}</td><td className="p-3 whitespace-nowrap" title={r.workerCount?'worker 进程启动时间各异，已合并展示':`采集时：${formatDuration(r.process.elapsedSeconds)}；采集时间：${date(r.asset.inspection!.checkedAt)}`}>{r.workerCount?'—':formatDuration(r.seconds)}</td><td className="p-3 min-w-80 max-w-2xl">{r.workerCount?<pre className="text-xs whitespace-pre-wrap break-all font-mono">{`nginx: worker process（共 ${r.workerCount} 个）`}</pre>:<><ProcessCommand command={r.process.command} onExpand={setCommandDialog}/>{r.docker&&<div className="mt-2 text-xs"><span className="text-muted-foreground">容器启动命令：</span><ProcessCommand command={r.docker.container.command} onExpand={setCommandDialog}/></div>}</>}</td><td className="p-3">{r.type==='Nginx'&&<button className="border rounded p-2 whitespace-nowrap" title="查看该服务器的 Nginx 转发与原始配置" onClick={()=>setSelected(selected===r.asset.id?'':r.asset.id)}>Nginx</button>}{checkButton}</td></tr>;
   }
   return <section className="panel p-6 space-y-5">
     <h2 className="text-lg font-semibold">服务器与进程</h2>
@@ -402,9 +407,6 @@ export function ServerInspections() {
           <label htmlFor="process-env">环境</label><select id="process-env" className="border rounded p-2" value={env} onChange={e=>{setEnv(e.target.value as Env|'all'|'unknown');reset();}}><option value="all">全部环境</option>{envs.map(e=><option key={e} value={e}>{shortLabels[e]}</option>)}<option value="unknown">待识别</option></select>
           <button className="border rounded p-2 text-sm" onClick={()=>{setQuery('');setDuration('all');setEnv('all');reset();}}>清空筛选</button>
         </div>
-        <p className="text-sm text-muted-foreground">运行时间为实际经过时长，非 CPU 时间；按采集时已运行秒数推算至 {date(new Date(now).toISOString())}，每分钟更新。快照不能确认采集后是否退出或重启。1个月按30天、半年180天、一年365天；前四档为累计上限。</p>
-        <p role="status" className="text-sm">匹配 {searched.length} 条进程，涉及 {ipGroups.length} 个 IP。搜索、时长与环境筛选作用于全部进程；环境按该 IP 在 DevOps 部署记录中出现的环境匹配。点击 IP 行展开该服务器的进程列表，展开后可按进程类别切换并分页浏览。</p>
-        {!!elevationFailed.length&&<details className="text-sm text-amber-700"><summary className="cursor-pointer">{elevationFailed.length} 台可登录服务器提权失败，进程采集不完整</summary>{elevationFailed.map(a=><div key={a.id} className="py-1"><button className="underline" onClick={()=>setSelected(a.id)}>{a.ip}</button></div>)}</details>}
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm"><thead><tr>
             <th className="p-3 whitespace-nowrap"></th>
@@ -443,9 +445,9 @@ export function ServerInspections() {
             const usage=asset.inspection!.serverUsage;
             const ports=listeningPorts(asset);
             return <Fragment key={asset.id}>
-              <tr className={'border-t align-top ip-summary-row'+(open?' open':'')} aria-expanded={open} title="点击展开/收起该服务器的进程列表" onClick={()=>toggleAsset(asset.id)}>
+              <tr className={'border-t align-middle ip-summary-row'+(open?' open':'')} aria-expanded={open} title="点击展开/收起该服务器的进程列表" onClick={()=>toggleAsset(asset.id)}>
                 <td className="p-3 w-8"><ChevronRight size={16} className="chevron"/></td>
-                <td className="p-3"><IpMetaCell ip={asset.ip} hostName={asset.hostname}/></td>
+                <td className="p-3"><IpMetaCell ip={asset.ip} hostName={asset.hostname} leadingChip={loginClass(asset)==='ordinary'?<img src="/permissions-icon.png" alt="仅普通权限" title="仅普通权限" className="h-5 w-5"/>:undefined}/></td>
                 <td className="p-3 whitespace-nowrap">{ipSpecSummary(asset.ip)||'—'}</td>
                 <td className="p-3 whitespace-nowrap text-right" title="采集时刻的整机 CPU 使用率">{usage?<span className={usage.cpuPercent>=80?'text-red-600 font-medium':usage.cpuPercent>=50?'text-amber-600':''}>{usage.cpuPercent}%</span>:'—'}</td>
                 <td className="p-3 whitespace-nowrap text-right" title={usage?`整机内存 ${usage.memUsedMB>=1024?`${(usage.memUsedMB/1024).toFixed(1)}G`:`${usage.memUsedMB}M`} / ${usage.memTotalMB>=1024?`${(usage.memTotalMB/1024).toFixed(1)}G`:`${usage.memTotalMB}M`}`:'旧快照无整机用量数据'}>{usage?<span className={usage.memPercent>=80?'text-red-600 font-medium':usage.memPercent>=50?'text-amber-600':''}>{usage.memPercent}%</span>:'—'}</td>

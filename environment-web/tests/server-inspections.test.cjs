@@ -11,6 +11,7 @@ function evaluate(file,requireModule=()=>{}) {
  return sandbox.exports;
 }
 const lib=evaluate('lib/server-processes.ts');
+const overviewLib=evaluate('lib/jumpserver-overview.ts',()=>({isLocalDatacenterIp:()=>false}));
 // 组件的时间展示已统一委托给 lib/datetime.ts。
 const datetimeLib=evaluate('lib/datetime.ts');
 const now=Date.parse('2026-09-18T12:00:00Z');
@@ -21,10 +22,11 @@ function render(assets,options={}) {
  const state=[options.login||'can_login',options.query||'',options.duration||'all',options.env||'all',options.page||1,options.size||25,options.sort||{field:'ip',dir:'asc'},options.expanded||{},options.selected||'',options.procSort||{},options.procQuery||{},options.inspect||{},options.pwTarget||null,options.pwBusy||false,options.pwError||'',options.commandDialog||null,now,
   options.routeQuery||'',options.webappQuery||'',typeof options.routeIndex==='number'?options.routeIndex:-1,options.files||null,false,'',''];
  const ui=evaluate('components/server-inspections.tsx',id=>{
-  if(id==='react')return {...React,useEffect:()=>{},useMemo:f=>f(),useState:initial=>[index<state.length?state[index++]:typeof initial==='function'?initial():initial,()=>{}]};
+  if(id==='react')return {...React,useEffect:(fn,deps)=>{if(options.runRequestEffect&&deps?.[0]===options.processRequest)fn();},useMemo:f=>f(),useState:initial=>{const i=index++;return [i<state.length?state[i]:typeof initial==='function'?initial():initial,value=>options.changes?.push([i,value])];}};
   if(id==='react/jsx-runtime')return require(id);
   if(id==='@/lib/jumpserver')return {jumpserver:{assets,collectedAt:'2026-09-17T12:00:00Z'}};
   if(id==='@/lib/server-processes')return lib;
+  if(id==='@/lib/jumpserver-overview')return overviewLib;
   if(id==='@/lib/process-comparison')return {
     ipSpecSummary:ip=>ip==='10.0.0.2'?'2C 4G':'',
     ipDeployEnvironments:(ip)=>options.ipEnvs&&options.ipEnvs[ip]?options.ipEnvs[ip]:[],
@@ -40,15 +42,20 @@ function render(assets,options={}) {
   if(id==='@/components/ui/input')return {Input:()=>null};
   if(id==='@/components/ui/button')return {Button:(props)=>React.createElement('button',props)};
   if(id==='@/components/application-check-link')return {ApplicationCheckLink:(props)=>React.createElement('a',{className:'check-link'},`检测上下游:${props.asset}:${props.pid}`)};
-  if(id==='@/components/ip-meta-cell')return {IpMetaCell:(props)=>React.createElement('span',{className:'ip-meta-cell-stub'},'IPMETA ',React.createElement('code',null,props.ip),' ',React.createElement('small',null,props.hostName||props.ip))};
+  if(id==='@/components/ip-meta-cell')return {IpMetaCell:(props)=>React.createElement('span',{className:'ip-meta-cell-stub'},'IPMETA ',React.createElement('code',null,props.ip),' ',React.createElement('small',null,props.hostName||props.ip),React.createElement('span',{className:'ip-meta-chips'},props.leadingChip,React.createElement('span',null,'环境标签'),React.createElement('span',null,'机房标签')))};
   if(id==='lucide-react')return {Download:()=>null,ChevronRight:props=>React.createElement('svg',props),X:props=>React.createElement('svg',props)};
   throw new Error(id);
  });
- return renderToStaticMarkup(React.createElement(ui.ServerInspections));
+ return renderToStaticMarkup(React.createElement(ui.ServerInspections,{processRequest:options.processRequest}));
 }
 const process={pid:2,ppid:1,user:'app',name:'java',kind:'Java',elapsedSeconds:365*86400,startedAt:'2025-09-17T12:00:00Z',command:'java -jar /srv/app-api.jar --port=8080'};
 const inspection={checkedAt:'2026-09-17T12:00:00Z',loginStatus:'can_login',reason:'',processStatus:'partial',nginxStatus:'partial',warnings:['权限不足'],processes:[process],nginxRoutes:[{domains:['example.com'],listen:['443 ssl'],uri:'/api',directive:'proxy_pass',target:'http://up',upstream:'up',backends:[{host:'10.0.0.1',port:'8080',resolution:'ip'}]}]};
 const asset={id:'a',ip:'10.0.0.2',hostname:'server',inspection};
+test('总览跳转按 IP 搜索并重置筛选、展开匹配资产',()=>{
+ const changes=[]; const request={ip:'10.0.0.2'};
+ render([asset],{processRequest:request,runRequestEffect:true,changes});
+ assert.deepEqual(changes.map(([i,v])=>[i,JSON.parse(JSON.stringify(v))]),[[0,'can_login'],[1,'10.0.0.2'],[2,'all'],[3,'all'],[4,1],[8,''],[7,{a:{type:'全部进程',page:1}}],[10,{}]]);
+});
 test('Docker 容器 init、子进程和代理在进程列表中显示证据和容器信息',()=>{
  const container={id:'container1',name:'redis4',image:'redis:5',initPid:100,command:'redis-server --port 6379',ports:[{containerPort:'6379/tcp',hostIp:'0.0.0.0',hostPort:'6379'}]};
  const init={...process,pid:100,ppid:1,name:'redis-server',command:'redis-server'};
@@ -60,7 +67,9 @@ test('Docker 容器 init、子进程和代理在进程列表中显示证据和�
  assert.equal(rows.find(r=>r.process.pid===101).docker.basis,'descendant');
  assert.equal(rows.find(r=>r.process.pid===102).docker.basis,'proxy');
  const html=render([a],{expanded:{a:{type:'全部进程',page:1}}});
- for(const text of ['redis4','redis:5','init PID 匹配','进程树推断','端口映射推断','容器启动命令','docker-proxy-cu'])assert.ok(html.includes(text),text);
+ for(const text of ['redis4','容器启动命令','docker-proxy-cu'])assert.ok(html.includes(text),text);
+ assert.equal((html.match(/title="redis:5">Docker<\/span>/g)||[]).length,3);
+ for(const text of ['init PID 匹配','进程树推断','端口映射推断'])assert.ok(!html.includes(text),text);
  assert.equal(lib.filterProcesses(rows,'redis:5','all').length,3);
  assert.equal(lib.matchesProcessQuery(rows[0],'redis4'),true);
 });
@@ -79,11 +88,12 @@ test('old snapshots remain unchecked and never become failed logins',()=>{
 test('command search locates the matching ip and the process appears after expanding',()=>{
  const collapsed=render([asset],{query:'app-api.jar'});
  assert.ok(collapsed.includes('10.0.0.2'));
- assert.match(collapsed,/匹配 1 条进程，涉及 1 个 IP/);
+ assert.ok(!collapsed.includes('匹配 1 条进程，涉及 1 个 IP'));
  assert.ok(!collapsed.includes('app-api.jar'),'进程详细在展开前不展示');
  const html=render([asset],{query:'app-api.jar',expanded:{a:{type:'全部进程',page:1}}});
- for(const text of ['10.0.0.2','app-api.jar','366天','进程ID','详细命令','非 CPU 时间','未超过2星期'])assert.ok(html.includes(text),text);
- assert.match(render([asset],{query:'missing.jar'}),/匹配 0 条进程/);
+ for(const text of ['10.0.0.2','app-api.jar','366天','进程ID','详细命令','未超过2星期'])assert.ok(html.includes(text),text);
+ assert.ok(!html.includes('运行时间为实际经过时长'));
+ assert.ok(!render([asset],{query:'missing.jar'}).includes('10.0.0.2'));
 });
 test('超长进程命令折叠为预览并提供展开详情弹窗',()=>{
  const longCommand='/bin/java '+Array.from({length:80},(_,i)=>`-Dkey${i}=value${i}`).join(' ');
@@ -158,14 +168,17 @@ test('summary row has a reinspect button that shows busy state without expanding
  const err=render([asset],{inspect:{a:{busy:false,message:'',error:'连接超时'}}});
  assert.ok(err.includes('连接超时'),'错误消息显示在按钮下方');
 });
-test('elevation-failed servers are summarized as bare ips, one per line',()=>{
- const failed={...inspection,warnings:['提权失败，root 密码登录错误','sudo 不可用，仅采集当前账号可见进程，完整性未确认'],sudoStatus:'password_error'};
- const other={...inspection,warnings:['1 行进程无法解析'],sudoStatus:'password'};
- const html=render([{...asset,id:'f1',ip:'10.58.6.172',hostname:'10.58.6.172',inspection:failed},{...asset,id:'f2',ip:'10.58.6.173',inspection:other}]);
- assert.match(html,/1 台可登录服务器提权失败，进程采集不完整/);
- assert.ok(html.includes('>10.58.6.172</button>'),'仅列出提权失败的 IP');
- assert.ok(!html.includes('root 密码登录错误'),'提权失败详情不再展示');
- assert.ok(!html.includes('1 行进程无法解析'),'非提权失败的服务器不进入该列表');
+test('服务器行仅为明确的普通账号权限显示标识',()=>{
+ for(const sudoStatus of ['denied','password_error','sudo_password_error','password_required']) {
+  const html=render([{...asset,inspection:{...inspection,sudoStatus,processStatus:'complete'}}]);
+  assert.ok(html.includes('src="/permissions-icon.png"')&&html.includes('title="仅普通权限"')&&html.includes('alt="仅普通权限"'),sudoStatus);
+  assert.match(html,/ip-meta-chips[^]*permissions-icon\.png[^]*环境标签[^]*机房标签/);
+  assert.match(html,/border-t align-middle ip-summary-row/);
+  assert.ok(!html.includes('台可登录服务器提权失败，进程采集不完整'));
+ }
+ for(const sudoStatus of ['root','passwordless','password','timeout',undefined]) {
+  assert.ok(!render([{...asset,inspection:{...inspection,sudoStatus}}]).includes('/permissions-icon.png'),String(sudoStatus));
+ }
 });
 test('elevation-failed server shows the root password dialog for single inspect',()=>{
  const failed={...inspection,warnings:['提权失败，root 密码登录错误'],sudoStatus:'password_error'};
@@ -453,16 +466,17 @@ test('environment filter keeps only processes on IPs deployed in the selected en
  const b={...asset,id:'b',ip:'10.0.0.3',hostname:'prod-server',inspection:{...inspection,processes:[{...process,pid:20,command:'java -jar /srv/prod.jar'}]}};
  const opts={ipEnvs:{'10.0.0.2':['TEST'],'10.0.0.3':['PRODUCT']}};
  const all=render([asset,b],opts);
- assert.match(all,/匹配 2 条进程/);assert.ok(all.includes('全部环境')&&all.includes('>测试<')&&all.includes('>仿真<')&&all.includes('>生产<')&&all.includes('>待识别<'));
+ assert.ok(all.includes('10.0.0.2')&&all.includes('10.0.0.3'));assert.ok(all.includes('全部环境')&&all.includes('>测试<')&&all.includes('>仿真<')&&all.includes('>生产<')&&all.includes('>待识别<'));
  const testOnly=render([asset,b],{...opts,env:'TEST'});
- assert.match(testOnly,/匹配 1 条进程/);assert.ok(testOnly.includes('10.0.0.2'));assert.ok(!testOnly.includes('10.0.0.3'));
+ assert.ok(testOnly.includes('10.0.0.2'));assert.ok(!testOnly.includes('10.0.0.3'));
  const prod=render([asset,b],{...opts,env:'PRODUCT'});
  assert.ok(!prod.includes('10.0.0.2'));assert.ok(prod.includes('10.0.0.3'));
- assert.match(render([asset,b],{...opts,env:'SIMULATION'}),/匹配 0 条进程/);
+ const simulation=render([asset,b],{...opts,env:'SIMULATION'});
+ assert.ok(!simulation.includes('10.0.0.2')&&!simulation.includes('10.0.0.3'));
  // 无 DevOps 部署记录的 IP 落入"待识别"：仅匹配未关联任何环境的机器。
  const c={...asset,id:'c',ip:'10.0.0.4',hostname:'db-server',inspection:{...inspection,processes:[{...process,pid:30,command:'/usr/sbin/mysqld'}]}};
  const unknown=render([asset,b,c],{...opts,env:'unknown'});
- assert.match(unknown,/匹配 1 条进程/);assert.ok(unknown.includes('10.0.0.4'));assert.ok(!unknown.includes('10.0.0.2'));assert.ok(!unknown.includes('10.0.0.3'));
+ assert.ok(unknown.includes('10.0.0.4'));assert.ok(!unknown.includes('10.0.0.2'));assert.ok(!unknown.includes('10.0.0.3'));
 });
 test('multi-env host appends per-process environment label; unmatched flags 待识别',()=>{
  // IP 同时有 TEST 与 SIMULATION 部署记录，展开其 Java Jar 进程。

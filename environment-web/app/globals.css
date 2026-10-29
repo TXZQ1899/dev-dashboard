@@ -1510,6 +1510,7 @@ h2 {
 .ip-meta-chips {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 4px;
   margin-top: 4px;
 }

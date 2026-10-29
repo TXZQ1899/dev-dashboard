@@ -1,5 +1,5 @@
 'use client';
-import { Fragment } from 'react';
+import { Fragment, type ReactNode } from 'react';
 import { envs, shortLabels, apps, type Env } from '@/lib/inventory';
 import { ipDeployEnvironments } from '@/lib/process-comparison';
 import {
@@ -61,11 +61,13 @@ export function IpMetaCell({
   hostName,
   envList,
   envEmpty = 'pending',
+  leadingChip,
 }: {
   ip: string;
   hostName?: string;
   envList?: Env[];
   envEmpty?: 'pending' | 'blank';
+  leadingChip?: ReactNode;
 }) {
   const name = hostName?.trim() || ip;
   const list = envList ?? ipDeployEnvironments(ip, apps);
@@ -74,6 +76,7 @@ export function IpMetaCell({
       <code>{ip}</code>
       <small className="block text-muted-foreground ip-meta-name">{name}</small>
       <span className="ip-meta-chips">
+        {leadingChip}
         <IpEnvChips list={list} empty={envEmpty} />
         <IpOwnerChip ip={ip} />
       </span>

@@ -80,7 +80,7 @@ test('未纳管明细按 ECS 状态筛选且隐藏零值图例',()=>{
  assert.match(html,/ECS 明细 · 1 台/); assert.match(html,/unmanaged-stopped/); assert.doesNotMatch(html,/unmanaged-running/);
  assert.match(html,/ECS 状态 <select/); assert.match(html,/>未纳管</); assert.doesNotMatch(html,/当前账号未匹配|关联依据/);
  assert.doesNotMatch(html,/已纳管 0 台|关联待确认 0 台|不可登录 0 台/);
- index=0; const tree=context.exports.JumpserverOverview();
+ index=0; const tree=context.exports.JumpserverOverview({});
  function findSelects(node) {
   if(!node||typeof node!=='object')return [];
   if(Array.isArray(node))return node.flatMap(findSelects);
@@ -100,8 +100,16 @@ test('仅普通账号明细精简，导出遵循当前位置与 folidev 筛选',
   '@/lib/datetime':{formatBeijingTime:(t,fallback)=>t||fallback},'@/lib/jumpserver-overview':lib};
  const source=ts.transpileModule(fs.readFileSync('components/jumpserver-overview.tsx','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText;
  const context={exports:{},require:id=>imports[id]}; vm.runInNewContext(source,context);
- const html=renderToStaticMarkup(React.createElement(context.exports.JumpserverOverview));
- assert.match(html,/JumpServer 明细 · 1 台/); assert.match(html,/10\.58\.9\.1<\/td>/);
+ const chosen=[];
+ const html=renderToStaticMarkup(React.createElement(context.exports.JumpserverOverview,{onShowProcesses:ip=>chosen.push(ip)}));
+ assert.match(html,/JumpServer 明细 · 1 台/); assert.match(html,/aria-label="查看 10\.58\.9\.1 的进程"/);
+ index=0; const tree=context.exports.JumpserverOverview({onShowProcesses:ip=>chosen.push(ip)});
+ function findButton(node) {
+  if(!node||typeof node!=='object')return null;
+  if(Array.isArray(node))return node.map(findButton).find(Boolean);
+  return node.type==='button'&&node.props['aria-label']==='查看 10.58.9.1 的进程'?node:findButton(node.props?.children);
+ }
+ findButton(tree).props.onClick(); assert.deepEqual(chosen,['10.58.9.1']);
  assert.doesNotMatch(html,/登录 \/ 提权|登录原因|检查时间|命中已确认本地机房网段/); assert.match(html,/导出 CSV/);
  const rows=lib.buildJumpserverOverview(assets,[]).jump.filter(r=>r.login==='ordinary'&&r.location==='local'&&r.asset.inspection.account==='folidev');
  const csv=context.exports.ordinaryOverviewCsv(rows);

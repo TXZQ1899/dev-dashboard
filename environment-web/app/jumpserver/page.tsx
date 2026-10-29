@@ -67,7 +67,7 @@ const colors = [
 
 // 按一组 IP 查询 JumpServer 纳管情况，并按"每个进程 / webapps 目录 / Nginx 配置文件一行"
 // 导出应用类型、进程详细与关联的 DevOps 应用信息。
-function IpManagedQueryPanel() {
+function IpManagedQueryPanel({onRestore}: {onRestore: () => void}) {
   const [input, setInput] = useState('');
   const [rows, setRows] = useState<IpManagedRow[] | null>(null);
   const [summaryRows, setSummaryRows] = useState<IpSummaryRow[] | null>(null);
@@ -181,6 +181,7 @@ function IpManagedQueryPanel() {
   useEffect(() => {
     const saved = sessionStorage.getItem(RESTORE_KEY);
     if (!saved) return;
+    onRestore();
     sessionStorage.removeItem(RESTORE_KEY);
     setInput(saved);
     void runQuery(saved, false);
@@ -529,6 +530,8 @@ function IpManagedQueryPanel() {
 }
 
 export default function JumpServerPage() {
+  const [activeTab, setActiveTab] = useState<'overview' | 'servers'>('overview');
+  const [processRequest, setProcessRequest] = useState<{ip: string} | null>(null);
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const search = query.trim();
@@ -550,7 +553,10 @@ export default function JumpServerPage() {
   }
   useEffect(() => {
     const search = new URLSearchParams(window.location.search).get('q');
-    if (search) updateSearch(search);
+    if (search) {
+      setActiveTab('servers');
+      updateSearch(search);
+    }
   }, []);
   let angle = 0;
   const gradient = distribution
@@ -569,10 +575,15 @@ export default function JumpServerPage() {
             <p>当前账号授权资产 · 登录状态、进程类型、运行时间与命令搜索</p>
           </div>
         </div>
-        <JumpserverOverview />
-        <ServerInspections />
+        <div role="tablist" aria-label="JumpServer 页面" className="flex flex-wrap gap-2 mb-6">
+          <button type="button" role="tab" id="jump-tab-overview" aria-selected={activeTab==='overview'} aria-controls="jump-panel-overview" className={`rounded border px-4 py-2 text-sm ${activeTab==='overview'?'bg-primary text-primary-foreground':'bg-background'}`} onClick={()=>setActiveTab('overview')}>信息总览</button>
+          <button type="button" role="tab" id="jump-tab-servers" aria-selected={activeTab==='servers'} aria-controls="jump-panel-servers" className={`rounded border px-4 py-2 text-sm ${activeTab==='servers'?'bg-primary text-primary-foreground':'bg-background'}`} onClick={()=>setActiveTab('servers')}>服务器与进程</button>
+        </div>
+        <div id="jump-panel-overview" role="tabpanel" aria-labelledby="jump-tab-overview" hidden={activeTab!=='overview'}><JumpserverOverview onShowProcesses={ip=>{setProcessRequest({ip});setActiveTab('servers');}} /></div>
+        <div id="jump-panel-servers" role="tabpanel" aria-labelledby="jump-tab-servers" hidden={activeTab!=='servers'}>
+        <ServerInspections processRequest={processRequest} />
         <div className="mt-6">
-          <IpManagedQueryPanel />
+          <IpManagedQueryPanel onRestore={()=>setActiveTab('servers')} />
         </div>
         <details className="mt-6"><summary className="cursor-pointer p-4 font-medium"><ListChecks size={14} className="inline mr-1" />资产分组概览</summary>
         <section className="panel jump-summary">
@@ -688,6 +699,7 @@ export default function JumpServerPage() {
           {!matched && <p className="px-6 pb-6">没有匹配的服务器 IP。</p>}
         </section>
         </details>
+        </div>
       </main>
     </Shell>
   );
