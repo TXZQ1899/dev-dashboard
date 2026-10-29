@@ -22,9 +22,9 @@ except ModuleNotFoundError:
     from runtime import aliyun_tenants as tenancy
 
 try:
-    from deployment_catalog import Catalog, CatalogError, CatalogInputError, ENVIRONMENTS as ENVIRONMENTS_CATALOG
+    from deployment_catalog import Catalog, CatalogError, CatalogInputError, SUPPORTED_ENVIRONMENTS as ENVIRONMENTS_CATALOG
 except ModuleNotFoundError:
-    from runtime.deployment_catalog import Catalog, CatalogError, CatalogInputError, ENVIRONMENTS as ENVIRONMENTS_CATALOG
+    from runtime.deployment_catalog import Catalog, CatalogError, CatalogInputError, SUPPORTED_ENVIRONMENTS as ENVIRONMENTS_CATALOG
 
 DATA = Path(os.environ.get('ENVSCOPE_DATA', '/data'))
 APP = Path(os.environ.get('ENVSCOPE_APP', '/app'))

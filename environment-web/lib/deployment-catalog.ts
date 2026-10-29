@@ -1,4 +1,4 @@
-export type CatalogEnvironment = 'TEST' | 'SIMULATION' | 'PRODUCT';
+export type CatalogEnvironment = 'TEST' | 'SIMULATION' | 'PRODUCT' | 'UNIDENTIFIED';
 
 export type CatalogSource = {
   sourceVersion: string;

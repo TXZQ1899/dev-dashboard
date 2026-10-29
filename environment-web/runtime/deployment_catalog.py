@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ENVIRONMENTS = ('TEST', 'SIMULATION', 'PRODUCT')
+SUPPORTED_ENVIRONMENTS = (*ENVIRONMENTS, 'UNIDENTIFIED')
 MAPPER_VERSION = 'devops-catalog-v1'
 
 
@@ -270,6 +271,23 @@ class Catalog:
                         if statement.strip():
                             self.execute(conn, statement)
                     self.execute(conn, 'INSERT INTO catalog_schema_migration VALUES (1,%s,%s)', (checksum, utcnow()))
+                # DDL auto-commits. Named constraints and IF NOT EXISTS make
+                # every migration step independently restartable under the lock.
+                path = Path(__file__).with_name('migrations') / '002_component_catalog.sql'
+                sql = path.read_text()
+                checksum = hashlib.sha256(sql.encode()).hexdigest()
+                applied = self.execute(conn, 'SELECT checksum FROM catalog_schema_migration WHERE version=2')
+                if applied and applied[0]['checksum'] != checksum:
+                    raise CatalogError('部署目录迁移文件校验失败，请使用追加迁移升级')
+                if not applied:
+                    statements = [item.strip() for item in sql.split(';') if item.strip()]
+                    for table, name, statement in zip(('deployment_unit_environment', 'catalog_observation'),
+                            ('deployment_unit_environment_allowed', 'catalog_observation_allowed'), statements[:2]):
+                        found = self.execute(conn, "SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s AND CONSTRAINT_NAME=%s AND CONSTRAINT_TYPE='CHECK'", (table, name))
+                        if not found:
+                            self.execute(conn, statement)
+                    self.execute(conn, statements[2])
+                    self.execute(conn, 'INSERT INTO catalog_schema_migration VALUES (2,%s,%s)', (checksum, utcnow()))
             self._migrated = True
 
     def head(self, conn):
@@ -465,7 +483,7 @@ class Catalog:
             'observedAt': iso(head['observed_at']), 'importedAt': iso(head['imported_at']),
             'counts': decode(head['counts_json'], {})}
         if unit_id:
-            unit = self.execute(conn, 'SELECT u.id FROM deployment_unit u JOIN deployment_unit_source s ON s.unit_id=u.id WHERE u.id=%s AND s.source_instance_key=%s', (unit_id, self.source_key))
+            unit = self.execute(conn, 'SELECT u.id FROM deployment_unit u JOIN deployment_unit_source s ON s.unit_id=u.id WHERE u.id=%s AND s.source_instance_key IN (%s,%s)', (unit_id, self.source_key, self.source_key + ':zookeeper'))
             if not unit:
                 raise CatalogInputError('部署单元不存在')
             sql = 'SELECT i.*,e.environment,o.source_attributes_json AS attributes FROM deployment_instance i JOIN deployment_unit_environment e ON e.id=i.unit_environment_id LEFT JOIN catalog_observation o ON o.id=i.current_observation_id WHERE e.unit_id=%s'
@@ -480,7 +498,7 @@ class Catalog:
                 'ip': r['primary_ip'], 'port': r['declared_port_raw'], 'identityQuality': r['identity_quality'],
                 'presenceStatus': r['presence_status'], 'managementStatus': r['management_status'],
                 'lastSeenAt': iso(r['last_seen_at']), 'attributes': decode(r['attributes'], {})} for r in rows]}
-        where, args = 's.source_instance_key=%s', [self.source_key]
+        where, args = 's.source_instance_key IN (%s,%s)', [self.source_key, self.source_key + ':zookeeper']
         if presence == 'present':
             where += " AND s.presence_status='PRESENT'"
         if query:
@@ -499,13 +517,13 @@ class Catalog:
             attrs = decode(row['attributes'], {})
             environments = self.execute(conn, "SELECT e.*,o.source_attributes_json AS attributes,COUNT(CASE WHEN i.presence_status='PRESENT' THEN i.id END) AS instance_count,COUNT(DISTINCT CASE WHEN i.presence_status='PRESENT' THEN i.primary_ip END) AS server_count FROM deployment_unit_environment e LEFT JOIN deployment_instance i ON i.unit_environment_id=e.id LEFT JOIN catalog_observation o ON o.id=e.current_observation_id WHERE e.unit_id=%s GROUP BY e.id,o.source_attributes_json ORDER BY e.environment", (row['id'],))
             units.append({'id': row['id'], 'code': row['code'], 'name': row['name'], 'unitType': row['unit_type'],
-                'appId': decode(row['native_key_json']).get('appId'), 'appType': attrs.get('appType'),
+                'appId': decode(row['native_key_json']).get('appId'), 'appType': attrs.get('appType') or row['technology_code'],
                 'repository': attrs.get('repository'), 'systemName': row['system_name'], 'domainName': row['domain_name'],
                 'managementStatus': row['management_status'], 'sourcePresence': row['source_presence'],
                 'environments': [{'environment': e['environment'], 'configurationState': e['configuration_state'],
                     'coverageState': e['coverage_state'], 'instanceCount': e['instance_count'], 'serverCount': e['server_count'],
                     'unresolvedCount': decode(e['attributes'], {}).get('unresolvedCount', 0)} for e in environments]})
-        summary = self.execute(conn, "SELECT COUNT(*) AS units,SUM(presence_status='PRESENT') AS present_units FROM deployment_unit_source WHERE source_instance_key=%s", (self.source_key,))[0]
-        instance_count = self.execute(conn, "SELECT COUNT(*) AS n FROM deployment_instance i JOIN deployment_unit_environment e ON e.id=i.unit_environment_id JOIN deployment_unit_source s ON s.unit_id=e.unit_id WHERE s.source_instance_key=%s AND i.presence_status='PRESENT'", (self.source_key,))[0]['n']
+        summary = self.execute(conn, "SELECT COUNT(*) AS units,SUM(presence_status='PRESENT') AS present_units FROM deployment_unit_source WHERE source_instance_key IN (%s,%s)", (self.source_key, self.source_key + ':zookeeper'))[0]
+        instance_count = self.execute(conn, "SELECT COUNT(*) AS n FROM deployment_instance i JOIN deployment_unit_environment e ON e.id=i.unit_environment_id JOIN deployment_unit_source s ON s.unit_id=e.unit_id WHERE s.source_instance_key IN (%s,%s) AND i.presence_status='PRESENT'", (self.source_key, self.source_key + ':zookeeper'))[0]['n']
         return {'source': source, 'units': units, 'pagination': {'page': page, 'pageSize': page_size, 'total': total, 'totalPages': pages},
                 'summary': {'units': summary['units'], 'presentUnits': int(summary['present_units'] or 0), 'instances': instance_count}}

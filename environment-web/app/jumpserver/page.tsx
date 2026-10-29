@@ -552,10 +552,12 @@ export default function JumpServerPage() {
     );
   }
   useEffect(() => {
-    const search = new URLSearchParams(window.location.search).get('q');
+    const params = new URLSearchParams(window.location.search);
+    const search = params.get('q');
     if (search) {
       setActiveTab('servers');
       updateSearch(search);
+      if (params.get('view') === 'processes') setProcessRequest({ip: search});
     }
   }, []);
   let angle = 0;
