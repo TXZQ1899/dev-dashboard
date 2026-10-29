@@ -1,5 +1,6 @@
 exports/
 *cookie*.txt
-/config/*.csv
 __pycache__/
-reports/
+/reports/
+/config/
+.DS_Store
