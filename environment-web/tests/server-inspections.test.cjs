@@ -24,7 +24,7 @@ function render(assets,options={}) {
  const ui=evaluate('components/server-inspections.tsx',id=>{
   if(id==='react')return {...React,useEffect:(fn,deps)=>{if(options.runRequestEffect&&deps?.[0]===options.processRequest)fn();},useMemo:f=>f(),useState:initial=>{const i=index++;return [i<state.length?state[i]:typeof initial==='function'?initial():initial,value=>options.changes?.push([i,value])];}};
   if(id==='react/jsx-runtime')return require(id);
-  if(id==='@/lib/jumpserver')return {jumpserver:{assets,collectedAt:'2026-09-17T12:00:00Z'}};
+  if(id==='@/lib/jumpserver')return {jumpserver:{assets,collectedAt:'2026-09-17T12:00:00Z'},jumpserverLoginUrl:id=>'http://jump/luna/?login_to='+id};
   if(id==='@/lib/server-processes')return lib;
   if(id==='@/lib/jumpserver-overview')return overviewLib;
   if(id==='@/lib/process-comparison')return {

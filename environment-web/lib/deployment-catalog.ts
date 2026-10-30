@@ -15,6 +15,7 @@ export type CatalogUnit = {
   unitType: string;
   appId: string | null;
   appType?: string;
+  groupingState?: string | null;
   repository?: string;
   systemName: string | null;
   domainName: string | null;
@@ -46,6 +47,7 @@ export type CatalogInstance = {
     branch?: string;
     branchSource?: string;
     portBasis?: string;
+    observedEndpoints?: { ip: string; port: number; protocol: string }[];
     lastPublishedAt?: string;
     publishStatus?: string;
     publishTimeSource?: string;

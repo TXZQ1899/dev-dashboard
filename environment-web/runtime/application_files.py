@@ -11,10 +11,11 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import application_check as check
-import application_config_ignore as config_ignore
+from application_config import ignore as config_ignore, nacos, zookeeper as zookeeper_config
+from application_config.jar import snapshot_jar_configs
+from application_config.nacos import collect_nacos, read_nacos
+from application_config.zookeeper import zookeeper_catalogue
 import application_log_policy as log_policy
-import application_nacos as nacos
-import zookeeper_config
 
 MAX_ARCHIVE = 536870912
 CHUNK = 524288
@@ -230,59 +231,6 @@ def catalogue(terminal, process, application=None, kind=None):
     return result
 
 
-def zookeeper_catalogue(terminal, process):
-    result = {'files': [], 'roots': {'config': [], 'log': []}, 'warnings': [],
-              'observedAt': check.now(), 'pid': process['pid'], 'startTicks': process['startTicks'],
-              'logScopes': [], 'processType': 'ZOOKEEPER', 'typeConfidence': 'EXACT',
-              'typeEvidence': '实时进程命令包含 ZooKeeper QuorumPeerMain', 'discoveryVersion': 'zookeeper-v1'}
-    body = run_script(terminal, 'application_files.sh', process['pid'], process['startTicks'], 'process-args')
-    lines = body.splitlines()
-    argv_lines = [line[5:] for line in lines if line.startswith('ARGV\t')]
-    cwd_lines = [line[4:] for line in lines if line.startswith('CWD\t')]
-    if 'FILES_DONE' not in lines or len(argv_lines) != 1 or len(cwd_lines) != 1:
-        raise ValueError('实时进程参数读取不完整')
-    try:
-        raw = base64.b64decode(argv_lines[0], validate=True)
-        if not raw.endswith(b'\0'):
-            raise ValueError('启动参数不完整')
-        argv = [part.decode('utf-8') for part in raw[:-1].split(b'\0')]
-        cwd = base64.b64decode(cwd_lines[0], validate=True).decode('utf-8')
-    except (ValueError, UnicodeDecodeError):
-        raise ValueError('实时进程参数无法解析') from None
-    path, warning = zookeeper_config.discover(argv, cwd)
-    if warning:
-        result['typeConfidence'] = 'UNKNOWN' if '服务端入口' in warning else 'EXACT'
-        if result['typeConfidence'] == 'UNKNOWN':
-            result['typeEvidence'] = '实时启动参数未能确认 ZooKeeper 服务端入口'
-        result['warnings'].append(warning)
-        return result
-    if config_ignore.is_ignored(path):
-        result['warnings'].append('ZooKeeper 主配置文件已在 ignorelist 中排除')
-        return result
-    body = run_script(terminal, 'application_files.sh', process['pid'], process['startTicks'], 'list-file', path)
-    lines = body.splitlines()
-    if 'FILES_DONE' not in lines:
-        raise ValueError('ZooKeeper 配置文件检查不完整')
-    records = [line.split('\t') for line in lines if line.startswith('EXACT_FILE\t')]
-    result['warnings'].extend(line.split('\t', 1)[1] for line in lines if line.startswith('WARNING\t'))
-    if not records:
-        return result
-    if len(records) != 1 or len(records[0]) != 4 or decode_path(records[0][1]) != path:
-        raise ValueError('远端返回无效 ZooKeeper 配置文件')
-    try:
-        size, modified = int(records[0][2]), int(records[0][3])
-        if size < 0: raise ValueError()
-    except ValueError:
-        raise ValueError('远端返回无效 ZooKeeper 配置文件元数据') from None
-    root = posixpath.dirname(path)
-    result['roots']['config'].append(root)
-    result['files'].append({'id': hashlib.sha256(('config\0'+path).encode()).hexdigest()[:32],
-        'kind': 'config', 'path': path, 'root': root, 'size': size, 'modifiedAt': modified,
-        'role': 'primary', 'discoveryEvidence': 'ZooKeeper 服务端启动参数指定'})
-    result['warnings'].append('仅发现启动参数指定的主配置；关联配置尚未采集，不能确认配置已生效')
-    return result
-
-
 def redact_config(content, hide_password=True):
     """Mask common properties/YAML/XML secrets and URL authentication."""
     secret = (r'(?:password|passwd|pwd|secret|token|credential|access[-_.]?key|private[-_.]?key|api[-_.]?key)'
@@ -405,72 +353,6 @@ def read_snapshot(entry, folder, raw_config=False):
             **({} if raw_config else {'redactedContent':redact_config(content), 'passwordsVisible':True}),
             'observedAt':entry.get('snapshotObservedAt'), 'lines':None,
             'truncated':bool(entry.get('snapshotTruncated')), 'redacted':not raw_config}
-
-
-def collect_nacos(terminal, process, catalogue, folder, snapshot_folder=None):
-    candidates = [e for e in catalogue['files'] if e.get('kind') == 'config'
-                  and re.fullmatch(r'(?:application|bootstrap)(?:-[\w.-]+)?\.ya?ml', posixpath.basename(e.get('path', '')), re.I)]
-    if len(candidates) > 20:
-        catalogue['warnings'].append('Nacos 声明只检查最近的 20 个应用 YAML 文件')
-    seen = set()
-    attempted = set()
-    for entry in candidates[:20]:
-        try:
-            raw = (read_snapshot(entry, snapshot_folder, raw_config=True) if snapshot_folder is not None
-                   else read_file(terminal, process, entry, raw_config=True))
-            if raw['truncated']:
-                catalogue['warnings'].append('应用 YAML 文件过大，未解析 Nacos 声明')
-                continue
-            configs, unresolved = nacos.declarations(raw['content'], process)
-            catalogue['warnings'].extend(unresolved)
-            if not configs:
-                continue
-            for config in configs:
-                requested = tuple(config[k] for k in ('address', 'namespace', 'group', 'dataId'))
-                if requested in attempted: continue
-                if len(attempted) >= 20:
-                    catalogue['warnings'].append('Nacos 配置超过 20 项，未继续下载')
-                    break
-                attempted.add(requested)
-                try:
-                    inferred_group = not config['group']
-                    config = nacos.resolve_group(config)
-                    identity = tuple(config[k] for k in ('address', 'namespace', 'group', 'dataId'))
-                    if identity in seen: continue
-                    seen.add(identity)
-                    content = nacos.fetch(config)
-                    path = nacos.save(folder, config, content)
-                    label = 'Nacos / '+config['namespace']+' / '+config['group']+' / '+config['dataId']
-                    catalogue['files'].append({'id':hashlib.sha256(('nacos\0'+path.name).encode()).hexdigest()[:32],
-                        'kind':'config', 'source':'nacos', 'storageName':path.name, 'path':label,
-                        'root':'Nacos', 'size':len(content), 'modifiedAt':int(time.time()), 'snapshotObservedAt':check.now()})
-                    catalogue['warnings'].append('Nacos 配置来自 '+entry['path']+' 的声明；未确认该 profile 实际生效')
-                    if inferred_group:
-                        catalogue['warnings'].append('Nacos Group 在可查询范围内唯一匹配；未确认应用实际使用该 Group：'+config['dataId'])
-                except ValueError as error:
-                    catalogue['warnings'].append('Nacos 配置读取失败：'+entry['path']+' / '+config['dataId']+'；'+str(error))
-                except OSError:
-                    catalogue['warnings'].append('Nacos 配置读取或保存失败：'+entry['path']+' / '+config['dataId'])
-        except ValueError as error:
-            catalogue['warnings'].append('Nacos 配置读取失败：'+entry['path']+'；'+str(error))
-        except OSError:
-            catalogue['warnings'].append('Nacos 配置读取或保存失败：'+entry['path'])
-
-
-def read_nacos(entry, folder):
-    name = entry.get('storageName', '')
-    if not re.fullmatch(r'[0-9a-f]{64}\.(?:yaml|txt)', name):
-        raise ValueError('无效 Nacos 文件')
-    path = Path(folder)/name
-    if path.is_symlink() or not path.is_file():
-        raise ValueError('Nacos 文件不存在，请刷新配置列表')
-    raw = path.read_bytes()
-    if len(raw) > nacos.MAX_CONTENT:
-        raise ValueError('Nacos 文件超过大小限制')
-    content = raw.decode('utf-8')
-    return {'id':entry['id'], 'content':redact_config(content, hide_password=False),
-            'redactedContent':redact_config(content), 'passwordsVisible':True, 'lines':None,
-            'observedAt':entry.get('snapshotObservedAt') or check.now(), 'truncated':False, 'redacted':True}
 
 
 def archive_logs(terminal, process, roots, destination, progress=lambda *_:None, cancelled=lambda:False, group='all'):

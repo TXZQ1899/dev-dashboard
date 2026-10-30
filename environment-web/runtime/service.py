@@ -533,7 +533,7 @@ class Service:
             raise
 
     def application_files(self, payload):
-        from application_files import catalogue, read_file, collect_nacos, read_nacos, snapshot_configs, read_snapshot
+        from application_files import catalogue, read_file, collect_nacos, read_nacos, snapshot_configs, read_snapshot, snapshot_jar_configs
         identifier, action = payload.get('id'), payload.get('action', 'list')
         if action == 'open': return self.open_application_file_session(payload)
         kind = payload.get('kind')
@@ -558,7 +558,7 @@ class Service:
             path = DATA/'checks'/identifier/('files-'+kind+'.json' if kind else 'files.json')
             if action == 'cached':
                 catalog = read(path, {})
-                from zookeeper_config import is_server as is_zookeeper_server
+                from application_config.zookeeper import is_server as is_zookeeper_server
                 _, selected_process, _ = self.application_file_context(identifier)
                 if is_zookeeper_server(selected_process) and catalog.get('discoveryVersion') != 'zookeeper-v1':
                     return {'catalogue':None}
@@ -592,6 +592,7 @@ class Service:
                     new_snapshot.mkdir(parents=True, mode=0o700)
                     snapshot_configs(terminal, process, result, new_snapshot/'files')
                     if result.get('processType') != 'ZOOKEEPER':
+                        snapshot_jar_configs(terminal, process, result, new_snapshot/'files')
                         collect_nacos(terminal, process, result, new_snapshot/'nacos', snapshot_folder=new_snapshot/'files')
                     result['configSnapshotId'] = snapshot_id
                 old = read(path, {})

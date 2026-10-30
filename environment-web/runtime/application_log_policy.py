@@ -4,7 +4,7 @@ import posixpath
 import re
 import shlex
 
-import application_config_ignore as config_ignore
+from application_config import ignore as config_ignore
 
 CURRENT = r'.*\.(log|out|txt)'
 HISTORY = r'.*\.(log|out|txt)(\.[0-9]+([.-][0-9]+)*)?(\.(gz|tar\.gz|bz2|xz|zip))?'

@@ -2,6 +2,7 @@ import base64
 import hashlib
 import os
 import platform
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -14,10 +15,38 @@ import application_files as f
 import application_log_policy as log_policy
 from test_application_check import process, app, socket
 import application_check as c
-import zookeeper_config as zk
+from application_config import zookeeper as zk
 
 
 class FileTests(unittest.TestCase):
+    def test_jar_snapshot_feeds_nacos_and_honours_ignorelist(self):
+        enc = lambda value: base64.b64encode(value).decode()
+        archive = b'/opt/orders/app.jar'
+        config = b'nacos:\n  config:\n    server-addr: 192.0.2.10:8848\n    data-id: orders.yaml\n    group: DEFAULT_GROUP\n    namespace: test\n'
+        body = ('JAR_CONFIG\t'+enc(archive)+'\t'+enc(b'BOOT-INF/classes/bootstrap.yml')+'\t'+enc(config)+'\n'
+                'JAR_CONFIG\t'+enc(archive)+'\t'+enc(b'BOOT-INF/classes/mapper/ignored.xml')+'\t'+enc(b'<x/>')+'\nFILES_DONE')
+        result = {'files':[], 'warnings':[]}
+        with tempfile.TemporaryDirectory() as folder, patch.object(f, 'run_script', return_value=body), \
+             patch.object(f.nacos, 'resolve_group', side_effect=lambda value: value), \
+             patch.object(f.nacos, 'fetch', return_value=b'key: value') as fetch:
+            snapshots = Path(folder)/'files'; snapshots.mkdir()
+            f.snapshot_jar_configs(None, process(), result, snapshots)
+            self.assertEqual(len(result['files']), 1)
+            entry = result['files'][0]
+            self.assertIn('app.jar!/BOOT-INF/classes/bootstrap.yml', entry['path'])
+            self.assertEqual(f.read_snapshot(entry, snapshots, raw_config=True)['content'], config.decode())
+            f.collect_nacos(None, process(), result, Path(folder)/'nacos', snapshot_folder=snapshots)
+            self.assertEqual(fetch.call_count, 1)
+            self.assertEqual(result['files'][-1]['source'], 'nacos')
+
+    def test_jar_snapshot_rejects_unsafe_member_and_incomplete_response(self):
+        enc = lambda value: base64.b64encode(value).decode()
+        body = 'JAR_CONFIG\t'+enc(b'/app/a.jar')+'\t'+enc(b'../application.yml')+'\t'+enc(b'foo')+'\nFILES_DONE'
+        with tempfile.TemporaryDirectory() as folder, patch.object(f, 'run_script', return_value=body):
+            with self.assertRaisesRegex(ValueError, '无效 JAR'): f.snapshot_jar_configs(None, process(), {'files':[], 'warnings':[]}, folder)
+        with tempfile.TemporaryDirectory() as folder, patch.object(f, 'run_script', return_value=''):
+            with self.assertRaisesRegex(ValueError, '不完整'): f.snapshot_jar_configs(None, process(), {'files':[], 'warnings':[]}, folder)
+
     def test_zookeeper_discovery_uses_live_argv_and_exact_file_only(self):
         encode = lambda value: base64.b64encode(value).decode()
         path = '/etc/zookeeper/my zoo.cfg'
@@ -300,6 +329,25 @@ class LinuxFileTests(unittest.TestCase):
                 r=subprocess.run(command,shell=True,capture_output=True,text=True,timeout=timeout)
                 return r.returncode,r.stdout
         self.terminal=Terminal()
+
+    @unittest.skipUnless(shutil.which('java') and shutil.which('javac') and shutil.which('jar'), 'JDK required')
+    def test_live_jar_config_snapshot(self):
+        source = self.root/'Main.java'
+        source.write_text('public class Main { public static void main(String[] a) throws Exception { Thread.sleep(60000); } }')
+        subprocess.run(['javac', str(source)], check=True, capture_output=True)
+        config = self.root/'BOOT-INF/classes/bootstrap.yml'
+        config.parent.mkdir(parents=True)
+        config.write_text('nacos:\n  config:\n    data-id: orders.yaml\n')
+        subprocess.run(['jar', 'cfe', 'app.jar', 'Main', 'Main.class', 'BOOT-INF'], cwd=self.root, check=True, capture_output=True)
+        child = subprocess.Popen(['java', '-jar', 'app.jar'], cwd=self.root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: (child.terminate(), child.wait()))
+        ticks = Path(f'/proc/{child.pid}/stat').read_text().rsplit(') ', 1)[1].split()[19]
+        proc = {'pid':child.pid, 'startTicks':ticks, 'command':'java -jar app.jar'}
+        folder = self.root/'snapshot'; folder.mkdir()
+        result = {'files':[], 'warnings':[]}
+        f.snapshot_jar_configs(self.terminal, proc, result, folder)
+        self.assertEqual(len(result['files']), 1)
+        self.assertEqual(f.read_snapshot(result['files'][0], folder, raw_config=True)['content'], config.read_text())
 
     def test_exact_config_probe_rejects_symlinks_and_snapshots_only_listed_file(self):
         path = self.root/'zoo config.cfg'

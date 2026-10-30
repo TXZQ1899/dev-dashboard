@@ -177,6 +177,10 @@ TCP 页设置 10–300 秒观察时间。部署环境根据目标进程、监听
 
 对于应用 YAML 中明确的 `nacos.config` 地址和 Data ID，检测和配置文件列表可通过容器网络读取 Nacos v1 配置。列表刷新后原文保存在数据卷的会话目录，可能包含凭据；页面预览显示密码，仍遮盖常见令牌和私钥。未解析的变量、不可达地址和认证失败会保留警告。
 
+配置列表刷新时，Java `-jar` 进程还会通过目标服务器的 `jar` 命令读取该进程使用的 JAR 包内配置，并从其中的 `application` / `bootstrap` YAML 解析 Nacos 声明。包内路径和未确认生效的提示会保留；需要目标服务器提供可用的 `jar` 命令。读取最多 100 个配置文件、单文件 2 MiB、合计 16 MiB，嵌套 JAR 不展开。
+
+应用配置专用代码集中在 `environment-web/runtime/application_config/`：`discovery.py` 处理配置目录与 Tomcat 部署路径，`jar.py` 处理 JAR 配置快照，`nacos.py` 处理 Nacos 声明与下载，`zookeeper.py` 处理 ZooKeeper 配置发现，`endpoints.py` 解析配置中的 Endpoint，`ignore.py` 管理排除规则；配置专用远端探针位于该目录的 `probes/`。配置和日志共用的文件操作仍在 `application_files.py`。
+
 **配置文件** 页展示最近一次配置快照，点击刷新重新采集；展开内容时密码明文显示（预览最多 256 KiB，超限明确提示）。原始配置保存在数据卷。**日志文件** 页提供当前日志预览与历史日志打包下载。配置与日志是可复用的独立组件与 API，文件会话绑定当前快照版本、资产和 PID，每次远程操作复核进程启动身份。配置与日志目录由进程参数、工作目录和已识别的应用推导；支持 Tomcat ROOT 部署目录的符号链接。Logback 配置声明的独立日志路径会按文件名限定范围，避免将共享日志目录中其他应用的文件混入；不扫描整个服务器。
 
 配置列表与检测时的 Endpoint 解析共用 `environment-web/runtime/application-config.ignorelist`：默认跳过 `classes/mapper` 目录、`mybatis-config` / `mybatis-config.*`、Tomcat `conf` 下的 `catalina.properties`、`jaspic-providers.xml`、`logging.properties`、`tomcat-users.xml`、`web.xml`、`conf/yum/yum.conf`，以及 `WEB-INF/web.xml`。规则按完整路径 glob 匹配，每行一条，支持空行与 `#` 注释；目录在远端遍历时剪枝，被忽略文件不读取、不占用采集限额。可在容器数据卷 `${ENVSCOPE_DATA:-/data}/application-config.ignorelist` 追加规则，下次请求即生效，无需重启；默认规则随镜像发布。日志列表与打包不受配置 ignorelist 影响。

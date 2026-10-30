@@ -46,6 +46,7 @@ export type CheckFlow = {
     observationStart?: string; observationEnd?: string;
     container?: { id: string; name: string; initPid: number };
     connection?: { published: CheckEndpoint; local: CheckEndpoint; peer: CheckEndpoint; socketId: string | null };
+    dockerTargetConnection?: { published: CheckEndpoint; client: CheckEndpoint; container: CheckEndpoint; socketId: string | null };
   }[];
   peerListeningProcesses?: (CheckFlow['remoteProcesses'][number] & { endpoint: CheckEndpoint; basis: string })[];
   warnings: string[];
@@ -96,6 +97,10 @@ export function displayCheckProcesses(flow: CheckFlow) {
   return flow.remoteProcesses.length ? flow.remoteProcesses : flow.peerListeningProcesses ?? [];
 }
 
+export function jumpServerNotCollected(flow: CheckFlow) {
+  return flow.reason.startsWith('对端 IP 未匹配到 JumpServer 资产');
+}
+
 function uniqueValues<T>(values: T[]): T[] {
   return [...new Map(values.map((value) => [JSON.stringify(value), value])).values()];
 }
@@ -118,6 +123,7 @@ export function aggregateCheckFlows(flows: CheckFlow[]) {
   return [...groups].map(([key, entries]) => ({
     key,
     peerIp: entries[0].peer.ip,
+    jumpServerNotCollected: entries.some(jumpServerNotCollected),
     remoteProcesses: processIdentities(entries[0]),
     listeningOnly: !entries[0].remoteProcesses.length && !!entries[0].peerListeningProcesses?.length,
     services: uniqueValues(entries.map((flow) => flow.service)),

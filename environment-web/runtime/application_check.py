@@ -16,17 +16,16 @@ import re
 import shlex
 import threading
 import time
-import xml.etree.ElementTree as ET
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlsplit
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 
 import server_inventory as si
-import application_config_ignore as config_ignore
-import application_nacos as nacos
+from application_config import ignore as config_ignore, nacos, zookeeper as zookeeper_config
+from application_config.discovery import config_roots, tomcat_docbase_roots
+from application_config.endpoints import config_kind, normal_ip, parse_config
 
 ENVIRONMENTS = ('PRODUCT', 'TEST', 'SIMULATION')
 PROBES = Path(__file__).with_name('probes')
@@ -69,14 +68,6 @@ def safe_diagnostics(body):
 
 def now():
     return datetime.now(timezone.utc).isoformat(timespec='milliseconds')
-
-
-def normal_ip(value):
-    try:
-        ip = ipaddress.ip_address(str(value).split('%')[0])
-        return str(ip.ipv4_mapped if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped else ip)
-    except ValueError:
-        return None
 
 
 def ips(value):
@@ -782,143 +773,7 @@ def infer_environment(process, host_ips, listeners, apps):
     return matches[0] if len(matches) == 1 else None
 
 
-def config_roots(process):
-    try:
-        args = shlex.split(process.get('command', ''))
-    except ValueError:
-        return []
-    roots = []
-    base = next((a.split('=', 1)[1] for a in args if a.startswith('-Dcatalina.base=')), None)
-    if base:
-        roots.extend([posixpath.join(base, 'conf'), posixpath.join(base, 'webapps')])
-    for arg in args:
-        if arg.startswith(('-Dappid=', '-Dspring.application.name=', '--spring.application.name=')):
-            name = arg.split('=', 1)[1]
-            if re.fullmatch(r'[A-Za-z0-9_.-]+', name) and name not in ('.', '..'):
-                roots.extend(['/var/www/webapps/'+name+'/WEB-INF', '/var/www/webapps/'+name+'/config'])
-    if '-jar' in args:
-        idx = args.index('-jar')
-        if idx+1 < len(args):
-            jar = args[idx+1]
-            directory = posixpath.dirname(jar) if jar.startswith('/') else process.get('cwd', '')
-            roots.extend([directory, posixpath.join(directory, 'config')])
-    for arg in args:
-        if arg.startswith(('--spring.config.location=', '--spring.config.additional-location=', '-Dspring.config.location=')):
-            for path in arg.split('=', 1)[1].split(','):
-                path = path.removeprefix('optional:').removeprefix('file:')
-                if path.startswith('/'):
-                    roots.append(posixpath.dirname(path) if posixpath.splitext(path)[1] else path)
-    # A general cwd such as / or /opt is never scanned recursively.
-    safe = []
-    for root in roots:
-        root = posixpath.normpath(root)
-        if root.startswith('/') and len([x for x in root.split('/') if x]) >= 3 and root not in safe:
-            safe.append(root)
-    return safe[:6]
-
-
-def tomcat_docbase_roots(content, process):
-    """Resolve literal Context docBases declared in this process's server.xml."""
-    try:
-        args = shlex.split(process.get('command', ''))
-        base = next((a.split('=', 1)[1] for a in args if a.startswith('-Dcatalina.base=')), '')
-        if not base.startswith('/') or '<!DOCTYPE' in content.upper() or '<!ENTITY' in content.upper():
-            return []
-        tree = ET.fromstring(content)
-    except (ValueError, ET.ParseError):
-        return []
-    roots = []
-    for host in tree.iter('Host'):
-        appbase = host.get('appBase', 'webapps')
-        if '${' in appbase or '\0' in appbase:
-            continue
-        appbase = posixpath.normpath(posixpath.join(base, appbase))
-        for context in host.iter('Context'):
-            docbase = context.get('docBase', '').strip()
-            if not docbase or '${' in docbase or '\0' in docbase:
-                continue
-            path = posixpath.normpath(posixpath.join(appbase, docbase))
-            if not path.startswith('/') or len([x for x in path.split('/') if x]) < 3 or path.lower().endswith('.war'):
-                continue
-            root = posixpath.join(path, 'WEB-INF')
-            if root not in roots:
-                roots.append(root)
-    return roots[:16]
-
-
-def config_kind(key, scheme=''):
-    value = (key+' '+scheme).lower()
-    for name, pattern in (('MySQL', 'mysql'), ('PostgreSQL', 'postgres'), ('Redis', 'redis'),
-                          ('Elasticsearch', r'elasticsearch|\bes\b'), ('Kafka', 'kafka'),
-                          ('RabbitMQ', r'rabbit|amqp'), ('RocketMQ', 'rocket'), ('ActiveMQ', 'activemq')):
-        if re.search(pattern, value):
-            return name
-    return '未知服务'
-
-
-def parse_config(content, path):
-    """Extract only endpoint declarations, never passwords or arbitrary values."""
-    found, groups, stack = [], {}, []
-    def add(host, port, key, line, kind):
-        host = host.strip('[]')
-        if not re.fullmatch(r'[A-Za-z0-9_.:%-]+', host) or not str(port).isdigit() or not 0 < int(port) <= 65535:
-            return
-        found.append({'host': normal_ip(host) or host.lower(), 'port': int(port), 'protocol': 'tcp',
-                      'kind': kind, 'file': path, 'key': key[:160], 'line': line})
-    for number, raw in enumerate(content.splitlines(), 1):
-        line = raw.strip()
-        if not line or line.startswith(('#', '!', '<!--')):
-            continue
-        indent = len(raw)-len(raw.lstrip())
-        prop = re.match(r'([\w.-]+)\s*[:=]\s*(.*?)\s*$', line)
-        xml = re.search(r'<(?:property|entry)\b[^>]*(?:name|key)=[\"\']([^\"\']+)[\"\'][^>]*(?:value=[\"\']([^\"\']*)[\"\']|>([^<]+))', line)
-        if prop:
-            key, value = prop.groups()
-            while stack and stack[-1][0] >= indent:
-                stack.pop()
-            key = '.'.join([x[1] for x in stack]+[key])
-            if not value:
-                stack.append((indent, prop[1]))
-                continue
-        elif xml:
-            key, value = xml[1], xml[2] or xml[3] or ''
-        else:
-            key, value = '.'.join(x[1] for x in stack), line.lstrip('- ').strip()
-        if re.search(r'password|passwd|secret|token|username', key, re.I):
-            continue
-        if '${' in value:
-            continue
-        # URLs may have credentials or query parameters: retain just hostname/port.
-        for match in re.finditer(r'(?:jdbc:)?([a-zA-Z][\w+.-]*)://([^\s\"\'<>]+)', value):
-            scheme, authority = match.groups()
-            authority = authority.split('/', 1)[0].split('?', 1)[0].split('#', 1)[0].rsplit('@', 1)[-1]
-            default = {'redis': 6379, 'rediss': 6379, 'mysql': 3306, 'postgresql': 5432, 'amqp': 5672, 'amqps': 5671}.get(scheme)
-            for item in authority.split(','):
-                try:
-                    parsed = urlsplit(scheme+'://'+item)
-                    if parsed.hostname and (parsed.port or default):
-                        add(parsed.hostname, parsed.port or default, key, number, config_kind(key, scheme))
-                except ValueError:
-                    continue
-        if re.search(r'host|port|address|server|nodes|bootstrap|broker|url|uri|jdbc|datasource|redis|elastic|rabbit|kafka|mq', key, re.I):
-            # Lists such as bootstrap.servers=broker-a:9092,broker-b:9092.
-            plain_value = re.sub(r'(?:jdbc:)?[a-zA-Z][\w+.-]*://[^\s\"\'<>]+', '', value)
-            for match in re.finditer(r'(?<![\w@])((?:\[[0-9a-fA-F:]+\])|[\w.-]+):(\d{1,5})(?!\d)', plain_value):
-                add(match[1], match[2], key, number, config_kind(key))
-            group, _, field = key.rpartition('.')
-            if field in ('host', 'hostname', 'port'):
-                groups.setdefault(group, {})[field] = (value.strip('\"\' '), number, key)
-    for group, fields in groups.items():
-        host = fields.get('host') or fields.get('hostname')
-        port = fields.get('port')
-        if host and port:
-            add(host[0], port[0], host[2], host[1], config_kind(group))
-    unique = {(x['host'], x['port'], x['file'], x['key'], x['kind']): x for x in found}
-    return list(unique.values())[:200]
-
-
 def collect_config(terminal, process):
-    import zookeeper_config
     if zookeeper_config.is_server(process):
         return {'status': 'not_collected', 'roots': [], 'endpoints': [],
                 'warnings': ['ZooKeeper 配置的上下游解析尚不支持；配置文件可在配置文件页查看']}
@@ -1045,19 +900,19 @@ def update_flow(flows, socket, listeners, stamp):
 def reverse_filter(flows):
     conditions = []
     for flow in flows:
-        local, peer = flow['local'], flow['peer']
-        # Validate all addresses before interpolating the ss expression.
-        for e in (local, peer):
-            if not normal_ip(e['ip']):
-                raise ValueError('连接地址不是有效 IP')
-        source = '['+peer['ip']+']' if ':' in peer['ip'] else peer['ip']
-        destination = '['+local['ip']+']' if ':' in local['ip'] else local['ip']
-        # Old iproute2 (including ss170501) accepts bare host predicates but
-        # rejects `src = IP` / `dst = IP` with a filter parser error (exit 255).
-        conditions.append('( src '+source+' and sport = :'+str(peer['port'])+
-                          ' and dst '+destination+' and dport = :'+str(local['port'])+' )')
+        for local in [flow['local']] + flow.get('_publishedEndpoints', []):
+            peer = flow['peer']
+            # Validate all addresses before interpolating the ss expression.
+            for e in (local, peer):
+                if not normal_ip(e['ip']):
+                    raise ValueError('连接地址不是有效 IP')
+            source = '['+peer['ip']+']' if ':' in peer['ip'] else peer['ip']
+            destination = '['+local['ip']+']' if ':' in local['ip'] else local['ip']
+            # Old iproute2 (including ss170501) accepts bare host predicates but
+            # rejects `src = IP` / `dst = IP` with a filter parser error (exit 255).
+            conditions.append('( src '+source+' and sport = :'+str(peer['port'])+
+                              ' and dst '+destination+' and dport = :'+str(local['port'])+' )')
     return '( '+' or '.join(dict.fromkeys(conditions))+' )'
-
 
 def same_connection(flow, remote):
     return flow['local'] == remote['peer'] and flow['peer'] == remote['local']
@@ -1071,16 +926,16 @@ def peer_sampling_filter(flows):
     """
     conditions = []
     for flow in flows:
-        local, peer = flow['local'], flow['peer']
-        if not normal_ip(local['ip']) or not normal_ip(peer['ip']):
-            raise ValueError('连接地址不是有效 IP')
-        source = '['+peer['ip']+']' if ':' in peer['ip'] else peer['ip']
-        destination = '['+local['ip']+']' if ':' in local['ip'] else local['ip']
-        service = ('sport = :'+str(peer['port']) if flow['direction'] == 'downstream' else
-                   'dport = :'+str(local['port']))
-        conditions.append('( src '+source+' and dst '+destination+' and '+service+' )')
+        for local in [flow['local']] + flow.get('_publishedEndpoints', []):
+            peer = flow['peer']
+            if not normal_ip(local['ip']) or not normal_ip(peer['ip']):
+                raise ValueError('连接地址不是有效 IP')
+            source = '['+peer['ip']+']' if ':' in peer['ip'] else peer['ip']
+            destination = '['+local['ip']+']' if ':' in local['ip'] else local['ip']
+            service = ('sport = :'+str(peer['port']) if flow['direction'] == 'downstream' else
+                       'dport = :'+str(local['port']))
+            conditions.append('( src '+source+' and dst '+destination+' and '+service+' )')
     return '( '+' or '.join(dict.fromkeys(conditions))+' )'
-
 
 def observation_bounds(sample, fallback):
     return sample.get('observationStart', fallback), sample.get('observationEnd', fallback)
@@ -1122,8 +977,8 @@ class PeerObservationBuffer:
         if previous != context:
             sequence = 0
         flow['_peerCursor'] = (context, self.sequence)
-        return (observation for number, observation in
-                self.by_tuple.get(self.key(flow['peer'], flow['local']), ()) if number > sequence)
+        return (observation for local in [flow['local']] + flow.get('_publishedEndpoints', [])
+                for number, observation in self.by_tuple.get(self.key(flow['peer'], local), ()) if number > sequence)
 
 
 def possible_observation(flow, first, last):
@@ -1141,11 +996,17 @@ def attach_peer_observations(flow, observations, peer_asset, apps, environment):
     if isinstance(observations, PeerObservationBuffer):
         observations = observations.new_for_flow(flow, apps, environment)
     for sample, socket, stamp in observations:
-        if not same_connection(flow, socket):
+        published = socket['peer'] in flow.get('_publishedEndpoints', []) and socket['local'] == flow['peer']
+        if not same_connection(flow, socket) and not published:
             continue
         first, last = observation_bounds(sample, stamp)
         if not possible_observation(flow, first, last):
             continue
+        if published:
+            endpoints = flow.setdefault('_publishedMatches', set())
+            endpoints.add((socket['peer']['ip'], socket['peer']['port']))
+            if len(endpoints) > 1:
+                flow['_dockerAmbiguous'] = True
         flow['_peerSocketSeen'] = True
         owners = []
         for pid in socket['pids']:
@@ -1176,6 +1037,9 @@ def attach_peer_observations(flow, observations, peer_asset, apps, environment):
                 'observedAt': stamp, 'confidence': 'INFERRED',
                 '_observationStart': first, '_observationEnd': last,
                 '_socketId': socket.get('socketId')})
+            if published:
+                owners[-1]['dockerTargetConnection'] = {'published': socket['peer'], 'client': socket['local'],
+                    'container': flow['local'], 'socketId': socket.get('socketId')}
         for owner in owners:
             existing = next((p for p in flow['remoteProcesses'] if p['pid'] == owner['pid'] and
                 p['startedAt'] == owner['startedAt'] and not p.get('container')), None)
@@ -1438,7 +1302,7 @@ def inspect_application(asset, selected, apps, assets, saved, ip_map, environmen
             evidence = {'resolution': 'UNKNOWN', 'reason': '尚未确认容器服务进程', 'mappings': [], 'processes': []}
             report['target']['dockerTarget'] = evidence
             target_container, sampling_selected = resolve_docker_target(terminal, proxy, sample_probe, evidence)
-            report['coverage']['limitations'].append('连接与字节计数来自容器服务进程，保留容器实际 Endpoint；不将端口映射当作代理原连接或 NAT 前的对端归属证据')
+            report['coverage']['limitations'].append('连接与字节计数来自容器服务进程；发布映射与客户端连接匹配仅为推断，未核验 NAT 转换')
             notify('已定位容器 '+target_container['name']+'，正在检测服务 PID '+str(sampling_selected['pid']), 'docker_target')
         started = time.monotonic()
         notify('目标探针已就绪，开始观察 TCP 连接', 'sampling', samplingStartedAt=now())
@@ -1491,6 +1355,14 @@ def inspect_application(asset, selected, apps, assets, saved, ip_map, environmen
                                 warnings.append('连接数量超过 100，已限制本次检查范围')
                             continue
                         flow = update_flow(flows, socket, listeners, stamp)
+                        if target_container and flow['direction'] == 'upstream':
+                            mapping = report['target']['dockerTarget']['mappings'][0]
+                            if flow['local'] == mapping['target']:
+                                binding = mapping['published']
+                                addresses = (ips(asset.get('ip')) if binding['ip'] in ('0.0.0.0', '::')
+                                             else {binding['ip']})
+                                flow['_publishedEndpoints'] = [dict(binding, ip=ip) for ip in sorted(addresses)
+                                    if ipaddress.ip_address(ip).version == ipaddress.ip_address(binding['ip']).version]
                         if flow.get('_possibleEnd'):
                             flow['_interrupted'] = True
                             flow['sentDelta'], flow['receivedDelta'], flow['networkActivity'] = None, None, 'UNKNOWN'
@@ -1624,7 +1496,7 @@ def inspect_application(asset, selected, apps, assets, saved, ip_map, environmen
                 first = owner.get('_observationStart', owner['observedAt'])
                 last = owner.get('_observationEnd', owner['observedAt'])
                 socket_id = owner['connection'].get('socketId') if owner.get('container') else owner.get('_socketId')
-                owner['confidence'] = ('EXACT' if socket_id and not flow.get('_temporalAmbiguous') and
+                owner['confidence'] = ('EXACT' if not owner.get('dockerTargetConnection') and socket_id and not flow.get('_temporalAmbiguous') and
                     confirmed_observation(flow, first, last) else 'INFERRED')
                 owner['observationStart'], owner['observationEnd'] = first, last
             flow['resolution'] = (flow['remoteProcesses'][0]['confidence'] if
@@ -1633,9 +1505,12 @@ def inspect_application(asset, selected, apps, assets, saved, ip_map, environmen
             flow['reason'] = ('在重叠观察窗口内匹配对端连接及进程' if flow['resolution'] == 'EXACT' else
                               '匹配到反向五元组，但 socket 身份或观察时间重叠证据不足') if len(flow['remoteProcesses']) == 1 else '对端连接存在多个进程所有者'
             if flow.get('_dockerAmbiguous'):
-                flow['reason'] = '同一发布 Endpoint 对应多个容器候选，未唯一确认转发归属'
+                flow['reason'] = ('多个发布 Endpoint 存在匹配的客户端连接，未唯一确认转发归属' if flow.get('_publishedMatches') else
+                                  '同一发布 Endpoint 对应多个容器候选，未唯一确认转发归属')
             elif flow.get('_temporalAmbiguous'):
                 flow['reason'] = '同一五元组在时间边界内对应多个本地 socket 候选，未唯一确认连接归属'
+            elif len(flow['remoteProcesses']) == 1 and flow['remoteProcesses'][0].get('dockerTargetConnection'):
+                flow['reason'] = '客户端连接与 Docker 发布端口、容器连接的客户端 Endpoint 在观察窗口内匹配；转发关系为推断，未核验 NAT 转换'
             elif len(flow['remoteProcesses']) == 1 and flow['remoteProcesses'][0].get('container'):
                 flow['reason'] = ('Docker 发布端口映射与容器内反向连接、进程在重叠观察窗口内匹配' if
                                   flow['resolution'] == 'EXACT' else '匹配到 Docker 容器内反向连接，但 socket 身份或观察时间重叠未充分确认')

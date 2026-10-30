@@ -50,7 +50,7 @@ test('联动视图展示不可登录服务器的 ECS 停止和未匹配明细',(
  const machines=[{...ecs('one',['10.0.0.1'],'Stopped'),publicIps:['203.0.113.1']},ecs('two',['10.0.0.2'])];
  let index=0; const states=['cannot_login','stopped',false,'all',null];
  const imports={react:{...React,useMemo:f=>f(),useState:initial=>[states[index++]??initial,()=>{}]},'react/jsx-runtime':require('react/jsx-runtime'),
-  '@/lib/jumpserver':{jumpserver:{assets,collectedAt:'2026-10-01T00:00:00Z'}},'@/lib/ecs':{instances:machines,fetchedAt:'2026-10-01T00:00:00Z'},'@/lib/ecs-snapshot.json':{default:{tenants:[]}},
+  '@/lib/jumpserver':{jumpserver:{assets,collectedAt:'2026-10-01T00:00:00Z'},jumpserverLoginUrl:id=>'http://jump/luna/?login_to='+id},'@/lib/ecs':{instances:machines,fetchedAt:'2026-10-01T00:00:00Z'},'@/lib/ecs-snapshot.json':{default:{tenants:[]}},
   '@/lib/datetime':{formatBeijingTime:(t,fallback)=>t||fallback},'@/lib/jumpserver-overview':lib};
  const source=ts.transpileModule(fs.readFileSync('components/jumpserver-overview.tsx','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText;
  const context={exports:{},require:id=>imports[id]}; vm.runInNewContext(source,context);
@@ -72,7 +72,7 @@ test('未纳管明细按 ECS 状态筛选且隐藏零值图例',()=>{
  const machines=[ecs('managed',['10.0.0.2']),ecs('unmanaged-stopped',['10.0.0.3'],'Stopped'),ecs('unmanaged-running',['10.0.0.4'],'Running')];
  let index=0; const states=[null,null,false,'stopped','unmatched'];
  const changes=[]; const imports={react:{...React,useMemo:f=>f(),useState:initial=>{const i=index++; return [states[i]??initial,value=>changes.push([i,value])];}},'react/jsx-runtime':require('react/jsx-runtime'),
-  '@/lib/jumpserver':{jumpserver:{assets}},'@/lib/ecs':{instances:machines},'@/lib/ecs-snapshot.json':{default:{tenants:[]}},
+  '@/lib/jumpserver':{jumpserver:{assets},jumpserverLoginUrl:id=>'http://jump/luna/?login_to='+id},'@/lib/ecs':{instances:machines},'@/lib/ecs-snapshot.json':{default:{tenants:[]}},
   '@/lib/datetime':{formatBeijingTime:(t,fallback)=>t||fallback},'@/lib/jumpserver-overview':lib};
  const source=ts.transpileModule(fs.readFileSync('components/jumpserver-overview.tsx','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText;
  const context={exports:{},require:id=>imports[id]}; vm.runInNewContext(source,context);
@@ -96,7 +96,7 @@ test('仅普通账号明细精简，导出遵循当前位置与 folidev 筛选',
  const assets=[{...asset('local','10.58.9.1',login('denied')),hostname:''},asset('other','10.58.9.2',login('denied','other')),asset('cloud','10.0.0.1',login('denied'))];
  let index=0; const states=['ordinary','local',true,'all',null];
  const imports={react:{...React,useMemo:f=>f(),useState:initial=>[states[index++]??initial,()=>{}]},'react/jsx-runtime':require('react/jsx-runtime'),
-  '@/lib/jumpserver':{jumpserver:{assets}},'@/lib/ecs':{instances:[]},'@/lib/ecs-snapshot.json':{default:{tenants:[]}},
+  '@/lib/jumpserver':{jumpserver:{assets},jumpserverLoginUrl:id=>'http://jump/luna/?login_to='+id},'@/lib/ecs':{instances:[]},'@/lib/ecs-snapshot.json':{default:{tenants:[]}},
   '@/lib/datetime':{formatBeijingTime:(t,fallback)=>t||fallback},'@/lib/jumpserver-overview':lib};
  const source=ts.transpileModule(fs.readFileSync('components/jumpserver-overview.tsx','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText;
  const context={exports:{},require:id=>imports[id]}; vm.runInNewContext(source,context);
@@ -122,7 +122,7 @@ test('可切Root与不在 ECS 清单筛选精简明细，CSV 保持一致',()=>{
  const assets=[asset('root','10.0.0.1',login('root')),asset('failed','10.0.0.2',{loginStatus:'cannot_login',reason:'failure'})];
  const machines=[ecs('vm',['10.0.0.1'])]; let index=0, states=['elevated',null,false,'all',null];
  const imports={react:{...React,useMemo:f=>f(),useState:initial=>[states[index++]??initial,()=>{}]},'react/jsx-runtime':require('react/jsx-runtime'),
-  '@/lib/jumpserver':{jumpserver:{assets}},'@/lib/ecs':{instances:machines},'@/lib/ecs-snapshot.json':{default:{tenants:[]}},
+  '@/lib/jumpserver':{jumpserver:{assets},jumpserverLoginUrl:id=>'http://jump/luna/?login_to='+id},'@/lib/ecs':{instances:machines},'@/lib/ecs-snapshot.json':{default:{tenants:[]}},
   '@/lib/datetime':{formatBeijingTime:(t,fallback)=>t||fallback},'@/lib/jumpserver-overview':lib};
  const source=ts.transpileModule(fs.readFileSync('components/jumpserver-overview.tsx','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText;
  const context={exports:{},require:id=>imports[id]}; vm.runInNewContext(source,context);

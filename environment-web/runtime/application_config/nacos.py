@@ -311,3 +311,78 @@ def save(folder, config, content):
     finally:
         if os.path.exists(tmp): os.unlink(tmp)
     return path
+
+
+def collect_nacos(terminal, process, catalogue, folder, snapshot_folder=None):
+    from application_files import read_snapshot, read_file
+    import application_check as check
+    import posixpath
+    import time
+
+    candidates = [e for e in catalogue['files'] if e.get('kind') == 'config'
+                  and re.fullmatch(r'(?:application|bootstrap)(?:-[\w.-]+)?\.ya?ml', posixpath.basename(e.get('path', '')), re.I)]
+    if len(candidates) > 20:
+        catalogue['warnings'].append('Nacos 声明只检查最近的 20 个应用 YAML 文件')
+    seen = set()
+    attempted = set()
+    for entry in candidates[:20]:
+        try:
+            raw = (read_snapshot(entry, snapshot_folder, raw_config=True) if snapshot_folder is not None
+                   else read_file(terminal, process, entry, raw_config=True))
+            if raw['truncated']:
+                catalogue['warnings'].append('应用 YAML 文件过大，未解析 Nacos 声明')
+                continue
+            configs, unresolved = declarations(raw['content'], process)
+            catalogue['warnings'].extend(unresolved)
+            if not configs:
+                continue
+            for config in configs:
+                requested = tuple(config[k] for k in ('address', 'namespace', 'group', 'dataId'))
+                if requested in attempted: continue
+                if len(attempted) >= 20:
+                    catalogue['warnings'].append('Nacos 配置超过 20 项，未继续下载')
+                    break
+                attempted.add(requested)
+                try:
+                    inferred_group = not config['group']
+                    config = resolve_group(config)
+                    identity = tuple(config[k] for k in ('address', 'namespace', 'group', 'dataId'))
+                    if identity in seen: continue
+                    seen.add(identity)
+                    content = fetch(config)
+                    path = save(folder, config, content)
+                    label = 'Nacos / '+config['namespace']+' / '+config['group']+' / '+config['dataId']
+                    catalogue['files'].append({'id':hashlib.sha256(('nacos\0'+path.name).encode()).hexdigest()[:32],
+                        'kind':'config', 'source':'nacos', 'storageName':path.name, 'path':label,
+                        'root':'Nacos', 'size':len(content), 'modifiedAt':int(time.time()), 'snapshotObservedAt':check.now()})
+                    catalogue['warnings'].append('Nacos 配置来自 '+entry['path']+' 的声明；未确认该 profile 实际生效')
+                    if inferred_group:
+                        catalogue['warnings'].append('Nacos Group 在可查询范围内唯一匹配；未确认应用实际使用该 Group：'+config['dataId'])
+                except ValueError as error:
+                    catalogue['warnings'].append('Nacos 配置读取失败：'+entry['path']+' / '+config['dataId']+'；'+str(error))
+                except OSError:
+                    catalogue['warnings'].append('Nacos 配置读取或保存失败：'+entry['path']+' / '+config['dataId'])
+        except ValueError as error:
+            catalogue['warnings'].append('Nacos 配置读取失败：'+entry['path']+'；'+str(error))
+        except OSError:
+            catalogue['warnings'].append('Nacos 配置读取或保存失败：'+entry['path'])
+
+
+def read_nacos(entry, folder):
+    from application_files import redact_config
+    import application_check as check
+    name = entry.get('storageName', '')
+    if not re.fullmatch(r'[0-9a-f]{64}\.(?:yaml|txt)', name):
+        raise ValueError('无效 Nacos 文件')
+    path = Path(folder)/name
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('Nacos 文件不存在，请刷新配置列表')
+    raw = path.read_bytes()
+    if len(raw) > MAX_CONTENT:
+        raise ValueError('Nacos 文件超过大小限制')
+    content = raw.decode('utf-8')
+    return {'id':entry['id'], 'content':redact_config(content, hide_password=False),
+            'redactedContent':redact_config(content), 'passwordsVisible':True, 'lines':None,
+            'observedAt':entry.get('snapshotObservedAt') or check.now(), 'truncated':False, 'redacted':True}
+
+

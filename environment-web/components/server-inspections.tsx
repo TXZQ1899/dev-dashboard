@@ -1,7 +1,7 @@
 'use client';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronRight, Download, X } from 'lucide-react';
-import { jumpserver } from '@/lib/jumpserver';
+import { jumpserver, jumpserverLoginUrl } from '@/lib/jumpserver';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { ApplicationCheckLink } from '@/components/application-check-link';
@@ -447,7 +447,7 @@ export function ServerInspections({processRequest}: {processRequest?: {ip: strin
             return <Fragment key={asset.id}>
               <tr className={'border-t align-middle ip-summary-row'+(open?' open':'')} aria-expanded={open} title="点击展开/收起该服务器的进程列表" onClick={()=>toggleAsset(asset.id)}>
                 <td className="p-3 w-8"><ChevronRight size={16} className="chevron"/></td>
-                <td className="p-3"><IpMetaCell ip={asset.ip} hostName={asset.hostname} leadingChip={loginClass(asset)==='ordinary'?<img src="/permissions-icon.png" alt="仅普通权限" title="仅普通权限" className="h-5 w-5"/>:undefined}/></td>
+                <td className="p-3"><IpMetaCell ip={asset.ip} hostName={asset.hostname} href={jumpserverLoginUrl(asset.id)} leadingChip={loginClass(asset)==='ordinary'?<img src="/permissions-icon.png" alt="仅普通权限" title="仅普通权限" className="h-5 w-5"/>:undefined}/></td>
                 <td className="p-3 whitespace-nowrap">{ipSpecSummary(asset.ip)||'—'}</td>
                 <td className="p-3 whitespace-nowrap text-right" title="采集时刻的整机 CPU 使用率">{usage?<span className={usage.cpuPercent>=80?'text-red-600 font-medium':usage.cpuPercent>=50?'text-amber-600':''}>{usage.cpuPercent}%</span>:'—'}</td>
                 <td className="p-3 whitespace-nowrap text-right" title={usage?`整机内存 ${usage.memUsedMB>=1024?`${(usage.memUsedMB/1024).toFixed(1)}G`:`${usage.memUsedMB}M`} / ${usage.memTotalMB>=1024?`${(usage.memTotalMB/1024).toFixed(1)}G`:`${usage.memTotalMB}M`}`:'旧快照无整机用量数据'}>{usage?<span className={usage.memPercent>=80?'text-red-600 font-medium':usage.memPercent>=50?'text-amber-600':''}>{usage.memPercent}%</span>:'—'}</td>

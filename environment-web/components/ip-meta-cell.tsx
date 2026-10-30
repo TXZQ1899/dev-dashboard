@@ -56,24 +56,34 @@ export function IpOwnerChip({ ip }: { ip: string }) {
 
 // IP 单元格统一内容：IP、服务器名称（无名称回退 IP）、DevOps 环境、资源归属。
 // envList 可由调用方（IP 集查询行模型）显式传入；缺省时实时从 DevOps 清单计算。
+// 当提供 href 时，IP 变成可点击链接（新标签页打开），title 提示"在 JumpServer 打开"。
 export function IpMetaCell({
   ip,
   hostName,
   envList,
   envEmpty = 'pending',
   leadingChip,
+  href,
 }: {
   ip: string;
   hostName?: string;
   envList?: Env[];
   envEmpty?: 'pending' | 'blank';
   leadingChip?: ReactNode;
+  href?: string;
 }) {
   const name = hostName?.trim() || ip;
   const list = envList ?? ipDeployEnvironments(ip, apps);
+  const ipLabel = href ? (
+    <a href={href} target="_blank" rel="noopener noreferrer" title={`在 JumpServer 登录 ${ip}`} onClick={e=>e.stopPropagation()} className="text-primary underline hover:text-primary/80">
+      {ip} ↗
+    </a>
+  ) : (
+    <code>{ip}</code>
+  );
   return (
     <span className="ip-meta-cell">
-      <code>{ip}</code>
+      {ipLabel}
       <small className="block text-muted-foreground ip-meta-name">{name}</small>
       <span className="ip-meta-chips">
         {leadingChip}

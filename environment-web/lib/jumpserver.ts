@@ -1,5 +1,21 @@
 import snapshot from './jumpserver-snapshot.json';
 
+/** JumpServer 控制台基础地址（与 runtime/server_inventory.py 中 BASE 常量一致） */
+export const JUMPSERVER_BASE_URL = 'http://10.179.2.146:8080';
+
+/** 生成 JumpServer Luna 资产直连登录 URL：login_to 参数即资产 ID */
+export function jumpserverLoginUrl(assetId: string): string {
+  return `${JUMPSERVER_BASE_URL}/luna/?login_to=${encodeURIComponent(assetId)}`;
+}
+
+/** 从当前快照按 IP 查找 JumpServer 直连登录链接；未收录返回 undefined */
+const assetIdByIp = new Map<string, string>();
+for (const a of snapshot.assets) assetIdByIp.set(a.ip, a.id);
+export function jumpserverAssetHrefByIp(ip: string): string | undefined {
+  const assetId = assetIdByIp.get(ip);
+  return assetId ? jumpserverLoginUrl(assetId) : undefined;
+}
+
 export const jumpserver = snapshot;
 export const topGroups = snapshot.groups.filter((g) => g.parentKey === '1');
 const buckets = new Map<string, number>();

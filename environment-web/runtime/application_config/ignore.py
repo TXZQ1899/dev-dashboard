@@ -5,7 +5,7 @@ import posixpath
 import shlex
 from pathlib import Path
 
-RUNTIME = Path(__file__).parent
+RUNTIME = Path(__file__).parent.parent
 DEFAULT_IGNORELIST = RUNTIME/'application-config.ignorelist'
 
 
@@ -34,7 +34,8 @@ def is_ignored(path):
 
 
 def probe_script(name):
-    script = (RUNTIME/'probes'/name).read_text()
+    directory = Path(__file__).parent/'probes' if name in ('application_configs.sh', 'application_jar_configs.sh') else RUNTIME/'probes'
+    script = (directory/name).read_text()
     if name not in ('application_files.sh', 'application_configs.sh'):
         return script
     expression = []

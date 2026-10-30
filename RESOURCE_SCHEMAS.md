@@ -679,6 +679,8 @@ AccessKey 采集按 LB 隔离故障。列表或详情明确为 `inactive` / `loc
 
 进程列表使用同次采集中的 init PID 和父子进程关系展示容器名称、镜像及启动命令；Docker 代理仅在命令中的协议、宿主机地址与端口、容器端口和唯一容器发布配置完全一致时展示对应容器，并标注端口映射推断。子进程归属也标注为进程树推断。进程与容器采集并非原子操作，不能据此断言当前状态或将 Docker 代理视作业务进程；候选不唯一时不关联。容器信息不直接用于关联 DevOps 应用。
 
+服务器进程列表对无法直接识别的容器 init 进程，以及唯一匹配容器发布配置的 Docker 代理，可根据容器启动命令或已知镜像名推断组件分类，并标注“容器推断”；代理行同时标明“Docker 端口代理”。这不确认该 PID 的实际服务角色，也不对容器子进程继承此分类。
+
 ### `Route`
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -1428,9 +1430,11 @@ Spring Cloud Alibaba 的 `spring.cloud.nacos.config` 支持从无 profile 文档
 
 下游未确认连接或 Docker 代理连接会继续核验 Docker 发布端口（区分宿主机 IP、TCP/UDP、宿主机和容器端口），最多读取 64 个运行容器的网络元数据、核验 8 个匹配容器。对端通过 `nsenter -t <initPid> -n -- ss` 查询容器网络空间，保留宿主机 PID；不依赖容器安装 `ss`，不读取 Docker Env/完整 inspect、不挂载本服务的 Docker socket。容器 init PID 启动计数和网络空间在探针执行前后核验，并重新读取该容器映射，容器重启/映射变化保留未解析结果。只有容器反向连接的客户端 IP、源端口、协议和映射目标 Endpoint 完整匹配、进程处于该网络空间、socket 身份及目标观察时间重叠充分时，连接归属才为 `EXACT`；多个容器候选为 `AMBIGUOUS`。代理重建连接、SNAT、缺少 Docker/nsenter 或权限不足时不猜测客户端映射。Docker 服务类型可由实际进程确认为 Redis、MQ 等，DevOps 应用独立保留 `UNKNOWN`，不按宿主机部署端口强制关联。字节统计仍使用所选进程原 socket，缺失计数仍为未知。
 
-当检测入口本身为 `docker-proxy*` 时，先实时复核入口 PID，再按其 TCP 发布地址/端口与容器地址/端口匹配 Docker 网络元数据，并在容器网络空间核验对应端口的唯一监听 PID。`target.pid / processName / startedAt / startTicks` 保留入口代理身份；新增可选 `target.dockerTarget = { resolution, reason, mappings[], processes[], pid?, processName?, startedAt?, startTicks?, networkNamespace?, observedAt? }`。`mappings[]` 沿用 `CheckDockerMapping`；`processes[] = { pid, processName: string | null }[]` 保留监听候选。唯一定位为 `INFERRED`，只表示由映射和监听定位检测对象，不声称代理 socket 与容器 socket 为同一连接。成功后采样该服务进程的全部 TCP 连接（包含其他监听端口与主动外连），保留容器实际 Endpoint、FD/inode 所有权和字节计数；不将容器地址替换为宿主机发布地址来强行匹配反向连接。每批校验服务 PID 启动计数/网络空间并重新确认容器身份及发布映射，变化后停止并保留先前证据。多容器或多监听 PID 返回 `AMBIGUOUS`；映射缺失、容器端口未监听或身份不可读返回 `UNKNOWN` 和明确错误，不能以空连接表示成功。容器目标的 DevOps 应用归属保持 `UNKNOWN`，配置核对为 `not_collected`，不把容器内路径当作宿主机路径读取。配置/日志页仍绑定原入口 PID，不随 TCP 服务定位自动切换。
+当检测入口本身为 `docker-proxy*` 时，先实时复核入口 PID，再按其 TCP 发布地址/端口与容器地址/端口匹配 Docker 网络元数据，并在容器网络空间核验对应端口的唯一监听 PID。`target.pid / processName / startedAt / startTicks` 保留入口代理身份；新增可选 `target.dockerTarget = { resolution, reason, mappings[], processes[], pid?, processName?, startedAt?, startTicks?, networkNamespace?, observedAt? }`。`mappings[]` 沿用 `CheckDockerMapping`；`processes[] = { pid, processName: string | null }[]` 保留监听候选。唯一定位为 `INFERRED`，只表示由映射和监听定位检测对象，不声称代理 socket 与容器 socket 为同一连接。成功后采样该服务进程的全部 TCP 连接（包含其他监听端口与主动外连），保留容器实际 Endpoint、FD/inode 所有权和字节计数；保留容器实际地址；对上游连接额外按已确认的发布端口和宿主机资产地址查询客户端完整 Endpoint。客户端连接、发布映射与容器连接在观察窗口内吻合时，转发归属为 `INFERRED`，记录 `remoteProcesses[].dockerTargetConnection = { published, client, container, socketId }`；不声称已核验 NAT 转换，多个发布端点候选保留 `AMBIGUOUS`。每批校验服务 PID 启动计数/网络空间并重新确认容器身份及发布映射，变化后停止并保留先前证据。多容器或多监听 PID 返回 `AMBIGUOUS`；映射缺失、容器端口未监听或身份不可读返回 `UNKNOWN` 和明确错误，不能以空连接表示成功。容器目标的 DevOps 应用归属保持 `UNKNOWN`，配置核对为 `not_collected`，不把容器内路径当作宿主机路径读取。配置/日志页仍绑定原入口 PID，不随 TCP 服务定位自动切换。
 
 ### 11.1 实时配置与日志文件
+
+- ZooKeeper 服务端配置发现：实时进程命令包含 `org.apache.zookeeper.server.quorum.QuorumPeerMain` 时，配置页从 `/proc/<pid>/cmdline` 的原始参数中确认唯一主类及其唯一配置参数；相对路径以该进程可确认的工作目录解析。不扫描父目录，文件路径需规范且不含符号链接，并遵守 ignorelist、进程身份校验和既有快照限额。清单可包含 `processType: ZOOKEEPER`、`typeConfidence`、`typeEvidence`、`discoveryVersion: zookeeper-v1`，文件标记 `role: primary` 和 `discoveryEvidence`；无法定位或读取时返回警告。旧 ZooKeeper 缓存会在下次打开时刷新，刷新失败保留旧快照。本期不跟随关联配置，不解析 ZooKeeper 配置中的上下游 Endpoint；检测报告标记 `not_collected`，不套用业务应用解析。
 
 - 独立页面：`/jumpserver/check/<asset-id>/<pid>`；所有入口新标签页打开，提供「TCP 连接检测」（默认）、「配置文件」、「日志文件」三个页签，无手动环境选择。配置/日志操作不依赖 TCP 检测报告；切换页签保留已打开的内容和任务。
 - 独立文件会话：`POST /api/settings/application-files`，`{ action: "open", asset, pid }` 返回 `{ id, sourceVersion, assetId, pid }`。验证当前快照中唯一资产/PID 后，以版本、资产、PID、快照启动时间生成稳定会话 ID，同一进程的配置与日志复用该会话，不创建 TCP 任务或覆盖 `checks/latest.json`。后续调用同一接口传 `{ id, action: "list" | "read", kind: "config" | "log", file? }`；列表和读取响应沿用下述结构。配置列表不枚举日志；日志列表仍读取 Logback 声明以限定共享目录范围，仅返回日志条目。配置/日志列表分别持久化，互不覆盖。配置页预览沿用 256 KiB 上限，截断时明确提示。
@@ -1453,7 +1457,7 @@ Spring Cloud Alibaba 的 `spring.cloud.nacos.config` 支持从无 profile 文档
 | `business_domain` | 业务领域，平台 UUID，唯一 code；本期空表 |
 | `business_system` | 业务系统，平台 UUID，唯一 code，`domain_id` 外键；本期空表 |
 | `deployment_unit` | 部署单元，平台 UUID 与唯一 code；`system_id` 可空；单元类型 APPLICATION / DATABASE / MIDDLEWARE / OTHER，无必填应用 ID |
-| `deployment_unit_environment` | 唯一 `unit_id + environment`，仅 TEST / SIMULATION / PRODUCT；配置状态与本次观察完整性分开 |
+| `deployment_unit_environment` | 唯一 `unit_id + environment`，TEST / SIMULATION / PRODUCT / UNIDENTIFIED；配置状态与本次观察完整性分开 |
 | `deployment_instance` | 分环境部署成员，平台 UUID；IP、声明端口、身份质量、来源可见性及最近观察引用；同 IP 可有多实例 |
 | `deployment_unit_source` | 唯一来源实例 + 对象种类 + 原生键哈希；应用 ID 在 JSON 原生键中；本期一个单元只允许一个 DevOps 应用主绑定 |
 | `deployment_instance_source` | 单元环境内的部署成员来源别名；不把 deploy 或 IP 当作全局身份，保留匹配依据与证据 |
@@ -1473,6 +1477,31 @@ Spring Cloud Alibaba 的 `spring.cloud.nacos.config` 支持从无 profile 文档
 - 配置状态为 UNCONFIGURED / CONFIGURED_EMPTY / HAS_DEPLOYMENTS / UNKNOWN；覆盖状态为 COMPLETE / PARTIAL / UNKNOWN。管理启停状态独立于来源可见性。
 - 名称默认 FOLLOW_SOURCE，可预留 MANUAL 策略；领域/系统、说明、管理状态不随采集覆盖。原始部署、配置 ID、分支、发布时间、发布状态等来源属性保存在观察 JSON。
 - 当前目录不随应用历史快照切换而回滚。来源时间不一致时页面明确说明；本期无人工编辑、进程识别或完整历史目录回放 API。
+
+### Zookeeper 单节点核查导入
+
+- `runtime/zookeeper_catalog.py` 读取数据卷 `checks/zookeeper-review/latest.json` 与 `listener-checks.json`，默认仅预览；`--apply` 仅导入版本一致、两小时内的核查。证据按内容哈希复制到数据卷 `checks/zookeeper-review/evidence/`，权限 0600。输入报告由服务器端核查生成，不接受浏览器任意文件路径。
+- 来源命名空间为 DevOps 来源加 `:zookeeper`；`ZOOKEEPER_STANDALONE` 的原生身份为资产 ID 和配置路径，端口、PID 与启动计数只作为观察证据。当前只创建确认的单节点；关联不明、动态配置、应用候选、采样截断、监听归属冲突或 quorum 连接保留待核实。短时 TCP 采样不能证明无历史连接。
+- `002_component_catalog.sql` 增加 `UNIDENTIFIED`（界面为「待识别」）、组件观察和按类型持久化的命名计数器。名称 `Zookeeper_cluster_序号`，变更和观察事务记录，重复导入不重复创建；本期不自动归并、拆分、删除或更新已有单元，配置路径或实例身份变化需人工复核。
+- 目录查询汇总 DevOps 及 Zookeeper 来源；页面顶部的快照一致性信息仍只代表 DevOps 应用来源。组件实例端口为核查时实测 TCP 监听，观察时间、配置字段和文件路径保存在证据；目录 `coverageState=PARTIAL` 不表示完整盘点或实时健康。
+
+### Nacos 单机核查导入
+
+- `runtime/nacos_catalog.py` 读取数据卷 `checks/nacos-review/latest.json` 和 `listener-mappings.json`，默认预览，`--apply` 只导入当前版本、两小时内且核查无冲突的单机服务；证据按哈希保存到数据卷，文件权限 `0600`。采样只反映观察窗口，不代表完整连接历史。
+- 按资产、Nacos home 和可确认的容器名称保留来源身份；运行时要求明确 `nacos.standalone=true`、配置可读、进程身份一致、客户端端口 PID 唯一、应用关联无候选。容器通过进程树及网络命名空间确认归属，并复核 Docker 发布端口；宿主机 IP 使用宿主机发布端口，证据保留容器端口 8848，不把 Docker 映射当作直接监听。
+- 未确认单机模式、节点关系、应用归属或发生进程变更时保持待核实，不自动归并、拆分或删除。`Nacos_cluster_序号` 按类型在数据库计数，环境为 `UNIDENTIFIED`，来源使用 DevOps 来源加 `:nacos`。Zookeeper 及 DevOps 查询保持兼容。
+
+### Nginx 核查导入
+
+- `runtime/nginx_catalog.py` 读取数据卷 `checks/nginx-review/latest.json` 和 `trees.json`，默认预览，`--apply` 仅处理当前版本且两小时内的报告；原始配置不入库，脱敏核查证据按哈希保存到数据卷。来源命名空间为 DevOps 来源加 `:nginx`。
+- 排除现有 DevOps Nginx 关联和明确 Kong 前缀；OpenResty、容器、配置引用不完整、Kong 线索、身份变化、采样警告或应用候选保留待核实。主机进程按资产 ID 与配置路径留存来源身份，不把 PID 当作长期身份。
+- 按用户指定的当前规则，每个核查通过的 Nginx 实例暂定一个 `Nginx_cluster_序号` 单元；`groupingBasis=USER_PER_INSTANCE_POLICY`，置信度 `INFERRED`，不声称已证实不存在跨主机编组。环境为 `UNIDENTIFIED`；保留多条实测监听 Endpoint，绝不从通配地址推断成资产 IP。当前不自动合并、拆分或删除。
+
+### Kong 核查导入
+
+- `runtime/kong_catalog.py` 读取数据卷 `checks/kong-review/latest.json`、`workers.json`、`listeners.json`，默认预览；`--apply` 仅处理当前版本且两小时内的核查报告。证据按内容哈希保存在数据卷，权限 `0600`，不保存管理接口的原始响应或数据库密码。
+- 明确 Kong master 前缀后，分别校验运行配置、管理接口节点 ID 和角色、master/worker TCP 采样、监听归属、容器与应用候选。以资产 ID 和 Kong node ID 记录节点来源；已有资产或节点出现不同绑定时停止，避免重复创建。
+- 按用户本次明确选择，暂按每个节点一个 `Kong_cluster_序号`，`groupingState=PENDING`、`groupingBasis=USER_PER_NODE_PENDING`。这不是已确认的集群边界；同一数据库或未观察到节点间连接均不足以证明编组。环境仍为 `UNIDENTIFIED`，不按数据库名称推断。单元和实例证据分别保留观察、端口及编组状态；页面显示「编组待确认」。
 
 ### 查询与触发 API
 
@@ -1555,3 +1584,21 @@ Spring Cloud Alibaba 的 `spring.cloud.nacos.config` 支持从无 profile 文档
 }
 ```
 
+
+### Redis 人工核查导入
+
+Redis 专项核查以当前快照和容器卷内 `checks/redis-review/` 的只读运行证据为来源。只有各节点的 Cluster 成员视图相互一致，或主节点公布的副本端点与副本的主节点状态、TCP 连接及容器映射相互印证，才将数据节点编入同一部署单元。环境暂记 `UNIDENTIFIED`，容器实例的展示端口标记为 `DOCKER_PUBLISHED`，证据保留容器内端口；Sentinel 不作为 Redis 数据实例。认证失败、应用关联不清或成员关系不完整的候选保持待核查，当前副本数为零本身不证明独立部署。导入记录保留证据文件哈希，节点已归属其他单元时禁止自动合并或重复创建。
+
+对于认证受限的 Redis Cluster，如进程实际持有的节点文件仅含本节点、进程身份及集群总线监听已确认、多次 TCP 采样没有集群总线连接、且应用关联已排除，可依据节点文件和 TCP 证据以 `INFERRED` 创建单节点单元。节点文件证据与运行时管理接口 `NOAUTH` 的限制分别保留；不将这等同于已读取实时管理视图或确认集群健康。节点 ID 已绑定其他单元时禁止重复创建。
+
+对于只监听本机回环地址的 Redis，可在服务启动链关联的配置、实际运行状态、完整 TCP 采样、本机 Redis/Sentinel 进程及应用关联均核实后，以 `INFERRED` 创建单节点；保留未观察到的历史或失联副本这一限制。实例主机 IP 仅标识所属资产，`declared_port_raw` 留空，真实端点以 `observedEndpoints` 保存为 `127.0.0.1:端口`，避免误称宿主机 IP 端口对外可访问。
+
+Redis 使用宿主机网络的容器，如果已核对容器进程、启动脚本所加载的配置、当前复制状态与所有已发现 Sentinel 的监控视图，且相应 Sentinel 未记录任何副本，可依据这些观察以 `INFERRED` 建立单数据节点单元。必须保留 Sentinel 覆盖不完整、历史失联副本以及仲裁能力的限制；Sentinel 本身不计入数据实例。宿主机网络的端口必须与直接监听证据对应，不能按普通 Docker 发布映射处理。
+
+对绑定宿主机地址的 Redis 主节点，可在启动脚本和 PID 文件确认配置归属、实际复制状态及客户端列表无在线副本、已发现 Sentinel 视图无关联、现存完整 Redis 日志可读且近期仍更新并未记录复制事件时，以 `INFERRED` 建立单数据节点。现存日志与已发现 Sentinel 的范围不等于全量历史或全网覆盖；日志过旧、截断、不可读，或者存在历史副本线索时不得套用此规则。直接监听端点保留实际资产 IP、端口和协议。
+
+对再次专项复核的 Redis 单节点，可结合当前版本的进程与启动配置、`INFO replication`、完整 `CLIENT LIST` 副本标志、已发现 Sentinel 视图、较长时间上下游采样及无 DevOps 应用关联，以 `INFERRED` 创建；历史日志缺失或过旧时必须保留历史失联副本未知的限制。容器未使用配置文件时必须核实入口脚本和参数、进程网络空间、实际容器监听及 Docker 发布映射，不能虚构配置文件。上下游报告达到连接数上限时，不得将其“零下游”单独当作全量连接证明；需独立核对 Redis 复制状态和客户端列表，并保留截断警示。上游与下游方向仍为检测工具基于监听端口的推断，采样无法证明历史或未来状态。
+
+对于进程的实际启动配置文件尚未定位的情况，若 Redis 运行时配置及复制状态可读取、应用关联已排除、长时 TCP 采样和客户端列表均未发现在线副本、已发现 Sentinel 无冲突，可基于当前观测以 `INFERRED` 创建单数据节点；配置文件路径标记 `UNIDENTIFIED`，保留候选文件与运行参数不一致、历史失联副本未覆盖等限制，不宣称无配置文件或复制关系已被永久排除。
+
+对于日志中存在历史副本的 Redis，若用户明确确认该历史副本 IP 已退役，应将原始用户确认、确认时间、历史端点及退役时间未知分别保留为来源证据；结合当前运行状态、TCP、配置、应用关联和已发现 Sentinel 的观察，可按当前单数据节点以 `INFERRED` 建档。不得将已退役端点创建为当前实例，也不能将用户对一个地址的确认扩大为对其他未识别历史事件的确认。

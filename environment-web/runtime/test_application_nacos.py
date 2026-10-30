@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import application_files as files
-import application_nacos as nacos
+from application_config import nacos
 import application_check as check
 
 YAML = '''nacos:

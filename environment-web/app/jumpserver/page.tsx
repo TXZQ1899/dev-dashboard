@@ -24,6 +24,7 @@ import {
 } from '@/components/ui/table';
 import {
   jumpserver,
+  jumpserverAssetHrefByIp,
   topGroups,
   distribution,
   serverGroups,
@@ -390,6 +391,7 @@ function IpManagedQueryPanel({onRestore}: {onRestore: () => void}) {
                         hostName={row.hostName}
                         envList={row.appEnvs ?? []}
                         envEmpty="blank"
+                        href={jumpserverAssetHrefByIp(row.ip)}
                       />
                     </TableCell>
                     <TableCell>{row.managed}</TableCell>
@@ -455,6 +457,7 @@ function IpManagedQueryPanel({onRestore}: {onRestore: () => void}) {
                         ip={row.ip}
                         hostName={row.hostName}
                         envList={row.deployEnvs}
+                        href={jumpserverAssetHrefByIp(row.ip)}
                       />
                     </TableCell>
                     <TableCell>{row.managed}</TableCell>

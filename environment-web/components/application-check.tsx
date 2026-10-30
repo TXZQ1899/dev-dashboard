@@ -4,7 +4,7 @@ import { ApplicationCheckProgress } from '@/components/application-check-progres
 import { Button } from '@/components/ui/button';
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { aggregateCheckFlows, checkEndpointText, displayCheckProcesses, type ApplicationCheckState, type CheckApplication, type CheckFlow } from '@/lib/application-check';
+import { aggregateCheckFlows, checkEndpointText, displayCheckProcesses, jumpServerNotCollected, type ApplicationCheckState, type CheckApplication, type CheckFlow } from '@/lib/application-check';
 import { formatBeijingTime } from '@/lib/datetime';
 
 const confidence = { EXACT: '精确', INFERRED: '推断', AMBIGUOUS: '多候选', UNKNOWN: '未确认' };
@@ -24,7 +24,7 @@ function Flows({ flows, label }: { flows: CheckFlow[]; label: string }) {
         <TableHead>DevOps 应用 ID / 名称</TableHead><TableHead>网络活动</TableHead><TableHead>配置核对 / 连接证据</TableHead>
       </TableRow></TableHeader>
       <TableBody>{flows.map((flow, index) => <TableRow key={index}>
-        <TableCell><code>{checkEndpointText(flow.peer)}</code><small className="check-note" title={flow.reason}>连接归属：{confidence[flow.resolution]}</small></TableCell>
+        <TableCell><code>{checkEndpointText(flow.peer)}</code>{jumpServerNotCollected(flow) && <small className="check-note">JumpServer 未收录</small>}<small className="check-note" title={flow.reason}>连接归属：{confidence[flow.resolution]}</small></TableCell>
         <TableCell title={flow.service.basis}>{flow.service.confidence === 'INFERRED' ? '疑似 ' : ''}{flow.service.name}</TableCell>
         <TableCell>{displayCheckProcesses(flow).length ? displayCheckProcesses(flow).map((p) => <div key={`${p.pid}-${p.startedAt}`}>
           {p.pid} · {p.processName}<small className="check-note">{p.serverIp} · {confidence[p.confidence]}</small>
@@ -52,6 +52,10 @@ function Flows({ flows, label }: { flows: CheckFlow[]; label: string }) {
               容器内连接：<code>{checkEndpointText(p.connection!.local)} ↔ {checkEndpointText(p.connection!.peer)}</code>
               <small className="check-note">实际服务进程：{p.pid} · {p.processName} · {formatBeijingTime(p.observedAt, '—')}</small>
             </p>)}
+            {flow.remoteProcesses.filter((p) => p.dockerTargetConnection).map((p) => <p key={`target-${p.pid}-${p.startedAt}`}>
+              Docker 转发候选：<code>{checkEndpointText(p.dockerTargetConnection!.client)} → {checkEndpointText(p.dockerTargetConnection!.published)} → {checkEndpointText(p.dockerTargetConnection!.container)}</code>
+              <small className="check-note">客户端连接与发布端口匹配；转发关系为推断</small>
+            </p>)}
             {flow.peerListeningProcesses?.map((p) => <p key={`listen-${p.pid}-${p.startedAt}`}>
               监听进程：{p.pid} · {p.processName} · <code>{checkEndpointText(p.endpoint)}</code>
               <small className="check-note">{p.basis} · {formatBeijingTime(p.observedAt, '—')}</small>
@@ -74,7 +78,7 @@ function AggregatedFlows({ flows, label }: { flows: CheckFlow[]; label: string }
         <TableHead>DevOps 应用 ID / 名称</TableHead>
       </TableRow></TableHeader>
       <TableBody>{groups.map((group) => <TableRow key={group.key}>
-        <TableCell><code>{group.peerIp}</code><small className="check-note">连接归属：{group.resolutions.map((value) => confidence[value]).join(' / ')}</small></TableCell>
+        <TableCell><code>{group.peerIp}</code>{group.jumpServerNotCollected && <small className="check-note">JumpServer 未收录</small>}<small className="check-note">连接归属：{group.resolutions.map((value) => confidence[value]).join(' / ')}</small></TableCell>
         <TableCell>{group.services.map((service, index) => <div key={index} title={service.basis}>
           {service.confidence === 'INFERRED' ? '疑似 ' : ''}{service.name}
         </div>)}</TableCell>

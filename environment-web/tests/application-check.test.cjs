@@ -44,6 +44,21 @@ const flow = {
   reason: '容器内反向连接已匹配', firstSeenAt: 'first', lastSeenAt: 'last', warnings: [],
 };
 
+test('uncollected JumpServer asset is marked in detail and aggregate including legacy reports', () => {
+  const value = { ...flow, resolution: 'UNKNOWN', remoteProcesses: [], reason: '对端 IP 未匹配到 JumpServer 资产；可能为托管服务/代理/NAT' };
+  assert.match(render(value), /JumpServer 未收录/);
+  assert.match(render(value, {}, 'aggregate'), /JumpServer 未收录/);
+  assert.doesNotMatch(render({ ...value, reason: '来源 IP 对应多个资产' }), /JumpServer 未收录/);
+});
+
+test('Docker target candidate shows both client and container endpoints as inferred', () => {
+  const value = { ...flow, resolution: 'INFERRED', remoteProcesses: [{ ...flow.remoteProcesses[0],
+    container: undefined, connection: undefined, confidence: 'INFERRED',
+    dockerTargetConnection: { published, client, container: target, socketId: 'client' } }] };
+  const html = render(value);
+  for (const text of ['Docker 转发候选', '10.0.0.1:33580/TCP', '10.0.0.2:7000/TCP', '172.18.0.6:6379/TCP', '转发关系为推断']) assert.ok(html.includes(text), text);
+});
+
 function render(value, overrides = {}, tab = 'details', job = null) {
   const report = { target: {}, coverage: { actualSeconds: 30, limitations: [] }, warnings: [], upstream: [], downstream: [value], ...overrides };
   const state = [30, { job, report: job?.status === 'running' ? null : report }, false, '', null, ''];

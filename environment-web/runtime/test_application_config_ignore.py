@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import application_check as check
-import application_config_ignore as ignore
+from application_config import ignore
 import application_files as files
 
 

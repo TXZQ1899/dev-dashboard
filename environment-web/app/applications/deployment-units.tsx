@@ -55,7 +55,7 @@ function InstanceDetails({ unitId, environment, snapshotHash, includeHistory, on
     </TableRow></TableHeader>
     <TableBody>{rows.map((instance) => <TableRow key={instance.id}>
       <TableCell>{instance.ip ? <a className="catalog-app-link" href={`/jumpserver?q=${encodeURIComponent(instance.ip)}&view=processes`}><code>{instance.ip}</code></a> : <code>未提供</code>}</TableCell>
-      <TableCell title={instance.attributes.portBasis === 'LIVE_LISTENER' ? '核查时进程持有的 TCP 监听端口' : instance.attributes.portBasis === 'APPLICATION_DEFAULT' ? '沿用应用声明端口，未核验实际监听' : '部署记录中的声明端口，未核验实际监听'}>{instance.port || '未提供'}</TableCell>
+      <TableCell title={instance.attributes.portBasis === 'DOCKER_PUBLISHED' ? 'Docker 发布的宿主机 TCP 端口；服务监听容器端口' : instance.attributes.portBasis === 'LIVE_LISTENER' ? '核查时进程持有的 TCP 监听端口' : instance.attributes.portBasis === 'APPLICATION_DEFAULT' ? '沿用应用声明端口，未核验实际监听' : '部署记录中的声明端口，未核验实际监听'}>{instance.port || instance.attributes.observedEndpoints?.map((endpoint) => `${endpoint.ip}:${endpoint.port}/${endpoint.protocol}`).join(', ') || '未提供'}</TableCell>
       <TableCell title={instance.attributes.branchSource}>{instance.attributes.branch || '未提供'}</TableCell>
       <TableCell><code>{instance.attributes.deploy || '—'} / {instance.attributes.config || '—'}</code></TableCell>
       <TableCell title={instance.attributes.publishTimeSource}>{instance.attributes.lastPublishedAt || '无记录'}</TableCell>
@@ -143,7 +143,7 @@ export default function DeploymentUnits() {
         </TableRow></TableHeader>
         <TableBody>{result?.units.map((unit) => <Fragment key={unit.id}>
           <TableRow>
-            <TableCell><strong>{unit.name}</strong><small className="catalog-code" title={unit.id}>{unit.code}</small></TableCell>
+            <TableCell><strong>{unit.name}</strong><small className="catalog-code" title={unit.id}>{unit.code}</small>{unit.groupingState === 'PENDING' && <small className="catalog-warning">编组待确认</small>}</TableCell>
             <TableCell>{unit.appId ? <a className="catalog-app-link" href={`/applications?appId=${encodeURIComponent(unit.appId)}`}>{unit.appId}</a> : '无应用关联'}</TableCell>
             <TableCell>{unit.unitType === 'APPLICATION' ? '应用' : unit.unitType}<small>{unit.appType || '来源类型未提供'}</small></TableCell>
             <TableCell>{unit.domainName || '未分类'}<small>{unit.systemName || '未归属系统'}</small></TableCell>

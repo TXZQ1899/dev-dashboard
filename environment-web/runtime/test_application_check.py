@@ -409,6 +409,62 @@ class ConfigurationTests(unittest.TestCase):
 
 
 class OrchestrationTests(unittest.TestCase):
+    def test_docker_target_matches_published_client_tuple_as_inferred(self):
+        asset = {'id': 'a', 'ip': '10.0.0.1'}
+        assets = [asset, {'id': 'b', 'ip': '10.0.0.2'}]
+        proxy = process(123, 'docker-proxy') | {'name': 'docker-proxy'}
+        container = {'id': 'a'*64, 'name': 'redis', 'initPid': 123, 'startTicks': '54321',
+                     'networkNamespace': 'net:[1]', 'ports': {}, 'ips': ['172.17.0.2']}
+        target = process(123) | {'netns': 'net:[1]'}
+        mapping = {'published': c.endpoint('0.0.0.0:6379'), 'target': c.endpoint('172.17.0.2:6379')}
+        class Terminal:
+            def __init__(self, identifier): self.identifier = identifier
+            def close(self): pass
+        def resolve(_terminal, _proxy, _probe, evidence):
+            evidence.update(resolution='INFERRED', mappings=[mapping])
+            return container, target
+        def sample(terminal, mode, selector):
+            if mode == 'peer':
+                self.assertIn('dst 10.0.0.1 and dport = :6379', selector)
+                return {'sockets': [socket('10.0.0.2:50000', '10.0.0.1:6379', 456)],
+                        'listeners': [], 'processes': {456: process(456)}, 'warnings': []}
+            if mode == 'target':
+                return {'sockets': [], 'listeners': [], 'processes': {123: proxy}, 'warnings': []}
+            return {'sockets': [socket('172.17.0.2:6379', '10.0.0.2:50000')],
+                    'listeners': [socket('172.17.0.2:6379', '*:*', state='LISTEN')],
+                    'processes': {123: target}, 'warnings': [], 'networkNamespace': 'net:[1]'}
+        with patch.object(c, 'resolve_docker_target', side_effect=resolve), patch.object(c, 'docker_containers', return_value=([container], [])):
+            report = c.inspect_application(asset, proxy, [], assets, {}, {}, 'TEST', duration=.04, interval=.005,
+                terminal_opener=lambda a, *_: (Terminal(a['id']), 'root'), sample_probe=sample)
+        flow = report['upstream'][0]
+        self.assertEqual(flow['resolution'], 'INFERRED')
+        self.assertEqual(flow['remoteProcesses'][0]['pid'], 456)
+        evidence = flow['remoteProcesses'][0]['dockerTargetConnection']
+        self.assertEqual(evidence['published'], c.endpoint('10.0.0.1:6379'))
+        self.assertEqual(evidence['container'], c.endpoint('172.17.0.2:6379'))
+
+    def test_published_candidate_requires_full_client_tuple_and_window(self):
+        flow = c.update_flow({}, socket('172.17.0.2:6379', '10.0.0.2:50000'),
+                             [socket('172.17.0.2:6379', '*:*', state='LISTEN')], '2026-01-01T00:00:10+00:00')
+        flow['_publishedEndpoints'] = [c.endpoint('10.0.0.1:6379')]
+        flow['_possibleEnd'] = '2026-01-01T00:00:20+00:00'
+        sample = {'processes': {456: process(456)}, 'listeners': []}
+        wrong = socket('10.0.0.2:50001', '10.0.0.1:6379', 456)
+        correct = socket('10.0.0.2:50000', '10.0.0.1:6379', 456)
+        c.attach_peer_observations(flow, [(sample, wrong, '2026-01-01T00:00:15+00:00'),
+            (sample, correct, '2026-01-01T00:00:30+00:00')], {'ip': '10.0.0.2'}, [], 'TEST')
+        self.assertEqual(flow['remoteProcesses'], [])
+
+    def test_multiple_published_endpoints_remain_ambiguous(self):
+        flow = c.update_flow({}, socket('172.17.0.2:6379', '10.0.0.2:50000'),
+                             [socket('172.17.0.2:6379', '*:*', state='LISTEN')], '2026-01-01T00:00:10+00:00')
+        flow['_publishedEndpoints'] = [c.endpoint('10.0.0.1:6379'), c.endpoint('10.0.0.3:6379')]
+        sample = {'processes': {456: process(456)}, 'listeners': []}
+        observations = [(sample, socket('10.0.0.2:50000', ip+':6379', 456), '2026-01-01T00:00:10+00:00')
+                        for ip in ('10.0.0.1', '10.0.0.3')]
+        c.attach_peer_observations(flow, observations, {'ip': '10.0.0.2'}, [], 'TEST')
+        self.assertTrue(flow['_dockerAmbiguous'])
+
     def test_partial_failure_retains_observed_duration_and_last_valid_process_identity(self):
         class Terminal:
             def close(self): pass
