@@ -49,6 +49,17 @@ type Snapshot = {
 export function normalizeRepositoryUrl(raw: string): string {
   return raw.replace(/^https:\/\/gitlab\.dev\.thomascook\.com\.cn(?=[:/?#]|$)/i, 'http://gitlab.dev.thomascook.com.cn');
 }
+// Only expose a Codeup web link for the exact HTTPS host; other sources retain their original address.
+export function codeupRepositoryLinks(raw: string): { display: string; webUrl: string } | null {
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'https:' || url.hostname.toLowerCase() !== 'codeup.aliyun.com' || url.port || url.username || url.password) return null;
+    const segments = url.pathname.split('/').filter(Boolean);
+    if (segments.length < 3) return null;
+    const webPath = url.pathname.replace(/\.git\/?$/i, '').replace(/\/$/, '');
+    return { display: segments.slice(1).join('/'), webUrl: `https://codeup.aliyun.com${webPath}` };
+  } catch { return null; }
+}
 export const repositorySnapshot: Snapshot = {
   ...data,
   repos: data.repos.map((repo) => ({ ...repo, url: normalizeRepositoryUrl(repo.url) })),
@@ -63,49 +74,44 @@ export const differenceLabel = (repo: Repository) =>
       : repo.difference === 'both'
         ? '两边均有'
         : '历史记录 · 未对比';
-export const groups = repositorySnapshot.groups.map((group) => {
-  const repos = repositorySnapshot.repos.filter(
-    (repo) => repo.groupId === group.id,
-  );
-  const linked = repos.filter(
-    (repo) => repo.apps.length > 0 && (!isDailySnapshot || repo.inCodeup),
-  ).length;
-  const accessible = repos.filter((repo) => repo.access === '是').length;
-  const denied = repos.filter((repo) => repo.access === '否').length;
-  const unused = repos.filter(
-    (repo) => repo.difference === 'codeup_only',
-  ).length;
-  const devopsOnly = repos.filter(
-    (repo) => repo.difference === 'devops_only',
-  ).length;
-  return {
-    ...group,
-    repos,
-    linked,
-    accessible,
-    denied,
-    unused,
-    devopsOnly,
-    gap: group.total - linked,
-    unknown: Math.max(0, group.total - accessible - denied),
-  };
+export function repositoryGroupStats(repos: Repository[], daily: boolean, reportedTotal: number) {
+  const listed = (repo: Repository) => !!repo.inCodeup || repo.source === 'local_gitlab';
+  const linked = repos.filter(repo => repo.apps.length > 0 && (!daily || listed(repo))).length;
+  const total = daily ? repos.filter(listed).length : reportedTotal;
+  const accessible = repos.filter(repo => repo.access === '是').length;
+  const denied = repos.filter(repo => repo.access === '否').length;
+  const unused = repos.filter(repo => repo.difference === 'codeup_only').length;
+  const devopsOnly = repos.filter(repo => repo.difference === 'devops_only').length;
+  return { total, linked, accessible, denied, unused, devopsOnly,
+    gap: daily ? unused : total - linked, unknown: Math.max(0, total - accessible - denied) };
+}
+const rawGroups = repositorySnapshot.groups;
+function groupSource(id: string) { return id.startsWith('local-gitlab-') ? 'local_gitlab' : 'codeup'; }
+export const groups = rawGroups.map(group => {
+  const repos = repositorySnapshot.repos.filter(repo => repo.groupId === group.id);
+  // A daily snapshot has a complete accessible repository list. Count each
+  // repository under its full path, including nested groups, once per group.
+  const descendants = isDailySnapshot ? repositorySnapshot.repos.filter(repo => {
+    if (!repo.groupId || (repo.source === 'local_gitlab' || groupSource(repo.groupId) === 'local_gitlab' ? 'local_gitlab' : 'codeup') !== groupSource(group.id)) return false;
+    const groupPath = rawGroups.find(g => g.id === repo.groupId)?.path;
+    const path = repo.path || (groupPath ? groupPath + '/' : '');
+    return path.startsWith(group.path + '/');
+  }) : repos;
+  return { ...group, ...repositoryGroupStats(descendants, isDailySnapshot, group.total), repos };
 });
 export type Group = (typeof groups)[number];
-export const unmatched = repositorySnapshot.repos.filter(
-  (repo) => !repo.groupId,
-);
+export const unmatched = repositorySnapshot.repos.filter(repo => !repo.groupId);
+const groupedRepos = repositorySnapshot.repos.filter(repo => groups.some(g => g.id === repo.groupId));
+const groupedStats = repositoryGroupStats(groupedRepos, isDailySnapshot, groups.reduce((n, g) => n + g.total, 0));
 export const summary = {
-  total: groups.reduce((n, g) => n + g.total, 0),
-  linked: groups.reduce((n, g) => n + g.linked, 0),
-  accessible: groups.reduce((n, g) => n + g.accessible, 0),
-  denied: groups.reduce((n, g) => n + g.denied, 0),
-  accessibleGroups: groups.filter((g) => g.accessible > 0).length,
-  conflicts: groups.filter((g) => g.gap < 0).length,
-  unused: repositorySnapshot.repos.filter((r) => r.difference === 'codeup_only')
-    .length,
-  devopsOnly: repositorySnapshot.repos.filter(
-    (r) => r.difference === 'devops_only',
-  ).length,
+  total: groupedStats.total,
+  linked: groupedStats.linked,
+  accessible: groupedStats.accessible,
+  denied: groupedStats.denied,
+  accessibleGroups: groups.filter(g => g.accessible > 0).length,
+  conflicts: groups.filter(g => g.gap < 0).length,
+  unused: repositorySnapshot.repos.filter(r => r.difference === 'codeup_only').length,
+  devopsOnly: repositorySnapshot.repos.filter(r => r.difference === 'devops_only').length,
 };
 // 解析 Git 地址，返回小写的完整路径（group/sub/name）与仓库名（最后一段，去掉 .git）。
 // 兼容 HTTPS、SSH（git@host:path）、ssh:// 以及无协议地址；无法解析时返回空串。
@@ -229,6 +235,49 @@ export function filterGroups(query: string, filter: string, order: string, perio
           : b.total - a.total,
     );
 }
+// Reconstruct display-only path segments when a snapshot did not list their metadata.
+export function buildGroupTree(selected: Group[], allGroups: Group[] = groups) {
+  type Node = { id: string; name: string; path: string; description: string; group?: Group; repos: Repository[]; children: Node[]; visible: boolean };
+  const nodes = new Map<string, Node>();
+  const selectedIds = new Set(selected.map(g => g.id));
+  const selectedRepos = new Set(selected.flatMap(g => g.repos.map(r => r.id)));
+  function addPath(path: string, source: string) {
+    const parts = path.split('/').filter(Boolean);
+    // Codeup's first path component is the organization ID, not a code group.
+    const start = source === 'codeup' && parts.length > 1 ? 1 : 0;
+    let parent: Node | undefined;
+    for (let i = start; i < parts.length; i++) {
+      const full = parts.slice(0, i + 1).join('/'), key = source + ':' + full;
+      let node = nodes.get(key);
+      if (!node) {
+        node = { id: key, name: parts[i], path: full, description: '', repos: [], children: [], visible: false };
+        nodes.set(key, node);
+        if (parent) parent.children.push(node);
+      }
+      parent = node;
+    }
+    return parent;
+  }
+  for (const g of allGroups) {
+    const source = g.id.startsWith('local-gitlab-') ? 'local_gitlab' : 'codeup';
+    const node = addPath(g.path, source);
+    if (node) { node.group = g; node.name = g.name; node.description = g.description; node.visible ||= selectedIds.has(g.id); }
+  }
+  for (const g of allGroups) for (const repo of g.repos) {
+    if (!selectedRepos.has(repo.id)) continue;
+    const source = repo.source === 'local_gitlab' || g.id.startsWith('local-gitlab-') ? 'local_gitlab' : 'codeup';
+    const repoGroupPath = repo.path?.includes('/') ? repo.path.slice(0, repo.path.lastIndexOf('/')) : g.path;
+    const node = addPath(repoGroupPath, source);
+    if (node) { node.repos.push(repo); node.visible = true; }
+  }
+  const children = new Set(Array.from(nodes.values()).flatMap(n => n.children));
+  function prune(node: Node): boolean {
+    node.children = node.children.filter(prune);
+    return node.visible || node.children.length > 0;
+  }
+  return Array.from(nodes.values()).filter(n => !children.has(n)).filter(prune);
+}
+
 export function formatRepoTime(value?: string) {
   return formatBeijingTime(value, '未采集');
 }

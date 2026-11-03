@@ -6,6 +6,7 @@ Unknown processes are retained; only explicitly recognized OS processes are excl
 import base64
 import fnmatch
 import json
+import ipaddress
 import posixpath
 import re
 import shlex
@@ -36,25 +37,26 @@ PROCESS_RE = re.compile(r'^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\d+)\s+(\w+\s+\w+\s+\d+\s
 # %cpu / %mem / rss / vsz 供单机查询结果展示 CPU 与内存占用率及实际内存（旧快照数据缺这些字段，前端按 - 展示）。
 PS = "LC_ALL=C TZ=UTC ps -eww -o pid=,ppid=,user:32=,etimes=,lstart=,comm=,%cpu=,%mem=,rss=,vsz=,args="
 
-# Specs (CPU / memory / OS) are only collected for the 10.58 on-premises segment.
+# Keep this list aligned with lib/datacenter-networks.ts.
+LOCAL_DATACENTER_NETWORKS = tuple(ipaddress.ip_network('10.58.%d.0/24' % n) for n in (1, 9, 10, 140))
 SPECS_COMMAND = (
-    "cpu=$(nproc 2>/dev/null || echo 0); "
-    "mem=$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0); "
-    "os=$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d= -f2- | tr -d '\"' || true); "
-    "test -z \"$os\" && os=$(uname -sr 2>/dev/null || echo unknown); "
+    "cpu=$(nproc 2>/dev/null); "
+    "mem=$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null); "
+    "os=$(grep '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d= -f2- | tr -d '\"'); "
+    "test -z \"$os\" && os=$(uname -sr 2>/dev/null); "
     "printf 'SPECS\\t%s\\t%s\\t%s\\n' \"$cpu\" \"$mem\" \"$os\""
 )
-SPECS_RE = re.compile(r'SPECS\t(\d+)\t(\d+)\t(.+)')
 
 
-def is_10_58(ip):
-    """True when any IP in the asset's ip field belongs to the 10.58.0.0/16 segment."""
-    if not ip:
-        return False
-    for part in re.split(r'[\s,]+', str(ip)):
-        part = part.strip()
-        if part.startswith('10.58.'):
-            return True
+def is_local_datacenter(ip):
+    """Match complete valid IPv4 addresses, including multi-address asset fields."""
+    for part in re.split(r'[\s,]+', str(ip or '')):
+        try:
+            address = ipaddress.ip_address(part)
+            if address.version == 4 and any(address in network for network in LOCAL_DATACENTER_NETWORKS):
+                return True
+        except ValueError:
+            continue
     return False
 
 
@@ -128,20 +130,35 @@ def collect_webapps(terminal):
 
 
 def collect_specs(terminal):
-    """Read CPU count, total memory (MB) and OS pretty name through the active terminal."""
+    """Collect independent fields; never retain terminal output or exception text."""
+    result = {'cpu': 0, 'memoryMB': 0, 'os': '', 'status': 'failed',
+              'reason': '', 'cpuSource': 'nproc'}
     try:
         rc, body = terminal.run(SPECS_COMMAND, timeout=15)
-        if rc != 0:
-            return None
-        match = SPECS_RE.search(body)
-        if not match:
-            return None
-        cpu = int(match.group(1))
-        memory_kb = int(match.group(2))
-        os_name = match.group(3).strip()
-        return {'cpu': cpu, 'memoryMB': memory_kb // 1024, 'os': os_name}
+    except TimeoutError:
+        result['reason'] = 'timeout'
+        return result
     except Exception:
-        return None
+        result['reason'] = 'terminal_error'
+        return result
+    if rc != 0:
+        result['reason'] = 'command_failed'
+        return result
+    match = re.search(r'(?m)^SPECS(?:\t[^\r\n]*)?$', body)
+    if not match:
+        result['reason'] = 'invalid_output'
+        return result
+    fields = match.group(0).split('\t')[1:]
+    cpu, memory, os_name = (part.strip() for part in (fields + ['', '', ''])[:3])
+    if cpu.isascii() and cpu.isdigit() and int(cpu) > 0:
+        result['cpu'] = int(cpu)
+    if memory.isascii() and memory.isdigit() and int(memory) >= 1024:
+        result['memoryMB'] = int(memory) // 1024
+    result['os'] = os_name
+    missing = [name for name, valid in (('cpu', result['cpu']), ('memory', result['memoryMB']), ('os', result['os'])) if not valid]
+    result['status'] = 'complete' if not missing else 'partial' if len(missing) < 3 else 'failed'
+    result['reason'] = ','.join('missing_' + field for field in missing)
+    return result
 
 
 # Server-level CPU/memory usage: sample /proc/stat twice with a 1-second
@@ -1390,6 +1407,27 @@ def inspect_asset(asset, accounts, cookie, folidev_pw, root_alt1, root_alt2, ip_
         result.update(loginStatus='can_login',reason='',account=account.get('username',''))
         print(f'{tag} 登录成功（账号 {account.get("username","")}）', flush=True)
         try:
+            if is_local_datacenter(ip):
+                specs = collect_specs(terminal)
+                if specs['reason'] == 'timeout':
+                    # run() closes an out-of-sync PTY; reconnect once before retrying.
+                    terminal.close()
+                    terminal = None
+                    try:
+                        terminal = terminal_factory(asset, account, cookie, folidev_pw)
+                        terminal.login()
+                        specs = collect_specs(terminal)
+                    except Exception:
+                        specs['reason'] = 'reconnect_failed'
+                        result['specs'] = specs
+                        result['warnings'].append('服务器规格采集：reconnect_failed')
+                        raise ConnectionError('规格采集后重连失败')
+                result['specs'] = specs
+                if specs['status'] != 'complete':
+                    result['warnings'].append('服务器规格采集：' + specs['reason'])
+                print(f'{tag} 本地机房规格：{specs["status"]}（{specs["reason"] or "ok"}）', flush=True)
+                if specs['reason'] == 'timeout':
+                    raise ConnectionError('规格采集重试超时，终端已关闭')
             sudo_status, sudo_reason, method, used_pw, map_updated = resolve_elevation(
                 terminal, ip, folidev_pw, root_alt1, root_alt2, ip_map)
             result['sudoStatus'] = sudo_status
@@ -1432,13 +1470,6 @@ def inspect_asset(asset, accounts, cookie, folidev_pw, root_alt1, root_alt2, ip_
             else:
                 result['warnings'].append('TCP 监听端口采集失败，不能据此判断没有监听')
                 print(f'{tag} 监听端口：采集失败', flush=True)
-            if is_10_58(asset.get('ip','')):
-                specs = collect_specs(terminal)
-                if specs:
-                    result['specs'] = specs
-                    print(f'{tag} 规格（10.58 网段）：{specs["cpu"]}C {specs["memoryMB"]//1024}G {specs["os"]}', flush=True)
-                else:
-                    print(f'{tag} 规格（10.58 网段）：未采集到', flush=True)
             result['webapps'] = collect_webapps(terminal)
             webapps = result['webapps']
             webapps_label = {'complete':'完整', 'partial':'部分', 'absent':'目录不存在', 'failed':'失败', 'not_collected':'未采集'}.get(webapps['status'], webapps['status'])
@@ -1478,7 +1509,8 @@ def inspect_asset(asset, accounts, cookie, folidev_pw, root_alt1, root_alt2, ip_
             if result['processStatus']=='not_collected': result['processStatus']='failed'
             if result['nginxStatus']=='not_collected': result['nginxStatus']='failed'
             print(f'{tag} 采集中断：{type(exc).__name__} — {detail}', flush=True)
-        finally: terminal.close()
+        finally:
+            if terminal: terminal.close()
         return result
     print(f'{tag} 没有授权的 SSH 账号，跳过', flush=True)
     return result

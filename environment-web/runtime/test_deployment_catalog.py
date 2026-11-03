@@ -4,6 +4,7 @@ import os
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from unittest.mock import Mock, patch
 
 try:
     import deployment_catalog as c
@@ -80,6 +81,22 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(c.match_member(new, old, {'d': 1}, {'192.0.2.2': 1}, set())[1], 'AMBIGUOUS_DEPLOYMENT_MEMBERS')
 
 
+class CategoryCacheTests(unittest.TestCase):
+    def test_reuses_entries_separately_by_presence_and_refreshes_after_expiry(self):
+        store = c.Catalog()
+        store.execute = Mock(side_effect=[[{'category': 'APPLICATION'}], [{'category': 'Redis'}], [{'category': 'Canal'}], [{'category': 'Kafka'}]])
+        with patch.object(c.time, 'monotonic') as clock:
+            clock.return_value = 100
+            self.assertEqual(store.categories(None, '', '', [], 'present'), ['APPLICATION'])
+            self.assertEqual(store.categories(None, '', '', [], 'present'), ['APPLICATION'])
+            self.assertEqual(store.execute.call_count, 1)
+            self.assertEqual(store.categories(None, '', '', [], 'all'), ['Redis'])
+            clock.return_value = 131
+            self.assertEqual(store.categories(None, '', '', [], 'present'), ['Canal'])
+            store.clear_category_cache()
+            self.assertEqual(store.categories(None, '', '', [], 'present'), ['Kafka'])
+
+
 @unittest.skipUnless(os.environ.get('ENVSCOPE_CATALOG_MYSQL_TEST') == '1', 'requires the isolated MySQL integration test container')
 class MySQLCatalogTests(unittest.TestCase):
     def setUp(self):
@@ -115,6 +132,21 @@ class MySQLCatalogTests(unittest.TestCase):
         self.assertEqual(envs['PRODUCT']['instanceCount'], 2)
         self.assertEqual(envs['PRODUCT']['serverCount'], 1)
         self.assertEqual(len(self.store.read(unit_id=unit['id'])['instances']), 3)
+
+    def test_category_summary_deduplicates_hosts_across_units_and_pages(self):
+        value = fixture()
+        other = copy.deepcopy(value['apps'][0])
+        other['id'] = 'app-2'
+        other['name'] = 'second-service'
+        value['apps'].append(other)
+        self.ingest(value)
+        first = self.store.read(category='APPLICATION', page_size=1)
+        second = self.store.read(category='APPLICATION', page=2, page_size=1)
+        self.assertEqual(first['categorySummary'], second['categorySummary'])
+        self.assertEqual(first['categorySummary']['units'], 2)
+        self.assertEqual(first['categorySummary']['environments']['PRODUCT'], {'instances': 4, 'servers': 1})
+        self.assertEqual(self.store.read(category='Canal')['categorySummary']['units'], 0)
+        self.assertEqual(self.store.read(category='APPLICATION', query='second')['categorySummary']['units'], 1)
 
     def test_updates_keep_ids_and_manual_management_fields(self):
         self.ingest(fixture())

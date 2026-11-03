@@ -6,6 +6,10 @@ export type ServerSpec = {
   assetId?: string;
   loginStatus?: string;
   specsCollected?: boolean;
+  specsStatus?: 'complete' | 'partial' | 'failed' | 'not_collected';
+  specsReason?: string;
+  cpuSource?: string;
+  checkedAt?: string;
   cpu: number;
   memoryMB: number;
   os: string;

@@ -297,18 +297,34 @@
   white-space: normal !important;
 }
 .repo-nested th:first-child {
-  width: 53%;
+  width: 32%;
   padding-left: 12px;
 }
+.repo-address-line {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: nowrap;
+  gap: 8px;
+}
 .repo-address {
+  min-width: 0;
+  flex: 0 1 auto;
   display: flex;
   align-items: center;
   gap: 8px;
   color: #28795f;
   line-height: 1.7;
 }
+.repo-address-line .repo-source { flex: none; }
+.repo-source-link { display: inline-flex; align-items: center; gap: 4px; flex: none; color: #075985; }
+.repo-source-link:hover .repo-source { text-decoration: underline; }
+.repo-address > svg { flex: none; }
 .repo-address span {
-  overflow-wrap: anywhere;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .repo-app-tags {
   display: flex;
@@ -518,7 +534,7 @@
   color: #246747;
 }
 .repo-nested {
-  min-width: 1250px;
+  min-width: 1000px;
 }
 
 .repo-batch{margin:16px 20px;padding:16px;border:1px solid #dce3ed;border-radius:8px;overflow:auto}.repo-batch summary{cursor:pointer;font-weight:600}.repo-batch p{margin:10px 0;font-size:13px;color:#667085;overflow-wrap:anywhere}.repo-batch textarea{display:block;width:100%;padding:12px;border:1px solid #cbd5e1;border-radius:6px;font:inherit;resize:vertical;background:white}.repo-batch-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px}

@@ -285,6 +285,8 @@ class Service:
                 except (CatalogError, OSError):
                     return False
             result = self.catalog_store.import_snapshot(raw, identifier, f'versions/{identifier}/snapshot.json', can_apply=still_current)
+            if not result.get('unchanged'):
+                self.catalog_store.clear_category_cache()
             self.catalog_job = {'status': 'ready', 'finishedAt': now(), 'result': result}
         except CatalogError as exc:
             self.catalog_job = {'status': 'failed', 'finishedAt': now(), 'error': str(exc)}
@@ -320,13 +322,16 @@ class Service:
         presence = params.get('presence', ['present'])[0]
         environment = params.get('environment', [None])[0]
         unit_id = params.get('unitId', [None])[0]
+        category = params.get('category', [None])[0]
+        if category is not None and (not category or len(category) > 100):
+            raise CatalogInputError('部署单元类型无效')
         if presence not in ('present', 'all') or environment not in (None, *ENVIRONMENTS_CATALOG):
             raise CatalogInputError('部署单元筛选条件无效')
         if unit_id and not re.fullmatch(r'[0-9a-f-]{36}', unit_id):
             raise CatalogInputError('部署单元 ID 无效')
         result = self.catalog_store.read(query=query, page=bounded_int(params, 'page', 1, 1, 1000000),
             page_size=bounded_int(params, 'pageSize', 20, 1, 100), presence=presence,
-            unit_id=unit_id, environment=environment)
+            unit_id=unit_id, environment=environment, category=category)
         identifier, raw = self.catalog_context()
         current_snapshot = json.loads(raw)
         current_hash = hashlib.sha256(raw).hexdigest()

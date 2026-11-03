@@ -9,6 +9,8 @@ Read and follow:
 
 - Keep the current task narrowly scoped.
 - Treat Docker as the production runtime boundary: new runtime features must work inside the `environment-web` container.
+- Use Docker context `lenovo` for all builds and runtime operations; perform all runtime data checks against the `envscope-local` container in that context.
+- Daily snapshots and other persistent runtime data reside in the volume mounted by `envscope-local`; inspect that mounted data through the container, not repository copies or the disposable container layer.
 - Do not introduce host-only paths, host cron dependencies, or required host-global packages unless explicitly requested.
 - Persistent generated/runtime data must use the configured container volume rather than relying on the disposable container layer.
 - Do not scan the whole repository by default.

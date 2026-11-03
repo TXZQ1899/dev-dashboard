@@ -28,6 +28,67 @@ server { listen 443 ssl; server_name example.com *.example.com;
 '''
 
 class InventoryTests(unittest.TestCase):
+    def test_local_spec_scope_requires_valid_address_in_four_subnets(self):
+        for ip in ('10.58.1.2', '10.58.9.255', '10.58.10.1', '10.58.140.5', '192.0.2.1, 10.58.9.1'):
+            self.assertTrue(inv.is_local_datacenter(ip), ip)
+        for ip in ('10.58.5.1', '10.58.11.1', '10.58.9.256', '10.58.9.1.example', ''):
+            self.assertFalse(inv.is_local_datacenter(ip), ip)
+
+    def test_specs_independent_fields_and_failure_reasons(self):
+        class Terminal:
+            def __init__(self, body): self.body = body
+            def run(self, command, timeout): return 0, self.body
+        complete = inv.collect_specs(Terminal('SPECS\t4\t8388608\tLinux'))
+        self.assertEqual((complete['status'], complete['cpu'], complete['memoryMB']), ('complete', 4, 8192))
+        partial = inv.collect_specs(Terminal('SPECS\t4\t\tLinux'))
+        self.assertEqual((partial['status'], partial['reason'], partial['cpu']), ('partial', 'missing_memory', 4))
+        partial = inv.collect_specs(Terminal('SPECS\t0\t8388608\tLinux'))
+        self.assertEqual((partial['status'], partial['reason'], partial['cpu']), ('partial', 'missing_cpu', 0))
+        self.assertEqual(inv.collect_specs(Terminal('SPECS\t4'))['cpu'], 4)
+        self.assertEqual(inv.collect_specs(Terminal('noise'))['reason'], 'invalid_output')
+        class Timeout:
+            def run(self, *args, **kwargs): raise TimeoutError('secret')
+        self.assertEqual(inv.collect_specs(Timeout())['reason'], 'timeout')
+
+    def test_specs_run_before_elevation_and_survive_later_failure(self):
+        events = []
+        class Terminal:
+            def __init__(self, *args): pass
+            def login(self): events.append('login')
+            def run(self, command, timeout=60):
+                if command == inv.SPECS_COMMAND:
+                    events.append('specs')
+                    return 0, 'SPECS\t8\t8388608\tLinux'
+                raise TimeoutError('secret')
+            def elevate(self, password=None):
+                events.append('elevate')
+                raise TimeoutError('secret')
+            def close(self): pass
+        row = inv.inspect_asset({'id':'a', 'ip':'10.58.9.1'}, [{'protocol':'ssh','username':'folidev'}], 'cookie', 'pw', '', '', {}, Terminal)
+        self.assertEqual(events, ['login', 'specs', 'elevate'])
+        self.assertEqual(row['specs']['cpu'], 8)
+
+    def test_specs_timeout_reconnects_once_before_retry(self):
+        events = []
+        class Terminal:
+            count = 0
+            def __init__(self, *args):
+                Terminal.count += 1
+                self.number = Terminal.count
+            def login(self): events.append(('login', self.number))
+            def run(self, command, timeout=60):
+                if command == inv.SPECS_COMMAND:
+                    events.append(('specs', self.number))
+                    if self.number == 1: raise TimeoutError()
+                    return 0, 'SPECS\t4\t4194304\tLinux'
+                raise RuntimeError()
+            def close(self): events.append(('close', self.number))
+        with patch.object(inv, 'resolve_elevation', side_effect=RuntimeError()):
+            row = inv.inspect_asset({'id':'a', 'ip':'10.58.1.1'}, [{'protocol':'ssh','username':'x'}], 'cookie', '', '', '', {}, Terminal)
+        self.assertEqual(row['specs']['cpu'], 4)
+        self.assertEqual(events[:5], [('login', 1), ('specs', 1), ('close', 1), ('login', 2), ('specs', 2)])
+        self.assertEqual(Terminal.count, 2)
+
     def test_docker_inventory_parses_ports_and_redacts_arguments(self):
         class Terminal:
             def run(self, command, timeout):

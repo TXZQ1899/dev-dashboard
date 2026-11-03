@@ -205,3 +205,43 @@ test('repository search supports prefix, exact and suffix URL matching', () => {
   assert.equal(m('unknown-app', ['HTTPS://Codeup.Aliyun.com/Foliday-Admin/FSOP-ProductCenter.GIT'], 'fsop-productcenter.git'), true);
 });
 
+
+test('nested group paths retain descriptions and place repositories at their actual level', () => {
+  const repo = { id:'r', path:'org/fosun-fyh/backend-order/hotels/app', groupId:'order', source:'codeup', apps:[], inCodeup:true };
+  const group = { id:'order', name:'backend-order', path:'org/fosun-fyh/backend-order', description:'订单中心', total:1, repos:[repo] };
+  const roots = mod.exports.buildGroupTree([group], [group]);
+  assert.equal(roots[0].name, 'fosun-fyh');
+  const order = roots[0].children[0];
+  assert.equal(order.description, '订单中心');
+  assert.equal(order.repos.length, 0);
+  assert.equal(order.children[0].name, 'hotels');
+  assert.deepEqual(order.children[0].repos, [repo]);
+  assert.equal(order.children[0].description, '');
+});
+
+test('Codeup display path and web link omit the organization and Git suffix appropriately', () => {
+  const links = mod.exports.codeupRepositoryLinks;
+  assert.deepEqual(links('https://codeup.aliyun.com/org/fosun-fyh/backend-common/app-server.git'), {
+    display: 'fosun-fyh/backend-common/app-server.git',
+    webUrl: 'https://codeup.aliyun.com/org/fosun-fyh/backend-common/app-server',
+  });
+  assert.equal(links('https://codeup.aliyun.com.example.com/org/group/app.git'), null);
+  assert.equal(links('https://gitlab.dev.thomascook.com.cn/group/app.git'), null);
+  assert.equal(links('https://codeup.aliyun.com/org/app.git'), null);
+  assert.equal(links('not a URL'), null);
+});
+
+test('daily group totals and DevOps usage use the same descendant repository inventory', () => {
+  const makeRepo = (i, segment) => ({ id: String(i), path: `org/fosun-fyh/backend-order/${segment}app-${i}`,
+    groupId:'order', source:'codeup', inCodeup:true, access:'是', difference:'both', apps:[{id:'app'}] });
+  const repos = [...Array.from({length:6}, (_,i) => makeRepo(i, '')),
+    ...Array.from({length:7}, (_,i) => makeRepo(i+6, 'hotels/')),
+    ...Array.from({length:10}, (_,i) => makeRepo(i+13, 'tims/'))];
+  const stats = mod.exports.repositoryGroupStats(repos, true, 6);
+  assert.deepEqual([stats.total, stats.linked, stats.gap], [23, 23, 0]);
+  const unused = {...makeRepo(23, 'hotels/'), apps:[], difference:'codeup_only'};
+  const devopsOnly = {...makeRepo(24, ''), inCodeup:false, difference:'devops_only'};
+  const extended = mod.exports.repositoryGroupStats([...repos, unused, devopsOnly], true, 6);
+  assert.deepEqual([extended.total, extended.linked, extended.gap, extended.devopsOnly], [24, 23, 1, 1]);
+  assert.equal(mod.exports.repositoryGroupStats(repos.slice(0, 2), false, 6).total, 6);
+});

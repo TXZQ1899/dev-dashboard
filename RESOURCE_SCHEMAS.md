@@ -11,7 +11,7 @@
 
 以下是新采集版本的附加契约；后文无租户字段的示例是兼容的单账号旧结构。
 
-- ECS、CLB、DMS、NAT、云 DNS 每个启用租户均采集；Codeup 仅使用 `legacy-aliyun` 现有租户。静态 DNS / EIP 保持原来源，不能批量归属某个新租户。云 DNS 独立保存为 `cloud-dns-snapshot.json`。
+- ECS、CLB、DMS、NAT 按启用租户各自的凭据采集；Cookie 模式仅支持上海地域。云 DNS 目前仅支持 AccessKey，Cookie 租户全量同步时跳过云 DNS 并保留既有切片及原观察时间，不表示已刷新。Codeup 仅使用 `legacy-aliyun` 现有租户。静态 DNS / EIP 保持原来源，不能批量归属某个新租户。云 DNS 独立保存为 `cloud-dns-snapshot.json`。
 - ECS `instances[]` / `projects[]`、CLB `instances[]`、NAT `gateways[]` / `entries[]`、DMS `instances[]` 增加 `tenantId`（AppAtlas 稳定 ID）、`tenantName`、`accountId`（采集账号 UID）。资源行增加 `resourceKey`、`region`、`observedAt`。ECS / CLB 有来源字段时保留 `vpcId`、`vswitchId`。
 - `resourceKey` 是 `[tenantId, resourceType, region, nativeId]` 的规范 JSON 字符串，原生 `id` 保持不变。DNAT 的 nativeId 包含网关 ID 和条目 ID。资源组名称按租户 + 资源组 ID 查询。
 - DMS 的 `resourceKey` 在 nativeId 中包含 Tid + 实例地址；`sourceKeys[]` 保留 `[tenantId, "dms-record", dmsTenantId, 原生DMS记录ID]`。DMS `dmsTenantId` 是 DMS Tid，独立于 AppAtlas 租户 ID。旧版根 `tenantId` 表示 Tid，新版汇总根移除此字段。
@@ -187,6 +187,8 @@
 | `path` | `string` | 是 | Codeup 路径 |
 | `total` | `number` | 是 | 组内仓库总数 |
 | `listed` | `boolean` | 是 | 是否已进入详细仓库清单 |
+
+代码组保留完整 `path` 和采集到的 `description`；父子层级由完整路径确定。页面可从仓库路径补出未采集到元数据的中间层，标注说明未采集，不视为已获取组详情。仓库归入路径最深的已知组；父子组统计不能相加作为仓库总数。
 
 ### 样本
 
@@ -636,6 +638,12 @@ AccessKey 采集按 LB 隔离故障。列表或详情明确为 `inactive` / `loc
 | `configurationVersion` | `string?` | 条件 | 配置归档版本 ID |
 | `warnings` | `string[]` | 是 | 采集警告 |
 | `attempts` | `{ account, reason }[]?` | 条件 | 登录尝试 |
+
+### 本地机房服务器规格
+
+仅资产地址中含有效 IPv4 且属于 `10.58.1.0/24`、`10.58.9.0/24`、`10.58.10.0/24`、`10.58.140.0/24` 的资产采集规格。登录成功后、提权之前采集；规格命令超时会关闭失步终端，重新登录并重试一次。CPU 沿用 `nproc` 的当前进程可用逻辑 CPU 口径，内存为 `/proc/meminfo` 的 MemTotal。CPU、内存和 OS 独立保留，缺失数值用 0 表示未知，不能解释为真实容量为零。
+
+规格写入版本内 `server-specs.json` 的 `specs[]`，包括 `assetId`、`ip`、`hostname`、`loginStatus`、`checkedAt`、`cpu`、`memoryMB`、`os`、`cpuSource`、`specsStatus`、`specsReason`；`specsStatus` 为 `complete`、`partial`、`failed`、`not_collected`，`specsReason` 是安全的失败类别或逗号分隔的缺失字段。`specsCollected` 表示 CPU 和内存均为正值；OS 缺失时仍可为 true。旧快照缺少新增字段仍可读取。单台重新采集只更新该资产，其他记录保留各自检查时间；本次失败不会冒充上次成功数据。显示层可独立展示已采集字段。
 
 ### JumpServer 页面纳管总览
 
@@ -1376,7 +1384,7 @@ STALE
 
 探针仅回传原有报告所需的 socket 行、`bytes_acked` 和 `bytes_received`，省略未使用的 TCP 内部统计以减少终端传输；字节差值、缺失计数为未知等语义不变。文件描述符枚举期间有条目消失或不可读时保留已验证交集并警告；整个目标目录不可读时失败。
 
-对端发现查询按已观察的服务 Endpoint 和客户端 IP 预采样，不要求先发现每个临时客户端端口；最终归属始终检查完整反向五元组。每台对端最多缓冲 2000 条 socket 观察，单帧最多接收 400 条发现记录；缓冲区按完整端点索引，匹配保留源端口及协议。PID 不能从另一个连接复制到本条连接。目标采样中的前后缺失帧限制连接的可能存续窗口，窗口外的对端观察不作为归属依据；同一五元组在时间边界内有多个本地 socket 候选时保留 `AMBIGUOUS`。
+对端先按已观察连接的完整反向五元组定向采样，再交替按服务 Endpoint 和客户端 IP 预采样，以保留后续发现短连接的机会。Docker 目标同时查询已核验的宿主机发布 Endpoint；转发归属仍为推断。最终归属始终检查完整客户端端点和观察窗口。每台对端最多缓冲 2000 条 socket 观察，单帧最多接收 400 条记录；缓冲区按完整端点索引，匹配保留源端口及协议。PID 不能从另一个连接复制到本条连接。目标采样中的前后缺失帧限制连接的可能存续窗口，窗口外的对端观察不作为归属依据；同一五元组在时间边界内有多个本地 socket 候选时保留 `AMBIGUOUS`。
 
 历史对端观察按序号增量关联，环境或应用清单上下文变化时才重新匹配历史；同帧、同 PID、同主机及同环境的应用归属匹配复用，不复用连接所有者证据。缓存仅在该帧存续期间有效，新帧重新读取身份与监听证据。每帧最多核验 40 个对端 PID，超过时显式告警；不能把未核验进程当作不存在。对端观察时间上下界写入可选 `coverage.peers[].observationStart / observationEnd`；明确无时间重叠时在未解析原因中说明。
 
@@ -1505,7 +1513,7 @@ Spring Cloud Alibaba 的 `spring.cloud.nacos.config` 支持从无 profile 文档
 
 ### 查询与触发 API
 
-- `GET /api/catalog/deployment-units`：`q` 搜索名称/编码/应用 ID，`page`、`pageSize`（1–100），`presence=present|all`。返回 `source`、`units`、`summary`、`pagination`、`activeSnapshot`、`job`。
+- `GET /api/catalog/deployment-units`：`q` 搜索名称/编码/应用 ID，`page`、`pageSize`（1–100），`presence=present|all`，`category`（应用为 `APPLICATION`，组件为技术类型）。返回 `source`、`units`、`summary`、`categories`、`categorySummary`、`pagination`、`activeSnapshot`、`job`。`categories` 按来源状态分别缓存最多 30 秒，目录导入发生变更时立即清除本进程缓存；`categorySummary` 跨分页按当前筛选统计单元和各环境当前观察实例，服务器按各环境内非空 IP 去重；历史筛选仅扩展单元范围，不将未再观察到的实例计入。
 - 同接口传 `unitId`、可选 `environment`，返回 `source`、`instances`、`activeSnapshot`、`job`；实例当前属性、最近时间和来源可见性分开返回。
 - `source` 含原始快照版本、哈希、采集/导入时间；`activeSnapshot.matchesCatalog` 表示当前页面快照是否与该目录来源相同。
 - `POST /api/catalog/deployment-units/import`：同源 JSON 空对象，返回 202 和任务状态；异步读取当前完整快照，无客户端文件路径参数。
@@ -1602,3 +1610,60 @@ Redis 使用宿主机网络的容器，如果已核对容器进程、启动脚�
 对于进程的实际启动配置文件尚未定位的情况，若 Redis 运行时配置及复制状态可读取、应用关联已排除、长时 TCP 采样和客户端列表均未发现在线副本、已发现 Sentinel 无冲突，可基于当前观测以 `INFERRED` 创建单数据节点；配置文件路径标记 `UNIDENTIFIED`，保留候选文件与运行参数不一致、历史失联副本未覆盖等限制，不宣称无配置文件或复制关系已被永久排除。
 
 对于日志中存在历史副本的 Redis，若用户明确确认该历史副本 IP 已退役，应将原始用户确认、确认时间、历史端点及退役时间未知分别保留为来源证据；结合当前运行状态、TCP、配置、应用关联和已发现 Sentinel 的观察，可按当前单数据节点以 `INFERRED` 建档。不得将已退役端点创建为当前实例，也不能将用户对一个地址的确认扩大为对其他未识别历史事件的确认。
+
+### Elasticsearch 多节点核查导入
+
+- `runtime/elasticsearch_catalog.py` 从数据卷 `checks/elasticsearch-review/latest.json` 预览，`--apply` 要求当前来源版本和两小时内的核查；脱敏报告按内容哈希保存到 `checks/elasticsearch-review/evidence/`，权限为 0600。来源命名空间为 DevOps 来源加 `:elasticsearch`。
+- 多节点单元须各节点的进程身份、网络与监听、三环境应用候选、集群 UUID、节点 ID 和完整节点视图交叉一致，节点查询无失败；相同集群名称不足以归并。单节点须有同一节点返回的 `discovery.type=single-node` 生效设置；或按用户明确的当前观察口径，结合完整节点视图、上下游采样及独立 socket 采样，在未发现其他已知 ES 节点或 transport 连接且无未解析非 HTTP 连接时，以 `INFERRED` 建档，保留观察窗口和历史失联成员未知的限制。仅有单节点视图、接口认证失败或成员缺失保持待核实；文件描述符警告须由独立监听与连接枚举补充验证。`Elasticsearch_cluster_序号` 在数据库按类型分配，环境为 `UNIDENTIFIED`，成员变化、节点已绑定其他单元时不自动合并或拆分。
+- 实例保存实测 `observedEndpoints`、HTTP/transport 发布地址、节点角色、版本和证据引用。通配监听不冒充资产 IP 的直接监听，声明端口留空；`coverageState=PARTIAL` 和 `INFERRED` 保留观察范围限制。
+
+### Kibana 归入 Elasticsearch 单元
+
+- `runtime/kibana_catalog.py` 使用当前版本的 Kibana 只读核查、进程持有的 TCP 连接、已建档 Elasticsearch 节点的身份及实时 PID/启动计数和监听交叉验证。所有配置目标必须唯一映射到同一既有 ES 单元，且观察到 Kibana 进程或经前后校验的子进程实际连接；目标未建档、跨单元、身份变化或应用关联冲突时保持待核实。关联为 `INFERRED`，不是 ES 集群成员或数据节点关系。
+- 以独立 `:kibana` 来源将 `componentRole=KIBANA`、`relationship=ELASTICSEARCH_CLIENT` 的服务实例添加到 ES 单元的 `UNIDENTIFIED` 环境；实例观察保留监听、配置端点、实际连接目标、ES 节点身份及配置路径依据，页面标注“Kibana（配套服务）”。一个资产上的 Kibana 身份已绑定其他单元时停止而不自动迁移；重复导入幂等，ES 原生节点来源与成员检查保持独立。配置路径有多个候选时，仅在候选均可读、目标一致且当前连接与已验证 ES 匹配时关联，路径仍记为未知。证据位于数据卷，不包含认证信息。
+
+### RabbitMQ 当前单节点核查导入
+
+- `runtime/rabbitmq_catalog.py` 基于当前版本的 DevOps 和 JumpServer 快照及 `checks/rabbitmq-review/` 中本轮四份只读报告生成预览；`--apply` 在事务内导入，检查快照未切换并要求实时证据在两小时内。报告组合按内容哈希保存到数据卷 `checks/rabbitmq-review/evidence/`，不含 Erlang cookie 或认证信息。本轮输入文件名与核查版本绑定；后续版本须重新核查并更新输入，旧报告不能直接用于新版本。
+- 当前规则要求 RabbitMQ 管理节点 PID 与目标进程启动计数相符、所有已知及运行中成员均只有本节点、静态 `cluster_nodes` 为空、PID 监听可核实；容器还需进程树、容器状态与发布端口一致。同机 DevOps 应用端口缺失或与服务端口冲突时保留待核实；用户明确确认不负责管理 RabbitMQ 的缺端口应用可按来源版本、资产 ID、环境、应用 ID 和声明类型精确排除，确认本身纳入不可变证据，不能据此忽略其他应用或端口冲突。单节点归组为 `INFERRED`，仅覆盖当前视图，不排除历史成员或未来变化。
+- 来源使用 DevOps 来源加 `:rabbitmq`，节点来源身份包含资产 ID、节点名和容器名；同一节点名在不同资产可重复，同一资产的已有节点身份变化或多实例不自动合并。`RabbitMQ_cluster_序号` 按类型事务分配，环境为 `UNIDENTIFIED`，覆盖为 `PARTIAL`。通配监听的声明端口留空，容器发布端口标记 `DOCKER_PUBLISHED`，原始监听按宿主机或容器网络空间保留。
+
+### Canal 本地独立 Server 核查导入
+
+- `runtime/canal_catalog.py` 从当前版本快照及数据卷 `checks/canal-review/` 的定向只读报告生成预览；`--apply` 要求版本一致、实时证据不超过两小时，事务写入并将组合证据按哈希存入数据卷 `checks/canal-review/evidence/`。本轮规则仅覆盖经专项复核的 Canal 1.1.6 本地配置模式，不将 Admin 管理或 ZooKeeper 协调的候选当作单机。
+- `canal-local-single-v1` 要求 Server 启动类和进程身份一致，本地配置文件可读、早于进程启动，ZooKeeper 为空、无 Admin、无其他 Canal JVM/环境覆盖；核对宿主机命名空间、实际 Spring 文件实例类和导入、destination 目录、PID 回环监听及无同机 DevOps 部署。相同 destination 不构成归组依据。
+- 来源为 DevOps 来源加 `:canal`，实例身份使用资产 ID 与实际启动配置路径；同资产的身份变化或多实例需人工复核。`Canal_cluster_序号` 在事务内按类型分配，环境 `UNIDENTIFIED`，覆盖 `PARTIAL`，单节点结论为 `INFERRED`。实际监听保存在 `observedEndpoints`，回环和通配地址不冒充资产 IP，声明端口留空。历史、未来状态与未采集成员不由本轮观察推断。
+
+### Canal Admin 和 ZooKeeper 核查导入
+
+- `runtime/canal_admin_catalog.py` 根据可用的 Admin 分页清单、实际主配置、destination 详情及 Server 进程监听，仅处理 Admin 明确登记为单机、主配置无 ZooKeeper 且各 destination 无协调覆盖的 Server。`runtime/canal_admin_zk_catalog.py` 处理 Admin 明确登记为集群、当前仅一个 Server 且与 ZooKeeper Server 注册、运行中 destination 成员及选主地址相互一致的编组；对于共享命名空间的 Admin 单机，还须核实全部注册节点可对应、各自 destination 的成员和名称没有重叠。两者均需当前来源版本、有限时效及可排除的 DevOps 关联；用户明确确认的应用排除须按来源版本、资产、环境和应用 ID 保存，不以相同 ZooKeeper 命名空间或 destination 名称单独归组。
+- 两种规则共享 `:canal` 来源、持久序号和事务锁；同一资产配置路径已有不同 Admin、节点或编组依据时停止并要求复核。组合证据保存至配置数据卷，包含 Admin 观察与 ZooKeeper 脱敏视图，不保存认证信息或完整配置。Admin 未运行的 destination 与 ZooKeeper 未观察到运行成员的状态单独保留；当前单个 Server 注册不能证明历史或未来成员关系。
+
+### Canal 用户指定节点、编组待确认
+
+`runtime/canal_pending_catalog.py` 只在用户针对当前来源版本、资产 ID 与 IP 明确要求单独建档，且 Server 进程、启动配置和监听可核实、应用关联已排除、Admin 不可达证据仍有效时导入。节点记录保留 `groupingState=PENDING`、`groupingConfidence=UNKNOWN`、`groupingBasis=USER_PER_NODE_PENDING`；单节点仅为目录展示，不表示已证明独立部署或不存在其他成员。用户确认、来源及访问限制随不可变组合证据保存在数据卷，不自动合并或拆分。
+
+### MongoDB 部署目录与 DMS 托管实例
+
+- MongoDB 进程和用户确认的 DMS 托管服务均使用独立平台 UUID、`MongoDB_cluster_序号` 与 `UNIDENTIFIED` 环境；来源观察及用户确认保存在数据卷的不可变证据中。进程监听、容器发布端口、服务与集群归组分别保留证据；用户确认归组为 `INFERRED`，不能替代无法读取的运行配置。
+- DMS 托管服务以用户确认的云实例 ID 建一个 `MANAGED_SERVICE` 实例；`attributes.serviceEndpoints[]` 保留各 DMS 地址、host 和 port，`portBasis=DMS_RECORD`，来源记录及观察时间保留在实例观察中。多个地址不表示多个物理节点；主机 IP 未知时保持空值，不能将采集租户等同于云资源实际所有者，也不由 DMS 登记推断可达性或健康。该目录建档不改变 DMS 快照、资源宽表或拓扑。
+
+### PostgreSQL 用户确认建档
+
+- `runtime/postgresql_catalog.py` 仅处理当前来源版本中用户明确确认分别建档的两套内嵌进程和两个 DMS 云实例；验证来源未变、进程观察、DMS 切片及证据时效，事务写入并按类型分配持久序号。环境为 `UNIDENTIFIED`，覆盖为 `PARTIAL`，归组依据为用户确认，置信度 `INFERRED`；重复导入按来源身份保持幂等。
+- GitLab 进程提权受限、监听和有效配置未知；EventLog 进程的回环监听有直接证据，但管理查询需要认证，复制状态均保留 `UNKNOWN`。托管实例保留 DMS 登记端点与来源记录，不推断物理节点、可达性、健康或资源所有权；用户确认、核查限制及脱敏证据保存在配置数据卷。
+
+### Jenkins 用户确认建档
+
+- `runtime/jenkins_catalog.py` 仅处理当前版本中用户明确确认独立编组的 3 个 controller；校验进程、Jenkins home、同机 DevOps 候选、网络空间、监听及容器映射后事务导入。以资产、home 与容器身份匹配并分配 `Jenkins_cluster_序号`；环境为 `UNIDENTIFIED`、覆盖 `PARTIAL`，归组为 `INFERRED`。用户确认和脱敏只读核查按内容哈希保存在数据卷。
+- 容器内部监听与宿主机发布端口分开记录，通配监听不冒充资产 IP 的直接监听；agent 关联未核实，不能将 agent 当作 controller 成员或由当前观察推断完整部署清单、历史及未来状态。
+
+### MySQL DMS 用户确认建档
+
+- `runtime/mysql_managed_catalog.py` 按用户明确确认的 50 个云实例 ID 事务创建托管服务单元，以内容摘要绑定原始 DMS 记录、来源版本和确认范围；不含云实例 ID 的记录保持待核实。环境 `UNIDENTIFIED`，覆盖 `PARTIAL`，用户确认归组为 `INFERRED`，重复导入保持幂等。
+- 同一云实例在不同 DMS 采集租户重复登记且地址一致时，所有租户、DMS Tid、来源键及各自观察时间均保留在 `sourceRecords[]`，服务端点去重；地址冲突、重复来源键或采集切片不完整时停止导入。每个云实例一个 `MANAGED_SERVICE`，不虚构物理节点或主机 IP；DMS 注册不证明实际所有权、可达性、健康或不同云实例之间不存在复制关系。
+
+### MySQL / MariaDB 进程用户指定建档
+
+- `runtime/mysql_process_catalog.py` 仅处理当前版本中用户明确指定分别建档的 17 个进程；确认绑定资产、进程观察及同机 DevOps 部署范围。经实际版本检查的 16 个 MySQL 使用 `MySQL_cluster_序号`，MariaDB 使用独立技术类型及 `MariaDB_cluster_序号`。环境为 `UNIDENTIFIED`，覆盖 `PARTIAL`，逐进程归组依据为用户指令、置信度 `INFERRED`；复制及应用管理关系保留 `UNKNOWN`，不以用户指定归组推断复制状态。
+- 宿主机监听端点保留直接观察；Podman 的容器监听另存在 `containerObservedEndpoints`，未验证宿主机数据库端口映射时不显示为宿主机端点。提权失败的 MariaDB 保留监听未知，不能把快照的模糊端口当成直接监听。证据及用户确认按内容哈希保存数据卷，来源与 DMS 目录分离，重复导入保持幂等。

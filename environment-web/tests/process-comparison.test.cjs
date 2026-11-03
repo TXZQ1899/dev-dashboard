@@ -37,6 +37,7 @@ const inventoryModule = {
 const serverSpecRows = [
   { ip: '10.58.0.1', hostname: 'a', specsCollected: true, loginStatus: 'can_login', cpu: 2, memoryMB: 3936, os: 'CentOS 7.9' },
   { ip: '10.58.0.2', hostname: 'b', specsCollected: true, loginStatus: 'cannot_login', cpu: 0, memoryMB: 0, os: '' },
+  { ip: '10.58.0.6', hostname: 'partial', specsCollected: false, loginStatus: 'can_login', cpu: 4, memoryMB: 0, os: '' },
   { ip: '10.58.0.3', hostname: 'c', cpu: 4, memoryMB: 8000, os: 'CentOS 7.9' },
   { ip: '10.58.0.4 10.58.0.5', hostname: 'multi', specsCollected: false, loginStatus: 'cannot_login', cpu: 0, memoryMB: 0, os: '' },
 ];
@@ -486,6 +487,7 @@ test('ipSpecSummary renders cores and nominal memory for local and cloud servers
   ];
   // 3936MB → 3.84GiB → 标称 4G
   assert.equal(lib.ipSpecSummary('10.58.0.1'), '2C 4G');
+  assert.equal(lib.ipSpecSummary('10.58.0.6'), '4C 内存未采集');
   // 未采集规格（cpu=0）返回空
   assert.equal(lib.ipSpecSummary('10.58.0.2'), '');
   // 旧格式 8000MB → 7.81GiB → 标称 8G

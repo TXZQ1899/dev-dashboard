@@ -26,6 +26,9 @@ import {
   groups,
   summary,
   filterGroups,
+  codeupRepositoryLinks,
+  repositoryGroupStats,
+  buildGroupTree,
   matchesRepository,
   periodCommitCount,
   periodLabels,
@@ -119,19 +122,28 @@ export function RepositoryRows({ repos, period = '' }: { repos: Repository[]; pe
           <TableHead>全部提交数</TableHead>
           <TableHead>{periodLabels[period]}提交数</TableHead>
           <TableHead>最近代码提交时间</TableHead>
-          <TableHead>我的访问权限</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
-        {repos.map((r) => (
-          <TableRow key={r.id}>
+        {repos.map((r) => {
+          const codeup = codeupRepositoryLinks(r.url);
+          const localGitlab = r.source === 'local_gitlab' || r.url.includes('://gitlab.dev.thomascook.com.cn/');
+          return <TableRow key={r.id}>
             <TableCell>
-              <a className="repo-address" href={`/repositories/${r.id}`}>
-                <GitBranch size={15} />
-                <span>{r.url}</span>
-                <span className={`repo-source ${r.url.includes('://code.aliyun.com/') ? 'invalid' : r.source === 'local_gitlab' || r.url.includes('://gitlab.dev.thomascook.com.cn/') ? 'local-gitlab' : 'codeup'}`}>{r.url.includes('://code.aliyun.com/') ? '地址失效' : r.source === 'local_gitlab' || r.url.includes('://gitlab.dev.thomascook.com.cn/') ? 'Local GitLab' : '云效'}</span>
-                <ArrowUpRight size={14} />
-              </a>
+              <div className="repo-address-line">
+                <a className="repo-address" href={`/repositories/${r.id}`} title={r.url}>
+                  <GitBranch size={15} />
+                  <span>{codeup?.display || r.url}</span>
+                </a>
+                {codeup ? (
+                  <a className="repo-source-link" href={codeup.webUrl} target="_blank" rel="noopener noreferrer" aria-label={`在云效打开 ${codeup.display}（新窗口）`}>
+                    <span className="repo-source codeup">云效</span>
+                    <ArrowUpRight size={14} />
+                  </a>
+                ) : (
+                  <span className={`repo-source ${r.url.includes('://code.aliyun.com/') ? 'invalid' : localGitlab ? 'local-gitlab' : 'codeup'}`}>{r.url.includes('://code.aliyun.com/') ? '地址失效' : localGitlab ? 'Local GitLab' : '云效'}</span>
+                )}
+              </div>
               {r.possibleCodeupMatches?.map((candidate) => (
                 <a className="repo-candidate" key={candidate.id} href={candidate.url.replace(/\.git\/?$/, '')} target="_blank" rel="noopener noreferrer">
                   可能重命名：{candidate.groupName} / {candidate.name} ↗
@@ -161,11 +173,8 @@ export function RepositoryRows({ repos, period = '' }: { repos: Repository[]; pe
             <TableCell>{r.commits ?? '未采集'}</TableCell>
             <TableCell>{periodCommitCount(r,period) ?? '未采集'}</TableCell>
             <TableCell>{r.commitTimeStatus === 'empty' ? '无提交' : formatRepoTime(r.lastCommittedAt)}</TableCell>
-            <TableCell>
-              <AccessBadge value={r.access} />
-            </TableCell>
-          </TableRow>
-        ))}
+          </TableRow>;
+        })}
       </TableBody>
     </Table>
   );
@@ -197,7 +206,31 @@ export default function Repositories() {
           .toLowerCase()
           .includes(query.trim().toLowerCase())),
   );
-  const allOpen = shown.length > 0 && shown.every((g) => open[g.id]);
+  const tree = buildGroupTree(shown);
+  type TreeNode = (typeof tree)[number];
+  const allNodes: TreeNode[] = [];
+  function collect(nodes: TreeNode[]) { for (const node of nodes) { allNodes.push(node); collect(node.children); } }
+  collect(tree);
+  const visibleNodes: { node: TreeNode; depth: number; kind: 'group' | 'repositories' }[] = [];
+  function flatten(nodes: TreeNode[], depth: number) {
+    for (const node of nodes) {
+      visibleNodes.push({node, depth, kind: 'group'});
+      if (open[node.id]) {
+        flatten(node.children, depth + 1);
+        if (node.repos.length) visibleNodes.push({node, depth, kind: 'repositories'});
+      }
+    }
+  }
+  flatten(tree, 0);
+  function descendants(node: TreeNode): Repository[] {
+    const source = node.id.startsWith('local_gitlab:') ? 'local_gitlab' : 'codeup';
+    return groups.flatMap(g => g.repos.filter(r => {
+      const repoSource = r.source === 'local_gitlab' || r.groupId.startsWith('local-gitlab-') ? 'local_gitlab' : 'codeup';
+      const path = r.path || g.path + '/';
+      return repoSource === source && path.startsWith(node.path + '/');
+    }));
+  }
+  const allOpen = allNodes.length > 0 && allNodes.every((g) => open[g.id]);
   const exportRows=[...new Map([...shown.flatMap(g=>g.repos),...shownUnmatched].map(r=>[r.id,r])).values()];
   function exportFiltered() {
     const csv=repositoryCsv(exportRows,period,`搜索：${query||'全部'}；代码组筛选：${filter}；流水线：${pipeline||'全部'}；排序：${order}`);
@@ -330,7 +363,7 @@ export default function Repositories() {
             <Button
               variant="ghost"
               onClick={() =>
-                setOpen(Object.fromEntries(shown.map((g) => [g.id, !allOpen])))
+                setOpen(Object.fromEntries(allNodes.map((g) => [g.id, !allOpen])))
               }
               disabled={!shown.length}
             >
@@ -404,19 +437,28 @@ export default function Repositories() {
                   {isDailySnapshot ? 'DevOps 未使用' : '未关联（估算）'}
                 </TableHead>
                 <TableHead>平台关联占比</TableHead>
-                <TableHead>我可访问（已确认）</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {shown.map((g) => (
-                <Fragment key={g.id}>
+              {visibleNodes.map(({node, depth, kind}) => {
+                if (kind === 'repositories') return (
+                  <TableRow key={`${node.id}-repositories`}>
+                    <TableCell colSpan={5} className="repo-expanded">
+                      <RepositoryRows period={period} repos={node.repos} />
+                    </TableCell>
+                  </TableRow>
+                );
+                const allRepos = descendants(node);
+                const stats = repositoryGroupStats(allRepos, isDailySnapshot, node.group?.total ?? allRepos.length);
+                const g = { ...node, ...stats };
+                return <Fragment key={g.id}>
                   <TableRow className={open[g.id] ? 'repo-open' : ''}>
                     <TableCell>
                       <Button
+                        style={{ marginLeft: depth * 24 }}
                         className="repo-group-toggle"
                         variant="ghost"
                         aria-expanded={!!open[g.id]}
-                        aria-controls={`group-${g.id}`}
                         onClick={() =>
                           setOpen((s) => ({ ...s, [g.id]: !s[g.id] }))
                         }
@@ -430,10 +472,7 @@ export default function Repositories() {
                         </span>
                         <span>
                           <b>{g.name}</b>
-                          <small>
-                            {g.description ||
-                              g.path.split('/').slice(1).join('/')}
-                          </small>
+                          {g.description && g.group?.listed !== false && g.description !== 'Local GitLab 代码组' && <small>{g.description}</small>}
                         </span>
                       </Button>
                     </TableCell>
@@ -464,52 +503,12 @@ export default function Repositories() {
                         </span>
                       </div>
                     </TableCell>
-                    <TableCell>
-                      <b className="repo-green">{g.accessible}</b>
-                      <small className="repo-inline-note"> / {g.total}</small>
-                    </TableCell>
                   </TableRow>
-                  {open[g.id] && (
-                    <TableRow>
-                      <TableCell colSpan={6} className="repo-expanded">
-                        <div id={`group-${g.id}`}>
-                          <div className="repo-detail-note">
-                            <span>
-                              已收录 {g.repos.length} 个仓库 · 两边均有{' '}
-                              {g.linked} · DevOps 未使用 {g.unused} · 仅 DevOps{' '}
-                              {g.devopsOnly}
-                            </span>
-                            <span>
-                              {isDailySnapshot
-                                ? '按域名与完整仓库路径比对，不按库名猜测'
-                                : '历史快照仅保留已收录地址'}
-                            </span>
-                          </div>
-                          {g.repos.length ? (
-                            <RepositoryRows
-                              period={period}
-                              repos={g.repos.filter(
-                                (r) =>
-                                  (filter !== 'unused' ||
-                                    r.difference === 'codeup_only') &&
-                                  (filter !== 'devops_only' ||
-                                    r.difference === 'devops_only'),
-                              )}
-                            />
-                          ) : (
-                            <div className="repo-empty">
-                              尚未收录该组的仓库地址，不能据此判断无访问权限。
-                            </div>
-                          )}
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </Fragment>
-              ))}
+                </Fragment>;
+              })}
               {!shown.length && (
                 <TableRow>
-                  <TableCell colSpan={6}>
+                  <TableCell colSpan={5}>
                     <div className="repo-empty">
                       没有匹配的代码组。
                       <Button

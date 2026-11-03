@@ -68,6 +68,12 @@ Docker is the formal runtime boundary for Env-Scope.
 
 `environment-web` is built into a Docker image and started as a container. All production behavior must be designed with that runtime model in mind.
 
+### Required Docker context and data checks
+
+Use Docker context `lenovo` for all application builds and runtime operations. Always select it explicitly for Docker commands (for example, `docker --context lenovo ...`) so the result does not depend on the host's currently selected context.
+
+Perform all runtime data checks against the `envscope-local` container in the `lenovo` context. The container mounts a persistent local data volume, where daily snapshots and other persistent runtime data are stored. Inspect the mounted data through that container; do not substitute repository snapshot copies or assume data in the disposable container layer is persistent. Apply the existing targeted-reading rules when inspecting data.
+
 The container is responsible for:
 
 - Web UI
@@ -258,6 +264,10 @@ Do not mix environments in analysis unless the caller explicitly asks for all en
 Risk analysis should generally treat PRODUCT separately.
 
 Do not rename `SIMULATION` to UAT unless an explicit project decision or source contract says so.
+
+### 已确认下线的 JumpServer 资产
+
+用户于 2026-11-02 确认：JumpServer 快照版本 `20261102-094723-114269` 中 232 台 `cannot_login` 且进程 `not_collected` 的资产已经下线，只是尚未从 JumpServer 清单移除。部署单元梳理时将这批具体资产视为无效资产，不再逐项追问；资产 ID 清单位于数据卷 `checks/asset-scope/retired-20261102-094723-114269.json`，按资产 ID 而非仅按数量或 IP 识别。保留原始快照及采集状态，不推断确切下线时间，也不把此结论扩大到清单以外的新登录失败、提权失败或其他未知资产。若后续出现相反的新证据，应重新核实。
 
 ## 8. DNS Semantics
 

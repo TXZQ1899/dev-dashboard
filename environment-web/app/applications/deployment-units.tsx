@@ -15,6 +15,8 @@ import './deployment-units.css';
 
 const catalogEnvs: CatalogEnvironment[] = [...envs, 'UNIDENTIFIED'];
 const catalogLabels: Record<CatalogEnvironment, string> = { ...labels, UNIDENTIFIED: '待识别' };
+const categoryCacheKey = (includeHistory: boolean) => `deployment-catalog-categories:${includeHistory ? 'all' : 'present'}`;
+const categoryLabel = (category: string) => ({ APPLICATION: '应用', Elasticsearch: 'ES', Zookeeper: 'ZK' }[category] || category);
 
 async function readJson<T>(response: Response): Promise<T> {
   const body: unknown = await response.json();
@@ -49,13 +51,13 @@ function InstanceDetails({ unitId, environment, snapshotHash, includeHistory, on
   if (!rows.length) return <div className="catalog-message">此环境暂无可定位实例。未配置、未解析或尚未观察到的情况请结合环境状态查看。</div>;
   return <div className="catalog-instance-scroll"><Table className="catalog-instance-table">
     <TableHeader><TableRow>
-      <TableHead>服务器 IP</TableHead><TableHead>声明端口</TableHead>
+      <TableHead>服务器 IP / 服务地址</TableHead><TableHead>声明端口</TableHead>
       <TableHead>Git 分支</TableHead><TableHead>部署 ID / 配置 ID</TableHead>
       <TableHead>最后发布时间（Push In）</TableHead><TableHead>发布状态</TableHead>
     </TableRow></TableHeader>
     <TableBody>{rows.map((instance) => <TableRow key={instance.id}>
-      <TableCell>{instance.ip ? <a className="catalog-app-link" href={`/jumpserver?q=${encodeURIComponent(instance.ip)}&view=processes`}><code>{instance.ip}</code></a> : <code>未提供</code>}</TableCell>
-      <TableCell title={instance.attributes.portBasis === 'DOCKER_PUBLISHED' ? 'Docker 发布的宿主机 TCP 端口；服务监听容器端口' : instance.attributes.portBasis === 'LIVE_LISTENER' ? '核查时进程持有的 TCP 监听端口' : instance.attributes.portBasis === 'APPLICATION_DEFAULT' ? '沿用应用声明端口，未核验实际监听' : '部署记录中的声明端口，未核验实际监听'}>{instance.port || instance.attributes.observedEndpoints?.map((endpoint) => `${endpoint.ip}:${endpoint.port}/${endpoint.protocol}`).join(', ') || '未提供'}</TableCell>
+      <TableCell>{instance.attributes.componentRole === 'KIBANA' && <span>Kibana（配套服务） </span>}{instance.ip ? <a className="catalog-app-link" href={`/jumpserver?q=${encodeURIComponent(instance.ip)}&view=processes`}><code>{instance.ip}</code></a> : <code>{instance.attributes.serviceEndpoints?.map((endpoint) => endpoint.address).join(', ') || '未提供'}</code>}</TableCell>
+      <TableCell title={instance.attributes.portBasis === 'DMS_RECORD' ? 'DMS 登记的访问端口，未核验实际监听' : instance.attributes.portBasis === 'DOCKER_PUBLISHED' ? 'Docker 发布的宿主机 TCP 端口；服务监听容器端口' : instance.attributes.portBasis === 'LIVE_LISTENER' ? '核查时进程持有的 TCP 监听端口' : instance.attributes.portBasis === 'APPLICATION_DEFAULT' ? '沿用应用声明端口，未核验实际监听' : '部署记录中的声明端口，未核验实际监听'}>{instance.port || instance.attributes.observedEndpoints?.map((endpoint) => `${endpoint.ip}:${endpoint.port}/${endpoint.protocol}`).join(', ') || '未提供'}</TableCell>
       <TableCell title={instance.attributes.branchSource}>{instance.attributes.branch || '未提供'}</TableCell>
       <TableCell><code>{instance.attributes.deploy || '—'} / {instance.attributes.config || '—'}</code></TableCell>
       <TableCell title={instance.attributes.publishTimeSource}>{instance.attributes.lastPublishedAt || '无记录'}</TableCell>
@@ -66,6 +68,8 @@ function InstanceDetails({ unitId, environment, snapshotHash, includeHistory, on
 
 export default function DeploymentUnits() {
   const [query, setQuery] = useState('');
+  const [category, setCategory] = useState('APPLICATION');
+  const [categories, setCategories] = useState<string[]>([]);
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [includeHistory, setIncludeHistory] = useState(false);
@@ -75,7 +79,7 @@ export default function DeploymentUnits() {
   const [importing, setImporting] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const requestKey = JSON.stringify([search, page, includeHistory, refresh]);
+  const requestKey = JSON.stringify([search, page, includeHistory, category, refresh]);
   const loading = completedRequest !== requestKey;
   const reload = () => { setExpanded(null); setRefresh((n) => n + 1); };
 
@@ -84,16 +88,34 @@ export default function DeploymentUnits() {
     return () => window.clearTimeout(timer);
   }, [query]);
   useEffect(() => {
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (cancelled) return;
+      try {
+        const cached: unknown = JSON.parse(localStorage.getItem(categoryCacheKey(includeHistory)) || '[]');
+        setCategories(Array.isArray(cached) ? cached.filter((item): item is string => typeof item === 'string' && !!item) : []);
+      } catch { setCategories([]); }
+    });
+    return () => { cancelled = true; };
+  }, [includeHistory]);
+  useEffect(() => {
     const controller = new AbortController();
-    const params = new URLSearchParams({ q: search, page: String(page), presence: includeHistory ? 'all' : 'present' });
+    const params = new URLSearchParams({ q: search, page: String(page), presence: includeHistory ? 'all' : 'present', category });
     fetch(`/api/catalog/deployment-units?${params}`, { cache: 'no-store', signal: controller.signal })
       .then((response) => readJson<CatalogResult>(response)).then((body) => {
-        if (!controller.signal.aborted) { setResult(body); setError(''); }
+        if (!controller.signal.aborted) {
+          setCategories(body.categories);
+          try { localStorage.setItem(categoryCacheKey(includeHistory), JSON.stringify(body.categories)); } catch { /* Storage may be unavailable. */ }
+          if (body.categories.length && !body.categories.includes(category)) {
+            setCategory(body.categories[0]); setPage(1); setExpanded(null);
+          }
+          setResult(body); setError('');
+        }
       }).catch((err: unknown) => {
         if (!controller.signal.aborted) { setResult(null); setError(err instanceof Error ? err.message : '部署单元读取失败'); }
       }).finally(() => { if (!controller.signal.aborted) setCompletedRequest(requestKey); });
     return () => controller.abort();
-  }, [search, page, includeHistory, refresh, requestKey]);
+  }, [search, page, includeHistory, category, refresh, requestKey]);
   useEffect(() => {
     if (!result || !catalogNeedsPolling(result)) return;
     const timer = window.setTimeout(() => setRefresh((n) => n + 1), 3000);
@@ -118,10 +140,14 @@ export default function DeploymentUnits() {
       <div><h1><Layers3 size={19} />部署单元</h1><p>管理应用及基础组件的部署单元和部署实例。</p></div>
       <Button onClick={importCurrent} disabled={pending || historical}><RefreshCw size={15} className={pending ? 'catalog-spinning' : ''} />{pending ? '正在更新…' : '从当前快照创建 / 更新'}</Button>
     </div>
-    {result && <div className="catalog-summary">
-      <span>管理单元 <b>{result.summary.units}</b></span><span>当前来源可见 <b>{result.summary.presentUnits}</b></span>
-      <span>当前观察实例 <b>{result.summary.instances}</b></span><span>业务领域 / 系统 <b>待分类</b></span>
-    </div>}
+    <div className="catalog-tabs" role="tablist" aria-label="部署单元类型">
+      {categories.map((item) => <button key={item} type="button" role="tab" aria-selected={category === item} className={category === item ? 'active' : ''} onClick={() => { setCategory(item); setPage(1); setExpanded(null); }}>{categoryLabel(item)}</button>)}
+    </div>
+    <div className="catalog-summary" aria-label={`${categoryLabel(category)}汇总`}>
+      <span>部署单元个数 <b>{loading ? '—' : result?.categorySummary.units ?? '—'}</b></span>
+      {catalogEnvs.map((env) => <span key={env}>{catalogLabels[env]}{env === 'UNIDENTIFIED' ? '' : '环境'}实例数 / 服务器总数 <b>{loading || !result ? '—' : `${result.categorySummary.environments[env]?.instances || 0} / ${result.categorySummary.environments[env]?.servers || 0}`}</b></span>)}
+      <small>实例按当前观察统计；服务器按 IP 去重。汇总随搜索和历史单元筛选变化。</small>
+    </div>
     <div className="list-notice catalog-notice"><span>应用数据来自 DevOps 快照；组件来自进程及配置核查。环境待识别不表示任何正式环境。</span></div>
     {error && !loading && <div className="catalog-message catalog-error" role="alert">{error}<Button variant="outline" size="sm" onClick={reload}>重试读取</Button></div>}
     {result?.job.error && <div className="catalog-message catalog-error" role="alert">{result.job.error}</div>}
@@ -141,7 +167,7 @@ export default function DeploymentUnits() {
           <TableHead>业务领域 / 系统</TableHead>{catalogEnvs.map((env) => <TableHead key={env}>{catalogLabels[env]}</TableHead>)}
           <TableHead>来源状态</TableHead>
         </TableRow></TableHeader>
-        <TableBody>{result?.units.map((unit) => <Fragment key={unit.id}>
+        <TableBody>{!loading && result?.units.map((unit) => <Fragment key={unit.id}>
           <TableRow>
             <TableCell><strong>{unit.name}</strong><small className="catalog-code" title={unit.id}>{unit.code}</small>{unit.groupingState === 'PENDING' && <small className="catalog-warning">编组待确认</small>}</TableCell>
             <TableCell>{unit.appId ? <a className="catalog-app-link" href={`/applications?appId=${encodeURIComponent(unit.appId)}`}>{unit.appId}</a> : '无应用关联'}</TableCell>

@@ -432,9 +432,8 @@ export function ipServerState(ip: string): IpServerState {
 // 云服务器取 ECS 实例规格；无规格数据返回空串。
 export function ipSpecSummary(ip: string): string {
   const spec = specByIp.get(ip);
-  const collected = !!(spec && (spec.specsCollected ?? spec.cpu > 0));
-  if (spec && collected && spec.cpu > 0)
-    return `${spec.cpu}C ${nominalMemoryGiB(spec.memoryMB)}G`;
+  if (spec && spec.cpu > 0)
+    return spec.memoryMB > 0 ? `${spec.cpu}C ${nominalMemoryGiB(spec.memoryMB)}G` : `${spec.cpu}C 内存未采集`;
   const inst = ecsByIp.get(ip);
   if (inst && inst.cpu > 0) return `${inst.cpu}C ${inst.memoryGiB}G`;
   return '';

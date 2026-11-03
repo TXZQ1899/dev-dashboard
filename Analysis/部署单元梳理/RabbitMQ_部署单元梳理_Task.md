@@ -1,6 +1,6 @@
 # RabbitMQ 部署单元梳理 Task
 
-状态：待实施；先执行候选梳理和只读核查，确认结果后写入。共同规则见 [00-共同约束](00-共同约束.md)。本任务不表示已发现实际实例或集群。
+状态：本轮 11 个快照候选已核查并建档；覆盖限制见下文。共同规则见 [00-共同约束](00-共同约束.md)。
 
 ## 目标与输出
 
@@ -29,3 +29,68 @@
 
 - 执行共同约束中的通用测试；检查不同证据环节置信度独立、敏感信息遮盖、较旧及不完整观察不能误更新、预览与落库一致。
 - 验收时逐条核对单元名称、环境、节点、证据、未解析原因及排除原因；不可将无法证明的集群或独立部署写成确定结果。
+
+## 2026-11-02 候选初筛及首轮只读核查
+
+活动版本 `20261102-094723-114269` 的 JumpServer 快照采集时间为 09:47:57，DevOps 快照采集时间为 09:55:48（北京时间，后者声明 `complete=true`、`scope=all`）。440 台资产中，206 台进程采集完整、2 台部分采集、232 台无法登录且未采集进程；覆盖限制不能解释为这些资产没有 RabbitMQ。本次仅以命令包含 `beam.smp ... -s rabbit boot` 初筛，找到 11 个候选，分布在 11 台资产；epmd、启动器及其他辅助进程不计为实例，其他启动方式可能遗漏。每台资产的 `inspection.checkedAt` 和快照原始证据保留在该版本中。
+
+11 个 PID 在实时核查前后均保持同一进程启动计数；4 个宿主机候选通过 PID 直接观察到 TCP 5672、15672、25672 监听。其余 7 个的快照进程树指向 RabbitMQ 容器，实时复核容器运行状态、init PID、重启计数及进程网络空间，并在该网络空间观察到进程监听；宿主机发布配置仍需与当前映射单独复核，不能把容器监听当作宿主机直接监听。节点状态查询在各自服务账号下返回成功，以下为该时点返回的单节点视图，不单独证明明确独立部署：
+
+| 资产 | 快照 PID | 观察范围 | 节点 / 集群视图摘要 |
+|---|---:|---|---|
+| 10.179.1.224 | 5510 | 容器 | `rabbit@rabbitmq` |
+| 10.58.1.34 | 7738 | 容器 | `rabbit@my-rabbit`；集群名 `rabbit@AliDPRabbitMQ01` |
+| 10.179.2.10 | 6449 | 容器 | `rabbit@rabbitmq` |
+| 101.132.27.104 | 6184 | 容器 | `rabbit@f52b4669a409` |
+| 10.58.6.54 | 25409 | 宿主机 | `rabbit@aliprd32mq01` |
+| 10.179.4.130 | 1966 | 宿主机 | `rabbit@aliprddprabbitmq01`；集群名 `rabbit@AliDPRabbitMQ01` |
+| 10.58.10.92 | 9083 | 容器 | `rabbit@rabbitmq` |
+| 10.58.9.76 | 6866 | 容器 | `rabbit@my-rabbit`；集群名 `rabbit@AliDPRabbitMQ01` |
+| 10.179.2.143 | 2447 | 容器 | `rabbit@rabbitmq` |
+| 10.179.4.81 | 944 | 宿主机 | `rabbit@FAliFomallRabbitMQ01` |
+| 10.179.4.91 | 10005 | 宿主机 | `rabbit@FAliPaymentRabbit01` |
+
+相同节点名和集群名存在于不同资产，不能据此归并；尤其两个 `rabbit@my-rabbit` 与多个 `rabbit@rabbitmq` 需要分别核对节点地址及作用范围。状态输出只保存脱敏白名单行，不是完整成员响应；运行时配置、实际启动链、主机与容器端口映射、状态视图完整性及潜在不可达成员仍需补核。快照中的直接 PID 监听和现有应用匹配启发式在三个环境未返回应用候选，但对容器发布端口尚未完整评估，且启发式空结果不能证明无关联。进程身份、应用关联、端口归属及集群归属分别评估，当前均不足以提供可确认的导入预览；未创建单元。
+
+首轮证据位于持久卷 `checks/rabbitmq-review/initial-readonly.json`（规则 `rabbitmq-initial-readonly-v1`，SHA-256 `152ffa812225ea25fb2e01a46179408185848cd4111aa903d3cada2290beb97e`）及 `container-readonly.json`（规则 `rabbitmq-container-readonly-v1`，SHA-256 `ffdfe115b38506031bfd167580e97bbe1dcc41e299cdf6b141467bd52e2212d7`）；均未保存 cookie 值。检查时间约为北京时间 10:56–10:57，状态只反映该时刻，不代表持续健康或全量库存。
+
+## 2026-11-02 成员、发现配置与应用补核
+
+用户确认上述 232 台无法登录且未采集进程的资产已下线，只是尚未从 JumpServer 清单移除；本次梳理将这批具体资产排除，清单按资产 ID 固定在 `checks/asset-scope/retired-20261102-094723-114269.json`，SHA-256 `3002ec324dab519ec40b0b963d2059f15b683033924e1defed5fb27bba9e8d0a`。该确认不改变原采集状态；2 台部分采集资产及其他可能遗漏的启动方式仍属于覆盖限制。
+
+北京时间 11:05–11:06 在各节点服务账号下补查：11 个 RabbitMQ 的本地节点名、已知成员和运行中成员均返回单节点，查询前后进程启动计数一致。运行时 `cluster_nodes` 均为 `{[],disc}`，所查询的 `peer_discovery_backend` 值均为 `undefined`；这两个字段并不覆盖所有版本、插件或启动配置，不能据此断言没有其他发现机制或历史关系。7 个容器的实时 Docker 发布映射已获取，与先前快照映射相符；映射是 Docker 配置，仍与容器内进程直接监听分开记录。两个 `rabbit@my-rabbit` 和四个 `rabbit@rabbitmq` 的名称重复，节点名不能作为跨资产全局唯一键。
+
+将快照中的容器发布端口纳入现有三环境应用匹配，11 个候选均未命中；补查所有同 IP 的 DevOps 部署发现，`10.179.1.224`、`10.58.1.34`、`10.179.2.10`、`101.132.27.104` 和 `10.179.2.143` 均有端口缺失的同机应用记录，不能凭端口不匹配排除其归属。`10.58.6.54`、`10.179.4.130`、`10.58.10.92` 和 `10.58.9.76` 未发现同 IP 的 DevOps 部署；`10.179.4.81`、`10.179.4.91` 同机各有一个声明端口 28089 的应用。上述只是快照匹配范围，不证明完整应用归属。
+
+本次补查强化了各节点当前独立运行的证据，但尚未完成各版本有效发现配置、CLI 目标与服务进程身份的完整对应及端口缺失应用的归属排除，也未证明历史成员情况；因此这 11 个仍是待核实候选，不预分配序号或写入目录。成员报告 `checks/rabbitmq-review/membership-readonly.json` 的 SHA-256 为 `07aeb884b5c2c4894844028bc889bf2d616334a23dda8834be65b71d0e4bbb30`；运行时字段报告 `discovery-env-readonly.json` 的 SHA-256 为 `2b73cd7ef8c641e5e00343c21fe2de3bba5b0f4aa5c19245c914226762e9d64a`。前一轮的 `discovery-readonly.json` 查询的是嵌套字段，返回 `undefined` 不等于已确认有效配置为空。
+
+## 2026-11-02 当前版本复核及建档
+
+来源版本 `20261102-133150-818922` 复用的 JumpServer 快照采集于 09:47:57，DevOps 快照采集于 13:36:15（北京时间），两者并非同步。重新核验全部 11 个候选的进程、监听及当前所有已知成员和运行中成员；查询结果均只有本节点，`cluster_nodes` 返回 `{[],disc}`。通过管理节点 `os:getpid()` 与宿主机或容器内 `/proc` 启动计数核对，确认 CLI 查询对应目标进程。证据按规则 `rabbitmq-current-members-v1` 归档至 `checks/rabbitmq-review/evidence/f2e2cad0540d34139f7ffb19a2c49a7e5ad81d554582665d4ff96039b18f28cc.json`。
+
+| 部署单元 | 资产 | 节点 | 端口依据 |
+|---|---|---|---|
+| RabbitMQ_cluster_1 | 10.179.4.130 | `rabbit@aliprddprabbitmq01` | 宿主机通配监听 |
+| RabbitMQ_cluster_2 | 10.179.4.81 | `rabbit@FAliFomallRabbitMQ01` | 宿主机通配监听 |
+| RabbitMQ_cluster_3 | 10.179.4.91 | `rabbit@FAliPaymentRabbit01` | 宿主机通配监听 |
+| RabbitMQ_cluster_4 | 10.58.10.92 | `rabbit@rabbitmq` | Docker 发布 5672 |
+| RabbitMQ_cluster_5 | 10.58.6.54 | `rabbit@aliprd32mq01` | 宿主机通配监听 |
+| RabbitMQ_cluster_6 | 10.58.9.76 | `rabbit@my-rabbit` | Docker 发布 5672 |
+
+归组为 `INFERRED`，仅表示当前视图为单节点，历史成员和未来状态未知；环境均为 `UNIDENTIFIED`，覆盖为 `PARTIAL`。通配监听不冒充资产 IP 直接监听，实例声明端口留空；容器发布端口和容器内监听分开保留。重复导入已验证幂等。
+
+另外五个候选 `10.179.1.224`、`10.58.1.34`、`10.179.2.10`、`101.132.27.104`、`10.179.2.143` 因同机 DevOps 应用缺少端口而保留待核实；这些应用声明类型分别属于 node、h5、nginx_yum、node_backend 或 war8，但类型标签本身尚不足以排除部署管理关系。
+
+## 2026-11-02 用户确认与剩余单元建档
+
+用户明确确认：上述五个 RabbitMQ 容器均不属于对应主机上端口缺失的同机应用。确认按当前来源版本、五个资产 ID、环境、应用 ID 及声明类型固定，原始确认记录保存在 `checks/rabbitmq-review/user-app-scope-133150.json`；不扩大到其他资产、应用或端口冲突。结合此前完成的实时进程、监听、容器和成员核查，按 `rabbitmq-current-members-v2` 新增：
+
+| 部署单元 | 资产 | 节点 | 端口依据 |
+|---|---|---|---|
+| RabbitMQ_cluster_7 | 10.179.1.224 | `rabbit@rabbitmq` | Docker 发布 5672 |
+| RabbitMQ_cluster_8 | 10.179.2.10 | `rabbit@rabbitmq` | Docker 发布 5672 |
+| RabbitMQ_cluster_9 | 10.179.2.143 | `rabbit@rabbitmq` | Docker 发布 5672 |
+| RabbitMQ_cluster_10 | 10.58.1.34 | `rabbit@my-rabbit` | Docker 发布 5672 |
+| RabbitMQ_cluster_11 | 101.132.27.104 | `rabbit@f52b4669a409` | Docker 发布 5672 |
+
+本批组合证据（含用户确认）归档为 `checks/rabbitmq-review/evidence/611cd546c463091395bc10df350bbc2f450f15b2d55cde204bb4b2067710cd9f.json`。原 6 个单元保持 UUID 与序号，重复导入未产生重复记录。本次 11 个已发现候选均已建档，归组仍为 `INFERRED`、环境待识别；2 台进程部分采集和非本次匹配启动方式仍可能影响候选覆盖，当前单节点观察也不证明历史或未来成员情况。

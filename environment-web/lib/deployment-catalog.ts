@@ -41,6 +41,7 @@ export type CatalogInstance = {
   managementStatus: string;
   lastSeenAt: string | null;
   attributes: {
+    componentRole?: string;
     deploy?: string;
     config?: string;
     repository?: string;
@@ -48,6 +49,7 @@ export type CatalogInstance = {
     branchSource?: string;
     portBasis?: string;
     observedEndpoints?: { ip: string; port: number; protocol: string }[];
+    serviceEndpoints?: { host: string; port: number | null; address: string }[];
     lastPublishedAt?: string;
     publishStatus?: string;
     publishTimeSource?: string;
@@ -62,6 +64,8 @@ export type CatalogResult = {
   units: CatalogUnit[];
   pagination: { page: number; pageSize: number; total: number; totalPages: number };
   summary: { units: number; presentUnits: number; instances: number };
+  categories: string[];
+  categorySummary: { units: number; environments: Partial<Record<CatalogEnvironment, { instances: number; servers: number }>> };
 };
 
 export function isHistoricalCatalog(result: Pick<CatalogResult, 'source' | 'activeSnapshot'>): boolean {

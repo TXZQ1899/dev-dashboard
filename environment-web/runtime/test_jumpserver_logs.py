@@ -160,6 +160,28 @@ def single_inspection(configs):
 
 
 class JumpServerAssetTests(unittest.TestCase):
+    def test_specs_snapshots_keep_partial_data_and_limit_scope(self):
+        assets = [dict(SINGLE_ASSET_SNAPSHOT['assets'][0], ip='10.58.9.1'),
+                  dict(SINGLE_ASSET_SNAPSHOT['assets'][0], id='a2', ip='10.58.5.1')]
+        def inspect(rows, *args):
+            return {row['id']: {'checkedAt': 'now', 'loginStatus': 'can_login',
+                'specs': {'cpu': 4, 'memoryMB': 0, 'os': 'Linux', 'status': 'partial',
+                          'reason': 'missing_memory', 'cpuSource': 'nproc'},
+                'nginxConfigurations': []} for row in rows}, {}
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            with patch.object(collect, 'collect_servers', inspect):
+                jumpserver('cookie', folder, fetcher=make_fetcher(assets=assets))
+            rows = json.loads((folder / 'server-specs.json').read_text())['specs']
+            self.assertEqual(len(rows), 1)
+            self.assertEqual((rows[0]['assetId'], rows[0]['cpu'], rows[0]['specsStatus'], rows[0]['specsReason']),
+                             ('a1', 4, 'partial', 'missing_memory'))
+            self.assertFalse(rows[0]['specsCollected'])
+            with patch.object(collect, 'collect_servers', inspect):
+                collect.jumpserver_asset('cookie', folder, '', '', '', {}, 'a1', fetcher=make_fetcher())
+            row = json.loads((folder / 'server-specs.json').read_text())['specs'][0]
+            self.assertEqual((row['cpu'], row['checkedAt'], row['specsStatus']), (4, 'now', 'partial'))
+
     def test_single_asset_inspection_merges_into_copied_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)

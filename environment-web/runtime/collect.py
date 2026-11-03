@@ -17,7 +17,7 @@ from urllib.request import Request, build_opener
 import daily_collection as daily
 from export_devops import NoRedirect, ExportError, AuthenticationError, CollectionError
 from service import write, read
-from server_inventory import collect_servers, is_10_58
+from server_inventory import collect_servers, is_local_datacenter
 from aliyun_openapi import codeup_reference_status, collect_codeup_ak
 from aliyun_tenants import CLOUD_SOURCES, LEGACY_TENANT, normalize as normalize_tenants
 from tenant_collection import build_tasks, publish as publish_cloud
@@ -164,16 +164,20 @@ def jumpserver(cookie, folder, folidev_pw="", root_alt1="", root_alt2="", ip_map
         configs = inspection.pop('nginxConfigurations', [])
         specs = inspection.pop('specs', None)
         inspection.pop('elevationInfo', None)
-        if is_10_58(asset.get('ip', '')):
+        if is_local_datacenter(asset.get('ip', '')):
             specs_list.append({
                 'ip': asset.get('ip', ''),
                 'hostname': asset.get('hostname', ''),
                 'assetId': asset['id'],
                 'loginStatus': inspection.get('loginStatus', 'cannot_login'),
-                'specsCollected': bool(specs),
+                'specsCollected': bool(specs and specs['cpu'] > 0 and specs['memoryMB'] > 0),
+                'specsStatus': specs.get('status', 'complete') if specs else 'not_collected',
+                'specsReason': specs.get('reason', '') if specs else ('login_failed' if inspection.get('loginStatus') != 'can_login' else 'not_attempted'),
+                'cpuSource': specs.get('cpuSource', 'nproc') if specs else '',
+                'checkedAt': inspection.get('checkedAt'),
                 'cpu': specs['cpu'] if specs else 0,
                 'memoryMB': specs['memoryMB'] if specs else 0,
-                'os': specs['os'] if specs else (asset.get('os') or '未采集'),
+                'os': (specs.get('os') or asset.get('os') or '未采集') if specs else (asset.get('os') or '未采集'),
             })
         inspection['configurationCount'] = len(configs)
         inspection['configurationVersion'] = folder.name
@@ -184,7 +188,7 @@ def jumpserver(cookie, folder, folidev_pw="", root_alt1="", root_alt2="", ip_map
     daily.save_json(folder / 'server-specs.json',
                     {'collectedAt': daily.now(), 'available': True, 'specs': specs_list})
     collected_count = sum(1 for s in specs_list if s.get('specsCollected'))
-    print(f"JumpServer 规格采集：10.58 网段 {len(specs_list)} 台，其中已采集规格 {collected_count} 台", flush=True)
+    print(f"JumpServer 规格采集：本地机房四网段 {len(specs_list)} 台，其中已采集规格 {collected_count} 台", flush=True)
     summary = {
         'can_login': sum(1 for i in inspections.values() if i.get('loginStatus') == 'can_login'),
         'cannot_login': sum(1 for i in inspections.values() if i.get('loginStatus') != 'can_login'),
@@ -234,16 +238,20 @@ def jumpserver_asset(cookie, folder, folidev_pw, root_alt1, root_alt2, ip_map, a
     # Update the specs snapshot for this single asset.
     specs_snapshot = read(folder / 'server-specs.json', {'collectedAt': daily.now(), 'available': True, 'specs': []})
     specs_rows = [s for s in specs_snapshot.get('specs', []) if s.get('assetId') != asset_id]
-    if is_10_58(asset.get('ip', '')):
+    if is_local_datacenter(asset.get('ip', '')):
         specs_rows.append({
             'ip': asset.get('ip', ''),
             'hostname': asset.get('hostname', ''),
             'assetId': asset_id,
             'loginStatus': inspection.get('loginStatus', 'cannot_login'),
-            'specsCollected': bool(specs),
+            'specsCollected': bool(specs and specs['cpu'] > 0 and specs['memoryMB'] > 0),
+            'specsStatus': specs.get('status', 'complete') if specs else 'not_collected',
+            'specsReason': specs.get('reason', '') if specs else ('login_failed' if inspection.get('loginStatus') != 'can_login' else 'not_attempted'),
+            'cpuSource': specs.get('cpuSource', 'nproc') if specs else '',
+            'checkedAt': inspection.get('checkedAt'),
             'cpu': specs['cpu'] if specs else 0,
             'memoryMB': specs['memoryMB'] if specs else 0,
-            'os': specs['os'] if specs else (asset.get('os') or '未采集'),
+            'os': (specs.get('os') or asset.get('os') or '未采集') if specs else (asset.get('os') or '未采集'),
         })
     specs_snapshot['specs'] = specs_rows
     specs_snapshot['available'] = True
@@ -472,9 +480,12 @@ def main():
             for group in codeup['groups']:
                 group_id = str(group['id'])
                 target = next((g for g in groups if g['id'] == group_id), None)
-                if not target: groups.append({'id':group_id,'name':group['group_name'],'description':group['chinese_name'],'path':group['full_path'],'total':group['repository_count'],'listed':True})
+                updated = {'id':group_id,'name':group['group_name'],'description':group['chinese_name'],'path':group['full_path'],'total':group['repository_count'],'listed':True}
+                if target: target.update(updated)
+                else: groups.append(updated)
             for repo in codeup['repos']:
-                group_id = next((g['id'] for g in groups if repo['path'].startswith(g['path'] + '/')), '')
+                matches = [g for g in groups if repo['path'].startswith(g['path'] + '/') and not g['id'].startswith('local-gitlab-')]
+                group_id = max(matches, key=lambda g: len(g['path']))['id'] if matches else ''
                 repos[repo['url']] = {**repo, 'id': hashlib.sha256(repo['url'].encode()).hexdigest()[:20], 'groupId':group_id, 'access':'是', 'reason':'当前账号可访问 Codeup 项目列表返回', 'match':'完整仓库地址匹配', 'apps':repos.get(repo['url'],{}).get('apps',[]), 'source':'codeup', 'inCodeup':True, 'difference':repos.get(repo['url'],{}).get('difference','codeup_only')}
             by_name={}
             for candidate in codeup['repos']: by_name.setdefault(candidate['name'].lower(), []).append(candidate)

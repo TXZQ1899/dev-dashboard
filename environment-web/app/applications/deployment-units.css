@@ -22,3 +22,9 @@
 .catalog-spinning { animation: catalog-spin 1.5s linear infinite; }
 @keyframes catalog-spin { to { transform: rotate(360deg); } }
 @media (max-width: 800px) { .catalog-heading { align-items: flex-start; flex-direction: column; } .catalog-summary { gap: 12px 20px; } }
+
+.catalog-tabs { display: flex; gap: 4px; overflow-x: auto; border-bottom: 1px solid var(--border); }
+.catalog-tabs button { flex: none; padding: 10px 15px; color: #708477; font-size: 13px; border-bottom: 2px solid transparent; }
+.catalog-tabs button.active { color: #315d43; border-bottom-color: #397458; font-weight: 650; }
+.catalog-tabs button:focus-visible { outline: 2px solid #397458; outline-offset: -2px; }
+.catalog-summary small { flex-basis: 100%; color: #889a8d; }

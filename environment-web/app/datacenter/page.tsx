@@ -36,8 +36,8 @@ function isCollected(r: LocalServer) {
 }
 
 function specSummary(r: LocalServer): string {
-  if (!isCollected(r) || !r.cpu) return '—';
-  return `${r.cpu}C ${r.memoryGiB}G`;
+  if (!r.cpu) return '—';
+  return r.memoryMB > 0 ? `${r.cpu}C ${r.memoryGiB}G` : `${r.cpu}C 内存未采集`;
 }
 
 function csvCell(value: string): string {
@@ -97,7 +97,7 @@ function Metrics({ rows }: { rows: LocalServer[] }) {
           {s.cpu.toLocaleString('zh-CN')}
           <small>vCPU</small>
         </strong>
-        <p>已采集规格的配置核数合计</p>
+        <p>已采集 CPU 核数合计</p>
       </section>
       <section className="panel dc-metric">
         <span>
@@ -148,7 +148,7 @@ export default function DatacenterPage() {
             <div>
               <h2>本地机房服务器清单</h2>
               <p>
-                按部署应用数排序 · 已采集规格的显示 CPU/内存/OS，未采集的以灰色标注
+                按部署应用数排序 · CPU 和内存分别展示已采集数值，两项不全的以灰色标注
               </p>
             </div>
             <Button
@@ -199,16 +199,16 @@ export default function DatacenterPage() {
                     <TableCell className="dc-ip">{r.ip}</TableCell>
                     <TableCell className="dc-host">{r.hostname}</TableCell>
                     <TableCell>
-                      {uncollected ? '—' : `${r.cpu} vCPU`}
+                      {r.cpu > 0 ? `${r.cpu} vCPU` : '—'}
                     </TableCell>
                     <TableCell
                       title={
-                        uncollected
+                        r.memoryMB <= 0
                           ? undefined
                           : `原始 MemTotal ${r.memoryMB} MB`
                       }
                     >
-                      {uncollected ? '—' : `${r.memoryGiB} GiB`}
+                      {r.memoryMB > 0 ? `${r.memoryGiB} GiB` : '—'}
                     </TableCell>
                     <TableCell className="dc-os">{r.os}</TableCell>
                     <TableCell>
