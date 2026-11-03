@@ -483,7 +483,7 @@ class Catalog:
             'observedAt': iso(head['observed_at']), 'importedAt': iso(head['imported_at']),
             'counts': decode(head['counts_json'], {})}
         if unit_id:
-            unit = self.execute(conn, 'SELECT u.id FROM deployment_unit u JOIN deployment_unit_source s ON s.unit_id=u.id WHERE u.id=%s AND s.source_instance_key IN (%s,%s,%s,%s,%s,%s)', (unit_id, self.source_key, self.source_key + ':zookeeper', self.source_key + ':nacos', self.source_key + ':nginx', self.source_key + ':kong', self.source_key + ':redis'))
+            unit = self.execute(conn, 'SELECT u.id FROM deployment_unit u JOIN deployment_unit_source s ON s.unit_id=u.id WHERE u.id=%s AND s.source_instance_key IN (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)', (unit_id, self.source_key, self.source_key + ':zookeeper', self.source_key + ':nacos', self.source_key + ':nginx', self.source_key + ':kong', self.source_key + ':redis', self.source_key + ':elasticsearch', self.source_key + ':rabbitmq', self.source_key + ':canal', self.source_key + ':kafka'))
             if not unit:
                 raise CatalogInputError('部署单元不存在')
             sql = 'SELECT i.*,e.environment,o.source_attributes_json AS attributes FROM deployment_instance i JOIN deployment_unit_environment e ON e.id=i.unit_environment_id LEFT JOIN catalog_observation o ON o.id=i.current_observation_id WHERE e.unit_id=%s'
@@ -498,7 +498,7 @@ class Catalog:
                 'ip': r['primary_ip'], 'port': r['declared_port_raw'], 'identityQuality': r['identity_quality'],
                 'presenceStatus': r['presence_status'], 'managementStatus': r['management_status'],
                 'lastSeenAt': iso(r['last_seen_at']), 'attributes': decode(r['attributes'], {})} for r in rows]}
-        where, args = 's.source_instance_key IN (%s,%s,%s,%s,%s,%s)', [self.source_key, self.source_key + ':zookeeper', self.source_key + ':nacos', self.source_key + ':nginx', self.source_key + ':kong', self.source_key + ':redis']
+        where, args = 's.source_instance_key IN (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)', [self.source_key, self.source_key + ':zookeeper', self.source_key + ':nacos', self.source_key + ':nginx', self.source_key + ':kong', self.source_key + ':redis', self.source_key + ':elasticsearch', self.source_key + ':rabbitmq', self.source_key + ':canal', self.source_key + ':kafka']
         if presence == 'present':
             where += " AND s.presence_status='PRESENT'"
         if query:
@@ -524,7 +524,7 @@ class Catalog:
                 'environments': [{'environment': e['environment'], 'configurationState': e['configuration_state'],
                     'coverageState': e['coverage_state'], 'instanceCount': e['instance_count'], 'serverCount': e['server_count'],
                     'unresolvedCount': decode(e['attributes'], {}).get('unresolvedCount', 0)} for e in environments]})
-        summary = self.execute(conn, "SELECT COUNT(*) AS units,SUM(presence_status='PRESENT') AS present_units FROM deployment_unit_source WHERE source_instance_key IN (%s,%s,%s,%s,%s,%s)", (self.source_key, self.source_key + ':zookeeper', self.source_key + ':nacos', self.source_key + ':nginx', self.source_key + ':kong', self.source_key + ':redis'))[0]
-        instance_count = self.execute(conn, "SELECT COUNT(*) AS n FROM deployment_instance i JOIN deployment_unit_environment e ON e.id=i.unit_environment_id JOIN deployment_unit_source s ON s.unit_id=e.unit_id WHERE s.source_instance_key IN (%s,%s,%s,%s,%s,%s) AND i.presence_status='PRESENT'", (self.source_key, self.source_key + ':zookeeper', self.source_key + ':nacos', self.source_key + ':nginx', self.source_key + ':kong', self.source_key + ':redis'))[0]['n']
+        summary = self.execute(conn, "SELECT COUNT(*) AS units,SUM(presence_status='PRESENT') AS present_units FROM deployment_unit_source WHERE source_instance_key IN (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", (self.source_key, self.source_key + ':zookeeper', self.source_key + ':nacos', self.source_key + ':nginx', self.source_key + ':kong', self.source_key + ':redis', self.source_key + ':elasticsearch', self.source_key + ':rabbitmq', self.source_key + ':canal', self.source_key + ':kafka'))[0]
+        instance_count = self.execute(conn, "SELECT COUNT(*) AS n FROM deployment_instance i JOIN deployment_unit_environment e ON e.id=i.unit_environment_id JOIN deployment_unit_source s ON s.unit_id=e.unit_id WHERE s.source_instance_key IN (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) AND i.presence_status='PRESENT'", (self.source_key, self.source_key + ':zookeeper', self.source_key + ':nacos', self.source_key + ':nginx', self.source_key + ':kong', self.source_key + ':redis', self.source_key + ':elasticsearch', self.source_key + ':rabbitmq', self.source_key + ':canal', self.source_key + ':kafka'))[0]['n']
         return {'source': source, 'units': units, 'pagination': {'page': page, 'pageSize': page_size, 'total': total, 'totalPages': pages},
                 'summary': {'units': summary['units'], 'presentUnits': int(summary['present_units'] or 0), 'instances': instance_count}}

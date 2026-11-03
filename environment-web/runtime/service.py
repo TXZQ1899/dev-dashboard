@@ -1041,8 +1041,8 @@ class Service:
                 if schedule['enabled']:
                     tenancy.select(saved)
                     tenancy.select(saved, 'codeup')
-                    if any(not saved.get(k,{}).get('value') for k in ('devops','jumpserver','local_gitlab')):
-                        raise ValueError('启用每日同步前，请配置四个平台所需的 Cookie / AccessKey')
+                    if any(not saved.get(k,{}).get('value') for k in ('devops','jumpserver')):
+                        raise ValueError('启用每日同步前，请配置 DevOps 和 JumpServer Cookie')
             write(DATA/'secrets/cookies.json',saved)
             alerts=read(DATA/'cookie-alerts.json',{})
             for key,value in payload.get('cookies',{}).items():
@@ -1320,9 +1320,9 @@ class Service:
                 aliyun_hint = ('请先保存阿里云 AccessKey ID 和 Secret' if aliyun_mode(saved) == 'accesskey'
                                else '请先保存阿里云 Cookie')
                 if kind == 'sync':
-                    missing_other = any(not saved.get(k,{}).get('value') for k in ('devops','jumpserver','local_gitlab'))
+                    missing_other = any(not saved.get(k,{}).get('value') for k in ('devops','jumpserver'))
                     if missing_other or not aliyun_ok:
-                        raise ValueError('请先保存四个平台的 Cookie' if missing_other else aliyun_hint)
+                        raise ValueError('请先保存 DevOps 和 JumpServer Cookie' if missing_other else aliyun_hint)
                     tenancy.select(saved)
                     tenancy.select(saved, 'codeup')
                 elif kind in ('ecs','clb','nat','dms','cloud-dns','codeup','aliyun'):
@@ -1361,7 +1361,7 @@ class Service:
                     selected = tenancy.select(frozen, None if kind in ('sync', 'aliyun') else kind, tenant_id)
                     report = read(folder/'version.json')
                     report['cloudPlan'] = [{'tenantId':t['id'],'tenantName':t['name'],'accountId':t.get('accountId',''),'regions':t['regions'],
-                                            'sources':list(tenancy.CLOUD_SOURCES) if kind in ('sync', 'aliyun') else [kind],
+                                            'sources':tenancy.sources_for(t) if kind in ('sync', 'aliyun') else [kind],
                                             'credentialVersion':t.get('credentialVersion')} for t in selected]
                     write(folder/'version.json', report)
             else: self.version(identifier)
@@ -1399,7 +1399,8 @@ class Service:
                         (folder/'base').mkdir(exist_ok=True)
                         for source in (tenancy.CLOUD_SOURCES if kind == 'aliyun' else (kind,)):
                             shutil.copyfile(folder/f'{source}-snapshot.json', folder/'base'/f'{source}-snapshot.json')
-                            (folder/f'{source}-snapshot.json').unlink()
+                            if source != 'cloud-dns' or kind != 'aliyun':
+                                (folder/f'{source}-snapshot.json').unlink()
                     with tempfile.TemporaryDirectory(prefix='envscope-input-') as tmp:
                         creds=Path(tmp)/'credentials.json'
                         creds_data=deepcopy(frozen) if frozen is not None else credentials(); creds_data.setdefault('_ipPasswordMap',read(DATA/'secrets/ip-password-map.json',{}))
@@ -1431,6 +1432,7 @@ class Service:
                 else:
                     previous = read(current_folder/'ecs-snapshot.json')
                     write(folder/'ecs-projects.json', {'projects':previous['projects'],'note':'项目名称目录沿用前版；ECS 实例及项目 ID 本次实时采集'})
+                    write(folder/'cloud-dns-snapshot.json', read(current_folder/'cloud-dns-snapshot.json', EMPTY_DNS))
                     with tempfile.TemporaryDirectory(prefix='envscope-input-') as tmp:
                         creds=Path(tmp)/'credentials.json'
                         with self.lock:

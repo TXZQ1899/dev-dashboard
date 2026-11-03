@@ -5,7 +5,9 @@ export LC_ALL=C
 pid=$1; expected=$2
 ticks() { sed 's/^.*) //' "/proc/$pid/stat" 2>/dev/null | awk '{print $20}'; }
 [[ "$pid" =~ ^[1-9][0-9]*$ && -n "$expected" && "$(ticks)" == "$expected" ]] || exit 3
-mapfile -d '' -t argv < "/proc/$pid/cmdline" || exit 4
+[[ -r "/proc/$pid/cmdline" ]] || exit 4
+argv=()
+while IFS= read -r -d '' arg; do argv+=("$arg"); done < "/proc/$pid/cmdline"
 archive=''
 for ((i=0; i<${#argv[@]}; i++)); do
   if [[ ${argv[i]} == -jar && $((i+1)) -lt ${#argv[@]} ]]; then archive=${argv[i+1]}; break; fi

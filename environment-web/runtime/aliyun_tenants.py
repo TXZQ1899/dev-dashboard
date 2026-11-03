@@ -8,6 +8,10 @@ LEGACY_TENANT = 'legacy-aliyun'
 CLOUD_SOURCES = ('ecs', 'clb', 'nat', 'dms', 'cloud-dns')
 
 
+def sources_for(tenant):
+    return [source for source in CLOUD_SOURCES if source != 'cloud-dns' or tenant['auth']['mode'] != 'cookie']
+
+
 def stamp():
     return datetime.now(timezone.utc).isoformat()
 
@@ -137,13 +141,13 @@ def update(saved, patches, verifier=None):
             tenant['regions'] = list(dict.fromkeys(regions))
         if 'mode' in patch:
             mode = patch['mode']
-            if mode not in ('cookie', 'accesskey') or (tenant['id'] != LEGACY_TENANT and mode != 'accesskey'):
-                raise ValueError('只有 Codeup 绑定租户支持 Cookie 兼容方式')
+            if mode not in ('cookie', 'accesskey'):
+                raise ValueError('无效的阿里云采集方式')
             tenant['auth']['mode'] = mode
         if 'cookie' in patch:
             cookie = patch['cookie']
-            if tenant['id'] != LEGACY_TENANT or not isinstance(cookie, str):
-                raise ValueError('只有 Codeup 绑定租户支持阿里云 Cookie')
+            if not isinstance(cookie, str):
+                raise ValueError('无效的阿里云 Cookie')
             cookie = cookie.strip()
             if cookie.lower().startswith('cookie:'): cookie = cookie.split(':', 1)[1].strip()
             if cookie:

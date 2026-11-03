@@ -16,7 +16,7 @@ export function SettingsLink() {
         if (!response.ok) return;
         const data = (await response.json()) as { current?: { id: string }; cookies?: Record<string, { alert?: { message: string } }> };
         if (stopped) return;
-        setAlerts(Object.values(data.cookies || {}).flatMap(c => c.alert ? [c.alert.message] : []));
+        setAlerts(Object.entries(data.cookies || {}).flatMap(([key, c]) => key !== 'local_gitlab' && c.alert ? [c.alert.message] : []));
         const current = data.current?.id;
         if (!current) return;
         if (previous.current && previous.current !== current) {

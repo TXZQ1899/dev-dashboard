@@ -1191,17 +1191,21 @@ def inspect_application(asset, selected, apps, assets, saved, ip_map, environmen
             remote, sudo = terminal_opener(peer_asset, saved, ip_map)
             result['sudoStatus'] = sudo
             sampled = False
+            peer_batches = 0
             # Even a peer discovered in the last target batch gets a query.
             # Late evidence still has to pass the original lifetime checks.
             while not cancel.is_set() and (not sampled or not done.is_set()):
                 with lock:
                     pending = list(requests[peer_asset['id']].values())[:100]
-                # Same-host client IP cannot distinguish this JVM from every
-                # other local application; retain the precise query scope.
-                selector = reverse_filter(pending) if peer_asset['id'] == asset['id'] else peer_sampling_filter(pending)
+                # Query known full tuples first so unrelated connections cannot
+                # consume the 400-row budget. Alternate broad discovery to
+                # retain observations of short connections discovered later.
+                precise = peer_asset['id'] == asset['id'] or peer_batches % 2 == 0
+                selector = reverse_filter(pending) if precise else peer_sampling_filter(pending)
                 notify('正在等待对端连接采样返回', 'sampling')
                 batch = sample_probe(remote, 'peer', selector)
                 sampled = True
+                peer_batches += 1
                 result['warnings'] = list(dict.fromkeys(result['warnings']+batch['warnings']))
                 with lock:
                     for sample in observation_frames(batch):

@@ -48,7 +48,7 @@ npm run dev
 
 ## 更新快照
 
-在 `http://localhost:3001/settings` 点击同步（或配置每日定时）。同步在容器内采集 DevOps、Codeup、Local GitLab、JumpServer、上海 ECS、CLB 与 NAT，完整并校验通过后原子启用新版本；快照仅保留展示必需字段，不保存 Cookie 或仓库 URL。
+在 `http://localhost:3001/settings` 点击同步（或配置每日定时）。同步在容器内采集 DevOps、Codeup、JumpServer 及启用租户的云资源，完整并校验通过后原子启用新版本。Local GitLab 不参与一键及每日同步。
 
 ## 统计口径
 

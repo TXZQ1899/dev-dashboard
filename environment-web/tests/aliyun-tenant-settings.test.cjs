@@ -45,55 +45,37 @@ const legacy = { id: 'legacy-aliyun', name: '绑定租户', accountId: '1001', e
 const other = { ...legacy, id: 'tenant-b', name: '其他租户', credentialVersion: 'revision-b',
   codeup: false, codeupOrganizationId: undefined };
 
-test('bound tenant editor retains Codeup settings while blank AccessKey fields preserve credentials', async () => {
+test('bound tenant saves Cookie mode and retains Codeup settings', async () => {
   const view = editor([legacy]);
   view.button('管理租户').props.onClick();
-  assert.equal(view.field('tenant-mode').props.value, 'accesskey');
-  assert.equal(view.field('tenant-key').props.value, '');
-  assert.equal(view.field('tenant-secret').props.type, 'password');
-  assert.equal(view.field('tenant-codeup-organization').props.value, 'existing-org');
+  for (const id of ['tenant-mode', 'tenant-key', 'tenant-secret']) assert.equal(view.field(id), undefined);
+  assert.equal(view.field('tenant-cookie').props.type, 'password');
+  assert.equal(view.button('保存并验证账号'), undefined);
+  view.field('tenant-cookie').props.onChange({ target: { value: 'session=new' } });
   view.field('tenant-codeup-organization').props.onChange({ target: { value: 'updated-org' } });
   view.button('保存租户').props.onClick();
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(Object.keys(view.saved[0]), ['aliyunTenants']);
   const patch = view.saved[0].aliyunTenants[0];
+  assert.equal(patch.mode, 'cookie');
+  assert.equal(patch.cookie, 'session=new');
   assert.equal(patch.codeupOrganizationId, 'updated-org');
-  assert.equal(patch.mode, 'accesskey');
-  assert.equal(patch.accessKeyId, '');
-  assert.equal(patch.accessKeySecret, '');
   assert.equal(patch.credentialVersion, 'revision-a');
+  assert.equal('accessKeyId' in patch, false);
+  assert.equal('accessKeySecret' in patch, false);
 });
 
-test('Cookie compatibility is editable inside the bound tenant without displaying AccessKey inputs', async () => {
-  const view = editor([{ ...legacy, mode: 'cookie' }]);
-  view.button('管理租户').props.onClick();
-  assert.equal(view.field('tenant-cookie').props.type, 'password');
-  assert.equal(view.field('tenant-key'), undefined);
-  assert.equal(view.button('保存并验证账号'), undefined);
-  view.field('tenant-cookie').props.onChange({ target: { value: 'session=new' } });
-  view.button('保存租户').props.onClick();
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(view.saved[0].aliyunTenants[0].cookie, 'session=new');
-  assert.equal(view.saved[0].aliyunTenants[0].codeupOrganizationId, 'existing-org');
-});
-
-test('other tenants do not display or submit bound-tenant compatibility settings', async () => {
+test('other tenants save their own Cookie without Codeup or AccessKey fields', async () => {
   const view = editor([other]);
+  assert.equal(view.button('新增阿里云租户'), undefined);
   view.button('管理租户').props.onClick();
-  for (const id of ['tenant-mode', 'tenant-cookie', 'tenant-codeup-organization'])
+  for (const id of ['tenant-mode', 'tenant-key', 'tenant-secret', 'tenant-codeup-organization'])
     assert.equal(view.field(id), undefined);
-  assert.ok(view.field('tenant-key'));
+  view.field('tenant-cookie').props.onChange({ target: { value: 'session=other' } });
   view.button('保存租户').props.onClick();
   await new Promise(resolve => setImmediate(resolve));
   const patch = view.saved[0].aliyunTenants[0];
-  for (const key of ['mode', 'cookie', 'codeupOrganizationId']) assert.equal(key in patch, false);
-});
-
-test('new tenants default to AccessKey and keep their own credential fields', () => {
-  const view = editor([legacy]);
-  view.button('新增阿里云租户').props.onClick();
-  assert.ok(view.field('tenant-key'));
-  assert.ok(view.field('tenant-secret'));
-  assert.equal(view.field('tenant-mode'), undefined);
-  assert.equal(view.field('tenant-codeup-organization'), undefined);
+  assert.equal(patch.mode, 'cookie');
+  assert.equal(patch.cookie, 'session=other');
+  for (const key of ['accessKeyId', 'accessKeySecret', 'codeupOrganizationId'])
+    assert.equal(key in patch, false);
 });

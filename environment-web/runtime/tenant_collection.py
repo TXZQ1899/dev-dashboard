@@ -7,7 +7,7 @@ from export_nat import collect as collect_nat, normalize_nat
 from export_dms import collect as collect_dms
 from aliyun_openapi import RpcClient, collect_ecs_ak, collect_clb_ak, collect_nat_ak, collect_dms_ak
 from cloud_dns import collect_dns_ak
-from aliyun_tenants import CLOUD_SOURCES, LEGACY_TENANT, select, verify, resource_key
+from aliyun_tenants import CLOUD_SOURCES, LEGACY_TENANT, select, verify, resource_key, sources_for
 from export_devops import AuthenticationError, ExportError
 
 
@@ -115,7 +115,7 @@ def build_tasks(saved, folder, source=None, tenant_id=None):
             verify(tenant)
         except Exception as exc:
             raise tenant_error(exc, tenant, source or 'ecs') from None
-        for kind in ((source,) if source else CLOUD_SOURCES):
+        for kind in ((source,) if source else sources_for(tenant)):
             for region in ([''] if kind in ('dms', 'cloud-dns') else tenant['regions']):
                 key = task_key(tenant['id'], kind, region)
                 contexts[key] = {'tenantId': tenant['id'], 'tenantName': tenant['name'],
@@ -169,7 +169,8 @@ def publish(results, contexts, selected, folder, write, read, replace_all=False)
         slices = [results[key] for key, context in contexts.items() if context['source'].lower() == source]
         for snapshot in slices:
             for scope in snapshot['tenants']: scope['sourceVersion'] = folder.name
-        write(path, merge_snapshots(read(path, read(folder/'base'/path.name, {})), slices, source, replace_all,
-                                   [t['id'] for t in selected]))
+        collected_ids = {context['tenantId'] for context in contexts.values() if context['source'].lower() == source}
+        write(path, merge_snapshots(read(path, read(folder/'base'/path.name, {})), slices, source,
+                                   replace_all and source != 'cloud-dns', collected_ids))
 
 

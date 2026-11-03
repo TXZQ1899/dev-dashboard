@@ -76,7 +76,7 @@ p {
   min-height: 100vh;
 }
 .sidebar {
-  width: 222px;
+  width: 240px;
   position: fixed;
   inset: 0 auto 0 0;
   background: #fff;
@@ -88,27 +88,28 @@ p {
 }
 .brand {
   display: flex;
-  gap: 11px;
+  gap: 12px;
   align-items: center;
-  padding: 0 10px;
-  font-size: 22px;
+  padding: 0 6px;
+  font-size: 16px;
+  line-height: 1.25;
   font-weight: 700;
-  letter-spacing: -0.5px;
+  letter-spacing: -0.4px;
 }
 .brand-icon {
   background: #23785e;
   color: white;
-  border-radius: 10px;
-  padding: 9px;
+  border-radius: 11px;
+  padding: 10px;
   display: flex;
 }
 .brand small {
   display: block;
   font-size: 11px;
   font-weight: 400;
-  letter-spacing: 2px;
+  letter-spacing: 1.6px;
   color: #84928d;
-  margin-top: 5px;
+  margin-top: 4px;
 }
 .nav-label {
   font-size: 10px;
@@ -159,8 +160,8 @@ nav a:hover {
   color: #5b7465;
 }
 .workspace {
-  margin-left: 222px;
-  width: calc(100% - 222px);
+  margin-left: 240px;
+  width: calc(100% - 240px);
 }
 .topbar {
   height: 72px;
@@ -560,13 +561,21 @@ h2 {
 }
 @media (max-width: 1150px) {
   .sidebar {
-    width: 190px;
+    width: 210px;
     padding-left: 12px;
     padding-right: 12px;
   }
   .workspace {
-    margin-left: 190px;
-    width: calc(100% - 190px);
+    margin-left: 210px;
+    width: calc(100% - 210px);
+  }
+  .brand {
+    gap: 10px;
+    padding: 0 5px;
+    font-size: 15px;
+  }
+  .brand-icon {
+    padding: 8px;
   }
   main {
     padding: 25px 22px;

@@ -104,7 +104,8 @@ class SamplingTests(unittest.TestCase):
                                      for event in events))
                 return frame(1, [socket()])
             return frame(1, [socket('10.0.0.2:50000', '10.0.0.1:8080', 456)], 456)
-        with patch.object(c, 'docker_peer_connections', return_value={}):
+        with patch.object(c, 'docker_peer_connections', side_effect=lambda _t, flows, *_a, **_k:
+                          {c.flow_key(f): {'mappings': [], 'owners': [], 'warnings': []} for f in flows}):
             report = c.inspect_application({'id':'target', 'ip':'10.0.0.1'}, process(), [],
                 [{'id':'peer', 'ip':'10.0.0.2'}], {}, {}, 'TEST', duration=0,
                 terminal_opener=opener, sample_probe=sample, progress=progress,
@@ -198,7 +199,8 @@ class SamplingTests(unittest.TestCase):
             def close(self): pass
         def sample(terminal, mode, selector):
             if mode == 'peer':
-                self.assertNotIn('51000', selector)
+                if 'dport = :51000' in selector:
+                    return frame(1.5, [])
                 peer = frame(2.05, [reverse], 456)
                 ready.set()
                 return {**peer, 'observations': [peer]}
@@ -209,7 +211,8 @@ class SamplingTests(unittest.TestCase):
             cancel.set()
             frames = [frame(2, [stable, short]), frame(2.1, [stable, short]), frame(2.2, [stable])]
             return {**frames[-1], 'observations': frames}
-        with patch.object(c, 'docker_peer_connections', return_value={}):
+        with patch.object(c, 'docker_peer_connections', side_effect=lambda _t, flows, *_a, **_k:
+                          {c.flow_key(f): {'mappings': [], 'owners': [], 'warnings': []} for f in flows}):
             report = c.inspect_application({'id':'target', 'ip':'10.0.0.1'}, process(), [],
                 [{'id':'peer','ip':'10.0.0.2'}], {}, {}, 'TEST', duration=1, interval=0.001,
                 terminal_opener=lambda asset, *_: (Terminal(asset['id']), 'root'),
@@ -221,6 +224,34 @@ class SamplingTests(unittest.TestCase):
         self.assertEqual(report['coverage']['samples'], 4)
         self.assertEqual(flow['firstSeenAt'], stamp(2))
         self.assertFalse(any(key.startswith('_') for key in flow['remoteProcesses'][0]))
+
+    def test_known_connection_queries_full_tuple_before_broad_discovery(self):
+        stop = threading.Event()
+        selectors = []
+        target = socket('172.17.0.2:6379', '10.58.140.53:32930')
+        flow = c.update_flow({}, target, [socket('172.17.0.2:6379', '*:*', state='LISTEN')], stamp(1))
+        flow['_publishedEndpoints'] = [c.endpoint('10.58.10.92:6379')]
+        exact = c.reverse_filter([flow])
+        self.assertIn('src 10.58.140.53 and sport = :32930 and dst 10.58.10.92 and dport = :6379', exact)
+        class Terminal:
+            def close(self): pass
+        def sample(_terminal, mode, selector):
+            if mode == 'peer':
+                selectors.append(selector)
+                if len(selectors) == 2:
+                    stop.set()
+                return frame(2, [])
+            return frame(1, [socket()])
+        with patch.object(c, 'docker_peer_connections', side_effect=lambda _t, flows, *_a, **_k:
+                          {c.flow_key(f): {'mappings': [], 'owners': [], 'warnings': []} for f in flows}):
+            c.inspect_application({'id':'target', 'ip':'10.0.0.1'}, process(), [],
+                [{'id':'peer','ip':'10.0.0.2'}], {}, {}, 'TEST', duration=1, interval=.001,
+                terminal_opener=lambda *_: (Terminal(), 'root'), sample_probe=sample, cancel=stop,
+                config_collector=lambda *_: {'status':'complete', 'endpoints':[], 'warnings':[]})
+        self.assertGreaterEqual(len(selectors), 2)
+        self.assertIn('sport = :50000', selectors[0])
+        self.assertIn('dport = :8080', selectors[0])
+        self.assertNotIn('dport = :8080', selectors[1])
 
     def test_same_asset_keeps_full_reverse_tuple_query_scope(self):
         stop = threading.Event()

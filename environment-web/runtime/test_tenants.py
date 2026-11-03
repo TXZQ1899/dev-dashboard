@@ -21,6 +21,17 @@ def saved_accounts():
 
 
 class TenantConfigurationTests(unittest.TestCase):
+    def test_uncollected_local_gitlab_reference_has_unknown_status(self):
+        from daily_collection import reconcile
+        devops = {'complete': True, 'scope': 'all', 'source': 'test', 'collectedAt': 'now',
+                  'apps': [{'id': '1', 'name': 'app', 'branch': 'main',
+                            'repository': 'http://gitlab.dev.thomascook.com.cn/group/repo.git',
+                            'envs': {}}]}
+        codeup = {'complete': True, 'collectedAt': 'now', 'groups': [], 'repos': []}
+        repo = reconcile(devops, codeup)['repos'][0]
+        self.assertEqual(repo['access'], '无法确认')
+        self.assertEqual(repo['reason'], '本次未采集 Local GitLab，无法确认仓库状态')
+
     def test_legacy_migration_is_stable_and_codeup_is_bound_to_original(self):
         saved = saved_accounts()
         first = deepcopy(tenancy.normalize(saved))
@@ -79,11 +90,17 @@ class TenantConfigurationTests(unittest.TestCase):
         self.assertEqual(current['auth']['cookie'], 'session=private')
         self.assertEqual(tenancy.value(saved, 'codeup_organization_id'), '')
 
-    def test_other_tenants_cannot_edit_codeup_or_cookie_compatibility(self):
+    def test_other_tenants_can_use_cookie_but_cannot_edit_codeup(self):
         saved = saved_accounts(); tenant = tenancy.normalize(saved)['tenants'][1]
-        for patch in ({'mode': 'cookie'}, {'cookie': 'private'}, {'codeupOrganizationId': 'other'}):
-            with self.subTest(patch=patch), self.assertRaises(ValueError):
-                tenancy.update(deepcopy(saved), [{'id': tenant['id'], 'credentialVersion': tenant['credentialVersion'], **patch}])
+        with self.assertRaises(ValueError):
+            tenancy.update(deepcopy(saved), [{'id': tenant['id'], 'credentialVersion': tenant['credentialVersion'], 'codeupOrganizationId': 'other'}])
+        tenancy.update(saved, [{'id': tenant['id'], 'credentialVersion': tenant['credentialVersion'], 'mode': 'cookie', 'cookie': 'Cookie: session=private'}])
+        current = tenancy.normalize(saved)['tenants'][1]
+        self.assertEqual(current['auth']['cookie'], 'session=private')
+        self.assertNotIn('session=private', json.dumps(tenancy.public_tenant(current)))
+        self.assertEqual(tenancy.value(saved, 'aliyun'), '')
+        tenancy.update(saved, [{'id': current['id'], 'credentialVersion': current['credentialVersion'], 'mode': 'cookie', 'cookie': ''}])
+        self.assertEqual(tenancy.normalize(saved)['tenants'][1]['auth']['cookie'], 'session=private')
 
     def test_tenant_cookie_and_codeup_input_validation(self):
         saved = saved_accounts(); original = tenancy.normalize(saved)['tenants'][0]
@@ -117,6 +134,31 @@ class TenantCollectionTests(unittest.TestCase):
             results = parallel_collect(tasks, self.folder/'progress.json', contexts=contexts)
             return tasks, contexts, selected, results
 
+    def test_cookie_tasks_use_each_tenants_own_cookie_and_skip_dns(self):
+        for tenant, cookie in zip(tenancy.normalize(self.saved)['tenants'], ('session=a', 'session=b')):
+            tenancy.update(self.saved, [{'id': tenant['id'], 'credentialVersion': tenant['credentialVersion'],
+                                         'mode': 'cookie', 'cookie': cookie}])
+        with patch.object(cloud, 'collect_dms', return_value={'instances': [], 'collectedAt': 'now'}) as collect:
+            tasks, contexts, selected = cloud.build_tasks(self.saved, self.folder)
+            self.assertEqual(len(tasks), 8)
+            self.assertNotIn('CLOUD-DNS', {c['source'] for c in contexts.values()})
+            for key in tasks:
+                if contexts[key]['source'] == 'DMS': tasks[key]()
+            self.assertEqual({call.args[0] for call in collect.call_args_list}, {'session=a', 'session=b'})
+            self.assertEqual({t['auth']['mode'] for t in selected}, {'cookie'})
+
+    def test_dns_publish_preserves_uncollected_cookie_tenant_slice(self):
+        a, b = tenancy.normalize(self.saved)['tenants']
+        def snapshot(tenant):
+            return cloud.scoped_snapshot({'collectedAt': 'now', 'zones': []}, tenant, 'cloud-dns', '')
+        path = self.folder/'cloud-dns-snapshot.json'
+        path.write_text(json.dumps(cloud.merge_snapshots({}, [snapshot(a), snapshot(b)], 'cloud-dns', True)))
+        write = lambda path, data: path.write_text(json.dumps(data))
+        read = lambda path, default={}: json.loads(path.read_text()) if path.exists() else default
+        cloud.publish({'task': snapshot(a)}, {'task': {'source': 'CLOUD-DNS', 'tenantId': a['id']}},
+                      [a, b], self.folder, write, read, replace_all=True)
+        self.assertEqual({scope['tenantId'] for scope in read(path)['tenants']}, {a['id'], b['id']})
+
     def test_two_accounts_collect_five_sources_and_zero_is_a_success(self):
         tasks, contexts, selected, results = self.run_tasks()
         self.assertEqual(len(tasks), 10)
@@ -146,7 +188,7 @@ class TenantCollectionTests(unittest.TestCase):
     def test_full_entry_collects_both_accounts_but_calls_codeup_only_with_original_key(self):
         import collect
         from contextlib import ExitStack
-        self.saved.update({key: {'value': 'private'} for key in ('jumpserver', 'devops', 'local_gitlab')})
+        self.saved.update({key: {'value': 'private'} for key in ('jumpserver', 'devops')})
         credentials_file = self.folder/'input.json'; credentials_file.write_text(json.dumps(self.saved))
         cloud_result = lambda *args, **kwargs: {'available': True, 'collectedAt': '2026-10-23T00:00:00Z', 'instances': [], 'gateways': []}
         def verify(tenant): tenant['accountId'] = '1001' if tenant['id'] == tenancy.LEGACY_TENANT else '2002'
@@ -165,11 +207,14 @@ class TenantCollectionTests(unittest.TestCase):
             stack.enter_context(patch.object(cloud.RpcClient, 'call', return_value={'Success': True, 'Tenant': {'Tid': 10}}))
             stack.enter_context(patch.object(collect, 'jumpserver', return_value={}))
             stack.enter_context(patch.object(collect.daily, 'ROOT', self.folder))
-            for name, result in [('collect_local_gitlab', {}), ('collect_devops', {'apps': []}), ('reconcile', {'repos': []})]:
+            local_gitlab = stack.enter_context(patch.object(collect.daily, 'collect_local_gitlab'))
+            for name, result in [('collect_devops', {'apps': []}), ('reconcile', {'repos': []})]:
                 stack.enter_context(patch.object(collect.daily, name, return_value=result))
             codeup = stack.enter_context(patch.object(collect, 'collect_codeup_ak', return_value={'groups': [], 'repos': []}))
             stack.enter_context(patch.object(collect, 'codeup_reference_status', return_value={}))
             collect.main()
+            local_gitlab.assert_not_called()
+            self.assertIsNone(collect.daily.reconcile.call_args.args[2])
             self.assertEqual(codeup.call_count, 1)
             self.assertEqual(codeup.call_args.args[1:3], ('key-a', 'secret-a'))
         for source in tenancy.CLOUD_SOURCES:

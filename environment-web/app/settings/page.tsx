@@ -15,7 +15,7 @@ import {
 } from '@/components/ui/table';
 import { formatBeijingTime } from '@/lib/datetime';
 
-type Source = 'devops' | 'jumpserver' | 'local_gitlab';
+type Source = 'devops' | 'jumpserver';
 type Version = {
   id: string;
   createdAt: string;
@@ -79,7 +79,6 @@ type State = {
 const sources: [Source, string][] = [
   ['devops', 'DevOps 平台'],
   ['jumpserver', 'JumpServer'],
-  ['local_gitlab', 'Local GitLab（http://gitlab.dev.thomascook.com.cn/）'],
 ];
 // 展示时间统一走 lib/datetime（北京时间），无值时显示占位符。
 function date(value?: string) {
@@ -90,7 +89,6 @@ export default function SettingsPage() {
   const [cookies, setCookies] = useState({
     devops: '',
     jumpserver: '',
-    local_gitlab: '',
   });
   const [folidevPassword, setFolidevPassword] = useState('');
   const [rootPasswordAlt1, setRootPasswordAlt1] = useState('');
@@ -147,7 +145,7 @@ export default function SettingsPage() {
       rootPasswordAlt2,
     };
   }
-  async function syncSource(source: 'local-gitlab' | 'codeup' | 'devops' | 'ecs' | 'clb' | 'nat' | 'dms' | 'cloud-dns' | 'aliyun' | 'jumpserver') {
+  async function syncSource(source: 'codeup' | 'devops' | 'ecs' | 'clb' | 'nat' | 'dms' | 'cloud-dns' | 'aliyun' | 'jumpserver') {
     setBusy(true);
     setError('');
     try {
@@ -155,7 +153,7 @@ export default function SettingsPage() {
       setFolidevPassword('');
       setRootPasswordAlt1('');
       setRootPasswordAlt2('');
-      setCookies({ devops: '', jumpserver: '', local_gitlab: '' });
+      setCookies({ devops: '', jumpserver: '' });
       const data = await post(`sync/${source}`, ['ecs', 'clb', 'nat', 'dms', 'cloud-dns', 'aliyun'].includes(source) && cloudTenant ? { tenantId: cloudTenant } : {});
       setMessage(`${source} 独立同步任务已启动`);
       setState(data);
@@ -178,7 +176,7 @@ export default function SettingsPage() {
       setBusy(false);
     }
   }
-  async function act(kind: 'save' | 'sync' | 'local_gitlab' | 'switch', id?: string) {
+  async function act(kind: 'save' | 'sync' | 'switch', id?: string) {
     setBusy(true);
     setError('');
     setMessage('');
@@ -188,14 +186,14 @@ export default function SettingsPage() {
         setFolidevPassword('');
         setRootPasswordAlt1('');
         setRootPasswordAlt2('');
-        setCookies({ devops: '', jumpserver: '', local_gitlab: '' });
+        setCookies({ devops: '', jumpserver: '' });
       }
-      if (kind === 'sync' || kind === 'local_gitlab') await post(kind === 'local_gitlab' ? 'sync/local-gitlab' : 'sync', {});
+      if (kind === 'sync') await post('sync', {});
       if (kind === 'switch') await post('switch', { id });
       setMessage(
         kind === 'save'
           ? '设置已保存'
-          : kind === 'sync' || kind === 'local_gitlab'
+          : kind === 'sync'
             ? '同步任务已启动，可以离开本页，稍后查看结果'
             : '正在准备指定版本，完成后页面将自动刷新',
       );
@@ -221,11 +219,10 @@ export default function SettingsPage() {
     'cloud-dns': 'DNS',
     jumpserver: 'JumpServer',
     codeup: '云效',
-    local_gitlab: 'Local GitLab',
     devops: 'DevOps',
   };
   const retryableLabels = Object.entries(state?.sourceStates ?? {})
-    .filter(([, s]) => s.retryable)
+    .filter(([key, s]) => key !== 'local_gitlab' && s.retryable)
     .map(([key]) => sourceLabel[key] ?? key);
   return (
     <Shell active="settings">
@@ -341,9 +338,6 @@ export default function SettingsPage() {
                 <Button disabled={busy || anyRunning} onClick={() => act('sync')}>
                   {anyRunning ? '任务进行中…' : '保存并一键同步'}
                 </Button>
-                <Button disabled={busy || !sourceEnabled('local_gitlab')} variant="outline" title={sourceReason('local_gitlab')} onClick={() => act('local_gitlab')}>
-                  单独同步 Local GitLab
-                </Button>
                 <Button disabled={busy || !sourceEnabled('ecs')} variant="outline" title={sourceReason('ecs')} onClick={() => syncSource('ecs')}>单独同步 ECS</Button>
                 <Button disabled={busy || anyRunning} variant="outline" onClick={() => syncSource('aliyun')}>同步所选租户全部云资源</Button>
                 <Button disabled={busy || !sourceEnabled('clb')} variant="outline" title={sourceReason('clb')} onClick={() => syncSource('clb')}>单独同步 CLB</Button>
@@ -364,7 +358,7 @@ export default function SettingsPage() {
                 </p>
               )}
               <p className="settings-hint">
-                同步 DevOps、云效、Local GitLab、JumpServer、上海 ECS、CLB、NAT（DNAT IP / 端口映射）和 DMS 数据库实例。ECS 项目名称目录沿用前版，实例及项目 ID 每次重新采集。每次同步新建目录，完整采集并验证后才启用。同步可能需要数十分钟。
+                同步 DevOps、云效、JumpServer、上海 ECS、CLB、NAT（DNAT IP / 端口映射）和 DMS 数据库实例。Local GitLab 不参与一键及每日同步。ECS 项目名称目录沿用前版，实例及项目 ID 每次重新采集。每次同步新建目录，完整采集并验证后才启用。同步可能需要数十分钟。
               </p>
             </section>
             {state.job && (

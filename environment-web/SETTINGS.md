@@ -2,13 +2,9 @@
 
 ## 阿里云多租户采集
 
-Settings 顶部的「阿里云租户管理」支持新增租户、修改名称、启停、更新 AccessKey 和验证账号。已有凭据自动作为 `legacy-aliyun`（现有租户）保留；新租户使用稳定 UUID。内部租户 ID、阿里云账号 UID、DMS Tid、Codeup 企业 ID 是独立字段。新增或更换 AccessKey 时通过 STS GetCallerIdentity 校验 UID，已绑定账号不能被另一账号的凭据覆盖。Secret 不回显，留空保留；更换 ID 时需同时填写 Secret。
+Settings 顶部的「阿里云租户管理」可为每个已有租户单独配置 Cookie、修改名称和启停。Cookie 留空保留已保存的值，不回显。Codeup 固定绑定现有租户，其企业 ID 在该租户中配置。Cookie 采集支持上海地域的 ECS、CLB、NAT 和 DMS；云 DNS 暂无 Cookie 采集能力，全量同步时保留该来源的既有数据及观察时间。旧版 AccessKey 配置和客户端 API 保持兼容。
 
-阿里云配置统一通过顶部「管理租户」维护。标记为「Codeup 绑定租户」的编辑区额外提供采集方式、Cookie 兼容入口和 Codeup 企业 ID（留空自动识别）；其他租户只配置各自的 AccessKey。下方「凭据与每日同步」仅保留 DevOps、JumpServer、Local GitLab Cookie、服务器密码及同步调度，保存时不再提交旧阿里云字段，避免覆盖已保存的租户配置。原 Cookie、AccessKey、企业 ID 及旧客户端 API 保持兼容。
-
-每个启用租户都采集 ECS、CLB、DMS、NAT / DNAT、DNS。ECS、CLB、NAT 按配置地域采集（默认 `cn-shanghai`），DMS 按 Tid 采集一次；Tid 留空时通过 GetUserActiveTenant 获取。原有 Cookie 方式仅适用于现有租户的上海地域。Codeup 固定绑定现有租户，新增账号不调用 Codeup；全量及每日任务仍需要现有租户启用且原有平台凭据完整。DNS 保留两份静态导入，新增独立 `cloud-dns-snapshot.json`；EIP 仍使用静态导入。云 DNS 必须使用租户 AccessKey，分别采集公网域名与内网 PrivateZone，每个账号只采集一次，不按地域重复。域名记录数为 0 时保留列表项并跳过详情请求。
-
-「一键同步」和每日任务覆盖所有启用租户及现有平台，沿用总计三个采集槽位。「ECS / CLB / DMS / NAT / DNS 独立同步范围」可选全部启用租户或一个租户；「同步所选租户全部云资源」只更新五类云资源，不调用 Codeup、DevOps 或 JumpServer。独立任务按租户替换切片，保留其他租户、其他来源及其观察时间。任务启动后固定配置和凭据版本，运行中保存设置只影响后续任务。
+「一键同步」和每日任务覆盖所有启用租户及 DevOps、Codeup、JumpServer，不采集 Local GitLab。沿用总计三个采集槽位。「ECS / CLB / DMS / NAT / DNS 独立同步范围」可选全部启用租户或一个租户；「同步所选租户全部云资源」只更新五类云资源，不调用 Codeup、DevOps 或 JumpServer。独立任务按租户替换切片，保留其他租户、其他来源及其观察时间。任务启动后固定配置和凭据版本，运行中保存设置只影响后续任务。
 
 任一计划任务失败均不启用新版本；合法空清单可成功。进度、日志槽位及错误显示租户和数据源。失败来源可按现有互斥规则重试，恢复判定区分租户。停用停止后续采集，不修改当前快照或删除历史文件；下一次全量同步的采集范围仅包含启用租户。
 
@@ -24,7 +20,7 @@ Settings 页面提供“Topology 数据”区域。点击“基于当前数据�
 
 页面显示拓扑节点数、边数、待确认边、未解析或外部节点，并提供“查看 JSON”和“下载当前 Topology”链接。`/topology.json` 仅返回最近一次成功生成的数据卷版本；如果没有生成记录，会提示先到 Settings 生成，不会回退到镜像内旧拓扑。生成失败会保留 failed 版本目录和日志，且不改变 latest 指针。
 
-打开 `http://localhost:3001/settings`。先在顶部租户管理中配置阿里云账号，再在下方填写 DevOps、JumpServer、Local GitLab Cookie 后点击“保存并一键同步”。空输入保留已保存 Cookie，页面不会回显 Cookie。每日同步使用北京时间，默认时间为 18:00；需勾选并保存后开启。Docker 停机后当天错过的任务会在启动后补跑，每天最多自动启动一次；失败可手动重试。
+打开 `http://localhost:3001/settings`。先在顶部租户管理中配置阿里云账号，再在下方填写 DevOps、JumpServer Cookie 后点击“保存并一键同步”。空输入保留已保存 Cookie，页面不会回显 Cookie。每日同步使用北京时间，默认时间为 18:00；需勾选并保存后开启。Docker 停机后当天错过的任务会在启动后补跑，每天最多自动启动一次；失败可手动重试。
 
 同步范围：DevOps 全量应用、环境、分支、Push In 发布时间；Codeup 当前账号代码组和仓库及双向对比；JumpServer 当前账号授权资产和分组。上海 ECS 实例和 CLB 实例、监听器、证书绑定、转发规则及全部后端服务器组。ECS 项目名称目录沿用前版，实例及 ResourceGroupId 每次重新请求。旧 Codeup Cookie 自动迁移为 aliyun，上述旧字段仅作为现有租户的兼容别名；新版本按上方多租户配置分别读取凭据。
 

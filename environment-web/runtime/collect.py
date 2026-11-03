@@ -530,17 +530,16 @@ def main():
                            credentials.get('rootAlt2',{}).get('value',''),
                            credentials.get('_ipPasswordMap',{})),
             'Codeup': lambda: aliyun_codeup(codeup_folder),
-            'Local GitLab': lambda: daily.collect_local_gitlab(credentials['local_gitlab']['value'], folder/'gitlab-progress.json'),
             'DevOps': lambda: daily.collect_devops(folder, 4),
         })
         results = parallel_collect(tasks, folder/'progress.json', contexts=contexts)
         publish_cloud(results, contexts, selected, folder, write, read, replace_all=True)
-        codeup, local_gitlab, devops = (results[name] for name in ('Codeup', 'Local GitLab', 'DevOps'))
+        codeup, devops = (results[name] for name in ('Codeup', 'DevOps'))
         daily.save_json(folder / 'progress.json', {'phase': '正在核对 DevOps 仓库的 Codeup 地址状态', 'completed': 0, 'total': 0})
         codeup_status = (codeup_reference_status(devops, codeup, auth['accessKeyId'],
                                                  auth['accessKeySecret'], auth['organizationId'])
                          if use_accesskey else daily.codeup_reference_status(devops, codeup))
-        daily.save_json(folder / 'repositories.json', mark_codeup(daily.reconcile(devops, codeup, local_gitlab, codeup_status), credentials))
+        daily.save_json(folder / 'repositories.json', mark_codeup(daily.reconcile(devops, codeup, None, codeup_status), credentials))
         inventory = {k: v for k,v in devops.items() if k != 'apps'}
         inventory['apps'] = [{k:v for k,v in a.items() if k not in ('csvRows','complete','errors')} for a in devops['apps']]
         daily.save_json(folder / 'snapshot.json', inventory)

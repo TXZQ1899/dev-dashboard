@@ -638,6 +638,14 @@ class SettingsTests(unittest.TestCase):
         with self.assertRaises(ValueError):self.service.start('sync')
         with self.assertRaises(ValueError):self.service.save_settings({'schedule':{'enabled':True,'time':'18:00'}})
 
+    def test_full_sync_and_schedule_do_not_require_local_gitlab_cookie(self):
+        self.service.backend={'port':3101}
+        self.service.save_settings({'cookies':{'aliyun':'a=1','devops':'d=1','jumpserver':'j=1'}})
+        self.service.save_settings({'schedule':{'enabled':True,'time':'18:00'}})
+        with patch.object(s.threading.Thread, 'start'):
+            self.service.start('sync')
+        self.assertTrue(s.read(self.data/'schedule.json')['enabled'])
+
     def _failed_sync_with_retries(self, failures, retries):
         identifier='20261021-133619-271076'
         folder=self.data/'versions'/identifier;folder.mkdir(parents=True,exist_ok=True)

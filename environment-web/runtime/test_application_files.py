@@ -345,7 +345,9 @@ class LinuxFileTests(unittest.TestCase):
         proc = {'pid':child.pid, 'startTicks':ticks, 'command':'java -jar app.jar'}
         folder = self.root/'snapshot'; folder.mkdir()
         result = {'files':[], 'warnings':[]}
-        f.snapshot_jar_configs(self.terminal, proc, result, folder)
+        # Bash 4.2's mapfile has no -d option; emulate that failure even on newer Bash.
+        with patch.dict(os.environ, {'BASH_FUNC_mapfile%%':'() { return 2; }'}):
+            f.snapshot_jar_configs(self.terminal, proc, result, folder)
         self.assertEqual(len(result['files']), 1)
         self.assertEqual(f.read_snapshot(result['files'][0], folder, raw_config=True)['content'], config.read_text())
 

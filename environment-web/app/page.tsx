@@ -66,10 +66,10 @@ export function Shell({
       <aside className="sidebar">
         <a href="/" className="brand">
           <span className="brand-icon">
-            <Boxes size={23} />
+            <Boxes size={24} />
           </span>
           <span>
-            App Atlas<small>应用架构图谱</small>
+            Application Atlas<small>应用架构图谱</small>
           </span>
         </a>
         <div className="nav-label">工作空间</div>
