@@ -167,6 +167,7 @@ def parse_process_record(parts):
 def parse_probe(body, stage='socket_probe', catalog=None):
     processes, warnings, statuses = {}, [], {}
     inode_owners = {}
+    nginx_identities = {}
     for line in body.splitlines():
         parts = line.split('\t')
         if parts[0] == 'CHECK_PROC' and len(parts) == 7:
@@ -183,6 +184,8 @@ def parse_probe(body, stage='socket_probe', catalog=None):
                 processes[process['pid']] = process
             else:
                 warnings.append('实时进程身份引用未通过核验')
+        elif parts[0] == 'CHECK_NGINX_IDENTITY' and len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+            nginx_identities[int(parts[1])] = parts[2]
         elif parts[0] == 'CHECK_WARNING' and len(parts) > 1:
             warnings.append(parts[1])
         elif parts[0] == 'CHECK_INODE_OWNER' and len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
@@ -209,7 +212,7 @@ def parse_probe(body, stage='socket_probe', catalog=None):
     namespace = re.search(r'(?m)^CHECK_NAMESPACE\t(net:\[\d+\])$', body)
     return {'sockets': parse_sockets(section(body, 'SOCKETS'), inode_owners),
             'listeners': parse_sockets(section(body, 'LISTEN'), inode_owners),
-            'processes': processes, 'warnings': warnings,
+            'processes': processes, 'warnings': warnings, 'nginxIdentities': nginx_identities,
             'networkNamespace': namespace[1] if namespace else None}
 
 
@@ -332,7 +335,7 @@ def probe(terminal, mode, selector, batch=False):
 
 
 def sampling_probe(terminal, mode, selector):
-    return probe(terminal, mode, selector, batch=mode in ('target', 'peer', 'container-target'))
+    return probe(terminal, mode, selector, batch=mode in ('target', 'peer', 'container-target', 'nginx'))
 
 
 def is_docker_proxy(process):
@@ -1270,6 +1273,10 @@ def inspect_application(asset, selected, apps, assets, saved, ip_map, environmen
     stage = 'target_login'
     target_process = None
     sampling_selected = selected
+    nginx_target = bool(re.match(r'^nginx:\s+master process(?:\s|$)', selected.get('command', '')))
+    if nginx_target:
+        report['coverage']['targetOwnershipMethod'] = 'nginx-master-workers-proc-fd-inode'
+        report['coverage']['limitations'].append('仅覆盖采样时可核验的该 master 直接 worker；reload 或权限限制可能造成遗漏')
     target_container = None
     listeners = []
     started = None
@@ -1278,6 +1285,8 @@ def inspect_application(asset, selected, apps, assets, saved, ip_map, environmen
         if progress:
             progress(message, stage=stage, serverIp=asset.get('ip'), **stats)
     try:
+        if re.match(r'^nginx:\s+worker process(?:\s|$)', selected.get('command', '')):
+            raise RuntimeError('Nginx 上下游检测只支持选择 master 进程')
         notify('正在通过 JumpServer 登录目标服务器', 'login')
         terminal, sudo = terminal_opener(asset, saved, ip_map)
         report['target']['sudoStatus'] = sudo
@@ -1324,7 +1333,7 @@ def inspect_application(asset, selected, apps, assets, saved, ip_map, environmen
                     raise ProbeError('DOCKER_TARGET_CHANGED', 'target_probe',
                                      '检测期间容器身份或发布端口已变化，已停止并保留先前观察')
             else:
-                batch = sample_probe(terminal, 'target', sampling_selected['pid'])
+                batch = sample_probe(terminal, 'nginx' if nginx_target else 'target', sampling_selected['pid'])
             warnings[:] = list(dict.fromkeys(warnings+batch['warnings']))
             for sample in observation_frames(batch):
                 process = sample['processes'].get(sampling_selected['pid'])
@@ -1337,6 +1346,14 @@ def inspect_application(asset, selected, apps, assets, saved, ip_map, environmen
                     raise RuntimeError('检查期间进程已重启，结果仅保留已观察证据')
                 initial_ticks = process['startTicks']
                 target_process = process
+                if nginx_target and not re.match(r'^nginx:\s+master process(?:\s|$)', process.get('command', '')):
+                    raise RuntimeError('所选 Nginx master 身份已变化')
+                worker_pids = {p['pid'] for p in sample['processes'].values() if p.get('ppid') == process['pid'] and sample.get('nginxIdentities', {}).get(p['pid']) == p.get('startTicks') and re.match(r'^nginx:\s+worker process(?:\s|$)', p.get('command', ''))} if nginx_target else {sampling_selected['pid']}
+                if nginx_target and sample.get('nginxIdentities', {}).get(process['pid']) != process['startTicks']:
+                    raise RuntimeError('Nginx master 采样身份未通过核验')
+                if nginx_target and not worker_pids:
+                    if '未确认 Nginx worker，连接覆盖未知' not in warnings:
+                        warnings.append('未确认 Nginx worker，连接覆盖未知')
                 listeners = sample['listeners']
                 if environment is None and not target_container:
                     environment = infer_environment(process, ips(asset.get('ip')), listeners, apps)
@@ -1345,12 +1362,12 @@ def inspect_application(asset, selected, apps, assets, saved, ip_map, environmen
                 first, last = observation_bounds(sample, stamp)
                 last_observation_end = last
                 with lock:
-                    present = {flow_key(s) for s in sample['sockets'] if sampling_selected['pid'] in s['pids']}
+                    present = {flow_key(s) for s in sample['sockets'] if worker_pids.intersection(s['pids'])}
                     for key, flow in flows.items():
                         if key not in present:
                             flow.setdefault('_possibleEnd', last)
                     for socket in sample['sockets']:
-                        if sampling_selected['pid'] not in socket['pids'] or socket['state'] == 'LISTEN':
+                        if not worker_pids.intersection(socket['pids']) or socket['state'] == 'LISTEN':
                             continue
                         if not normal_ip(socket['local']['ip']) or not normal_ip(socket['peer']['ip']) or not socket['peer']['port']:
                             continue

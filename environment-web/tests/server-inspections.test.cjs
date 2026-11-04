@@ -68,6 +68,8 @@ test('Docker 容器 init、子进程和代理在进程列表中显示证据和�
  assert.equal(rows.find(r=>r.process.pid===102).docker.basis,'proxy');
  const html=render([a],{expanded:{a:{type:'全部进程',page:1}}});
  for(const text of ['redis4','容器启动命令','docker-proxy-cu'])assert.ok(html.includes(text),text);
+ assert.equal((html.match(/>容器信息<\/a>/g)||[]).length,3);
+ assert.ok(html.includes('/jumpserver/container/a/100/container1'));
  assert.equal((html.match(/title="redis:5">Docker<\/span>/g)||[]).length,3);
  for(const text of ['init PID 匹配','进程树推断','端口映射推断'])assert.ok(!html.includes(text),text);
  assert.equal(lib.filterProcesses(rows,'redis:5','all').length,3);
@@ -525,6 +527,20 @@ test('search combines IP, command and type with duration; failed assets never co
  assert.equal(lib.filterProcesses(rows,'app-api.jar','week','Java Jar').length,0);
  assert.equal(lib.filterProcesses(rows,'app-api.jar','all','Kafka').length,0);
 });
+test('a single valid IPv4 searches exact asset addresses rather than process content',()=>{
+ const target={...asset,ip:'10.58.1.231',hostname:'target'};
+ const other={...asset,id:'b',ip:'10.58.6.8',hostname:'other',inspection:{...inspection,processes:[{...process,command:'ping 10.58.1.231'}]}};
+ const longer={...asset,id:'c',ip:'10.58.1.2310',hostname:'longer'};
+ const multi={...asset,id:'d',ip:'10.58.1.230, 10.58.1.231',hostname:'multi'};
+ const rows=lib.processRows([target,other,longer,multi],now);
+ const ids=q=>Array.from(lib.filterProcesses(rows,q,'all'),r=>r.asset.id).sort();
+ assert.deepEqual(ids(' 10.58.1.231 '),['a','d']);
+ assert.deepEqual(ids('ping 10.58.1.231'),['b']);
+ assert.deepEqual(ids('10.58.1.'),['a','b','c','d']);
+ assert.deepEqual(ids('10.58.1.999'),[]);
+ assert.equal(lib.matchesServerQuery({...other,inspection:{...other.inspection,reason:'10.58.1.231'}},'10.58.1.231'),false);
+ assert.equal(lib.matchesServerQuery(multi,'10.58.1.231'),true);
+});
 test('environment filter keeps only processes on IPs deployed in the selected environment',()=>{
  const b={...asset,id:'b',ip:'10.0.0.3',hostname:'prod-server',inspection:{...inspection,processes:[{...process,pid:20,command:'java -jar /srv/prod.jar'}]}};
  const opts={ipEnvs:{'10.0.0.2':['TEST'],'10.0.0.3':['PRODUCT']}};
@@ -575,15 +591,15 @@ test('nginx worker processes are grouped into one row with a worker count',()=>{
  assert.equal(workers[0].process.ports?.[1],443);
  assert.equal(rows.filter(r=>r.process.command.includes('master process')).length,1);
 });
-test('nginx check links use actual listening PIDs including the grouped worker row',()=>{
- const master={...process,pid:1,name:'nginx',kind:'Nginx',command:'nginx: master process /usr/sbin/nginx',ports:[80,443]};
+test('nginx check links are offered only for the master, even without an observed port',()=>{
+ const master={...process,pid:1,name:'nginx',kind:'Nginx',command:'nginx: master process /usr/sbin/nginx',ports:[]};
  const idleWorker={...master,pid:10,ppid:1,command:'nginx: worker process',ports:[]};
  const worker={...idleWorker,pid:11,ports:[80]};
  const laterWorker={...idleWorker,pid:12,ports:[443]};
  const open={expanded:{a:{type:'全部进程',page:1}}};
  const html=render([{...asset,inspection:{...inspection,processes:[master,laterWorker,idleWorker,worker]}}],open);
- assert.ok(html.includes('检测上下游:a:1'),'Nginx master 有监听时提供入口');
- assert.ok(html.includes('检测上下游:a:11'),'合并行使用实际监听的最小 worker PID');
+ assert.ok(html.includes('检测上下游:a:1'),'Nginx master 即使未观察到监听也提供入口');
+ assert.ok(!html.includes('检测上下游:a:11'),'worker 合并行不提供入口');
  assert.ok(!html.includes('检测上下游:a:10'),'不把合并端口当作空闲代表 PID 的监听证据');
  const none=render([{...asset,inspection:{...inspection,processes:[idleWorker]}}],open);
  assert.ok(!none.includes('检测上下游'),'worker 均无监听时不显示检测入口');

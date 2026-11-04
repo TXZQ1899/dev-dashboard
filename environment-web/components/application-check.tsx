@@ -166,7 +166,7 @@ export function ApplicationCheck({ asset, pid }: {
       {running && <Button variant="outline" onClick={() => void submit(true)} disabled={busy}>取消检测</Button>}
       {report && <Button variant="outline" onClick={download}>导出报告 JSON</Button>}
     </div>
-    <p className="check-note">检查选中进程的 TCP 连接，核验同机连接，并通过 JumpServer 核对全部已发现且能唯一匹配资产的远端服务器。短连接可能漏采；数据交换需结合业务日志判断。</p>
+    <p className="check-note">检查选中进程的 TCP 连接；Nginx master 检测其 worker 的连接。核验同机连接，并通过 JumpServer 核对全部已发现且能唯一匹配资产的远端服务器。短连接可能漏采；数据交换需结合业务日志判断。</p>
     {error && <p role="alert" className="check-error">{error}</p>}
     {state.job && <ApplicationCheckProgress job={state.job} lastSyncedAt={lastSyncedAt} syncError={syncError} />}
     {report && <>

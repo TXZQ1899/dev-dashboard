@@ -16,6 +16,7 @@ export function buildNginxEdges(graph: GraphCollector, bridges: NginxBridge[], h
         confidence: 'EXACT',
       });
     }
+    if (!bridge.upstreamNode) continue;
     graph.edge({
       id: `edge:USES_UPSTREAM:${bridge.routeNode.id}:${bridge.upstreamNode.id}`,
       from: bridge.routeNode.id,

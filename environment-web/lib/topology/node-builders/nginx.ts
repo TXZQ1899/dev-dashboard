@@ -4,7 +4,7 @@ import type { Evidence, TopologyNode } from '../types.ts';
 
 export type NginxBridge = {
   routeNode: TopologyNode;
-  upstreamNode: TopologyNode;
+  upstreamNode: TopologyNode | null;
   assetId: string;
   domains: string[];
   backends: { host: string; port: string; resolution: string }[];
@@ -26,7 +26,7 @@ export function buildNginxNodes(graph: GraphCollector, input: SnapshotInput): Ng
       const uri = text(route.uri);
       const directive = text(route.directive);
       const target = text(route.target);
-      const upstreamName = text(route.upstream) || target || `${directive}:${target}`;
+      const upstreamName = directive === 'access_control' ? '' : text(route.upstream) || target || `${directive}:${target}`;
       const key = `${assetId}|${domains.join(',')}|${uri}|${directive}|${target}|${upstreamName}`;
       const evidence: Evidence[] = [{
         source: 'jumpserver',
@@ -53,7 +53,7 @@ export function buildNginxNodes(graph: GraphCollector, input: SnapshotInput): Ng
         type: 'NGINX_ROUTE',
         label: `${domains.join(',') || text(asset.hostname)}${uri}`,
         identity: { assetId, domains, uri, directive, target, upstream: upstreamName },
-        status: directive === 'static/other' ? 'unknown' : 'active',
+        status: directive === 'static/other' || directive === 'access_control' ? 'unknown' : 'active',
         environment: 'GLOBAL',
         evidence,
         attributes: {
@@ -66,6 +66,10 @@ export function buildNginxNodes(graph: GraphCollector, input: SnapshotInput): Ng
         },
       });
 
+      if (directive === 'access_control') {
+        bridges.push({ routeNode, upstreamNode: null, assetId, domains, backends: [], endpointIds: [], evidence });
+        continue;
+      }
       const upstreamId = `nginx-upstream:${assetId}:${sha256Short(upstreamName)}`;
       const upstreamNode = graph.node({
         id: upstreamId,

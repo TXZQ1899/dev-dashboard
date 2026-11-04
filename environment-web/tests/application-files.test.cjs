@@ -17,8 +17,8 @@ vm.runInNewContext(ts.transpileModule(fs.readFileSync('lib/datetime.ts', 'utf8')
 const current = { id: 'current', kind: 'log', logGroup: 'current', path: '/app/logs/app.log', size: 4, modifiedAt: 10 };
 const history = { id: 'history', kind: 'log', logGroup: 'history', path: '/app/logs/app.log.tar.gz', size: 80, modifiedAt: 100 };
 const config = { id: 'config', kind: 'config', path: '/app/config/application.yml', size: 20, modifiedAt: 100 };
-function harness({ files = [history, current], tab = 'current', configTab = '', kind = 'log', archive = { status: 'idle' }, fetch, contents, warnings = [], processType, typeEvidence, typeConfidence } = {}) {
-  const catalogue = { files, roots: { config: [], log: ['/app/logs'] }, warnings, processType, typeEvidence, typeConfidence };
+function harness({ files = [history, current], tab = 'current', configTab = '', kind = 'log', archive = { status: 'idle' }, fetch, contents, warnings = [], processType, typeEvidence, typeConfidence, nginxRoutes } = {}) {
+  const catalogue = { files, roots: { config: [], log: ['/app/logs'] }, warnings, processType, typeEvidence, typeConfidence, nginxRoutes };
   const state = [catalogue, contents || { current: { content: 'latest log line', observedAt: '2026-10-16T00:00:00Z' } }, 'current', '', '', archive, configTab];
   const effects = [], changes = [], sandbox = { exports: {}, fetch, setTimeout, clearTimeout };
   let index = 0;
@@ -269,4 +269,17 @@ test('reusable file capability opens a process session without starting a TCP jo
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(calls, [{ url: '/api/settings/application-files', body: { action: 'open', asset: 'server', pid: 123 } }]);
   assert.equal(changes.at(-1).value.id, 'files-session');
+});
+
+test('Nginx config shows route evidence and collection warnings without Java profile groups', () => {
+  const file = { ...config, path: '/etc/nginx/conf.d/a.conf', modifiedAt: null };
+  const route = { domains:['example.test'], listen:['80'], uri:'/api', target:'http://backend', upstream:'backend', file:file.path };
+  const { html } = harness({ kind:'config', files:[file], processType:'NGINX', warnings:['部分配置未加载'], nginxRoutes:[route] });
+  assert.match(html, /Nginx 配置/);
+  assert.match(html, /example.test/);
+  assert.match(html, /\/api/);
+  assert.match(html, /http:\/\/backend/);
+  assert.match(html, /部分配置未加载/);
+  assert.match(html, /修改时间未知/);
+  assert.doesNotMatch(html, /按文件名中的 profile 分组/);
 });

@@ -484,7 +484,9 @@ export class NginxResolver implements PathResolver {
       if (CONFIDENCE_RANK[step.edge.confidence] < CONFIDENCE_RANK[weakest]) weakest = step.edge.confidence;
     }
     if (moves.length === 0) {
-      return { rule: 'nginx:upstream', moves: [], warnings: [`Nginx route ${route.id} has no USES_UPSTREAM edge to an upstream.`] };
+      return { rule: 'nginx:upstream', moves: [], warnings: [text(route.identity.directive) === 'access_control'
+        ? `Nginx route ${route.id} declares ${text(route.identity.target)}; access depends on its configuration and request context, and no backend is asserted.`
+        : `Nginx route ${route.id} has no USES_UPSTREAM edge to an upstream.`] };
     }
     return {
       rule: 'nginx:upstream',

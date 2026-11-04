@@ -4,8 +4,9 @@ import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { formatBeijingTime } from '@/lib/datetime';
 
-type Entry = { id: string; kind: 'config' | 'log'; source?: string; snapshotError?: string; logGroup?: 'current' | 'history'; path: string; size: number; modifiedAt: number; discoveryEvidence?: string };
-type Catalogue = { files: Entry[]; roots: { config: string[]; log: string[] }; warnings: string[]; observedAt: string; processType?: string; typeConfidence?: string; typeEvidence?: string };
+type Entry = { id: string; kind: 'config' | 'log'; source?: string; snapshotError?: string; logGroup?: 'current' | 'history'; path: string; size: number; modifiedAt: number | null; discoveryEvidence?: string };
+type NginxRoute = { domains: string[]; listen: string[]; uri: string; directive: string; target: string; upstream: string; file?: string };
+type Catalogue = { nginxRoutes?: NginxRoute[]; files: Entry[]; roots: { config: string[]; log: string[] }; warnings: string[]; observedAt: string; processType?: string; typeConfidence?: string; typeEvidence?: string };
 type Content = { content: string; truncated: boolean; redacted: boolean; observedAt: string };
 type Archive = { status: string; logGroup?: 'all' | 'history'; phase?: string; transferred?: number; total?: number; fileCount?: number; size?: number; warnings?: string[] };
 const api = '/api/settings/application-files';
@@ -146,10 +147,11 @@ export function ApplicationFileBrowser({ id, kind }: { id: string; kind: 'config
   }
   const configs = catalogue?.files.filter((f) => f.kind === 'config') || [];
   const isZooKeeper = catalogue?.processType === 'ZOOKEEPER';
-  const fixedGroups = isZooKeeper ? ['primary'] : ['webinf', 'tomcat', 'nacos', ...configProfiles.map((profile) => 'profile:' + profile)];
+  const isNginx = catalogue?.processType === 'NGINX';
+  const fixedGroups = isNginx ? ['nginx'] : isZooKeeper ? ['primary'] : ['webinf', 'tomcat', 'nacos', ...configProfiles.map((profile) => 'profile:' + profile)];
   const configGroups = new Map<string, Entry[]>(fixedGroups.map((key) => [key, []]));
   for (const file of configs) {
-    const group = isZooKeeper ? 'primary' : configGroup(file);
+    const group = isNginx ? 'nginx' : isZooKeeper ? 'primary' : configGroup(file);
     configGroups.set(group, [...(configGroups.get(group) || []), file]);
   }
   const groupKeys = [...configGroups.keys()];
@@ -164,17 +166,22 @@ export function ApplicationFileBrowser({ id, kind }: { id: string; kind: 'config
     {busy === 'cached' && <output>正在读取历史配置快照…</output>}
     {busy === 'list' && <output>{kind === 'config' ? '正在采集配置文件快照…' : '正在通过 JumpServer 读取文件列表…'}</output>}
     {kind === 'config' && <>
-    <p className="check-note">显示最近一次采集的配置快照{catalogue?.observedAt ? `（${formatBeijingTime(catalogue.observedAt, '—')}）` : ''}，点击刷新可重新采集。{isZooKeeper ? '配置文件由进程启动参数定位，不代表已确认生效。' : '按文件名中的 profile 分组，不代表该 profile 已生效。'}预览明文显示密码，令牌和私钥等仍会遮盖。</p>
+    <p className="check-note">显示最近一次采集的配置快照{catalogue?.observedAt ? `（${formatBeijingTime(catalogue.observedAt, '—')}）` : ''}，点击刷新可重新采集。{isNginx ? '按选中 Nginx master 的配置发现文件；配置解析不等于实时流量。' : isZooKeeper ? '配置文件由进程启动参数定位，不代表已确认生效。' : '按文件名中的 profile 分组，不代表该 profile 已生效。'}预览明文显示密码，令牌和私钥等仍会遮盖。</p>
     {isZooKeeper && <p className="check-note">进程类型：ZooKeeper（{catalogue?.typeConfidence === 'EXACT' ? '已识别' : '待确认'}）· {catalogue?.typeEvidence}</p>}
+    {isNginx && catalogue?.warnings.map((warning, i) => <p className="check-note" key={i}>{warning}</p>)}
+    {isNginx && !!catalogue?.nginxRoutes?.length && <details><summary>Nginx 域名、URI 和 upstream（{catalogue.nginxRoutes.length}）</summary>
+      <table aria-label="Nginx 配置路由"><thead><tr><th>域名 / 监听</th><th>URI</th><th>转发目标</th><th>upstream</th><th>配置文件</th></tr></thead><tbody>
+        {catalogue.nginxRoutes.map((route, i) => <tr key={i}><td>{route.domains.join(', ') || '—'} · {route.listen.join(', ') || '—'}</td><td>{route.uri || '—'}</td><td>{route.target || '—'}</td><td>{route.upstream || '—'}</td><td>{route.file || '未知'}</td></tr>)}
+      </tbody></table></details>}
     {isZooKeeper && catalogue?.warnings.map((warning, i) => <p className="check-note" key={i}>{warning}</p>)}
-    {catalogue && !configs.length && <p>{isZooKeeper ? '未能读取 ZooKeeper 主配置文件，请查看上述原因。' : '已检查目录中没有找到配置文件。'}</p>}
+    {catalogue && !configs.length && <p>{isNginx ? '未能读取 Nginx 配置文件，请查看上述原因。' : isZooKeeper ? '未能读取 ZooKeeper 主配置文件，请查看上述原因。' : '已检查目录中没有找到配置文件。'}</p>}
     {catalogue && <Tabs value={currentConfigTab} onValueChange={(value) => setConfigTab(value ?? '')} className="check-config-tabs">
       <div className="check-config-tab-scroll"><TabsList aria-label="配置文件 profile" variant="line">
-        {groupKeys.map((group) => <TabsTrigger key={group} value={group}>{group === 'primary' ? '主配置' : configTabLabels[group]}（{configGroups.get(group)?.length}）</TabsTrigger>)}
+        {groupKeys.map((group) => <TabsTrigger key={group} value={group}>{group === 'nginx' ? 'Nginx 配置' : group === 'primary' ? '主配置' : configTabLabels[group]}（{configGroups.get(group)?.length}）</TabsTrigger>)}
       </TabsList></div>
       {groupKeys.map((group) => <TabsContent key={group} value={group}>{!configGroups.get(group)?.length && <p>该分类暂无配置文件。</p>}<div className="check-config-list">{configGroups.get(group)?.map((file) => <details className="check-file" key={file.id} onToggle={(event) => {
       if (event.currentTarget.open && !contents[file.id] && !busy && !running) void readFile(file.id);
-    }}><summary>{file.path}<small>{size(file.size)} · {formatBeijingTime(file.modifiedAt * 1000, '—')}{file.discoveryEvidence && ` · ${file.discoveryEvidence}`}{file.snapshotError && ` · ${file.snapshotError}`}</small></summary>
+    }}><summary>{file.path}<small>{size(file.size)} · {file.modifiedAt == null ? '修改时间未知' : formatBeijingTime((file.modifiedAt ?? 0) * 1000, '—')}{file.discoveryEvidence && ` · ${file.discoveryEvidence}`}{file.snapshotError && ` · ${file.snapshotError}`}</small></summary>
       {contents[file.id] ? <><pre>{contents[file.id].content}</pre>{contents[file.id].truncated && <p>文件较大，仅展示前 256 KiB 的内容。</p>}</> : <Button variant="outline" disabled={!!busy || running} onClick={() => void readFile(file.id)}>{busy === file.id ? '正在读取…' : '读取配置内容'}</Button>}
     </details>)}</div></TabsContent>)}
     </Tabs>}
@@ -191,7 +198,7 @@ export function ApplicationFileBrowser({ id, kind }: { id: string; kind: 'config
           {logs.map((file) => <option value={file.id} key={file.id}>{file.path} · {size(file.size)}</option>)}
         </select></label><Button variant="outline" disabled={!!busy || running || !selected} onClick={() => void readFile(selected)}>刷新末尾 100 行</Button></div>}
         {busy === selected && selected && <p>正在读取日志…</p>}
-        {current && <><pre className="check-log-content">{current.content || '文件为空'}</pre><p className="check-note">文件更新时间：{selectedFile ? formatBeijingTime(selectedFile.modifiedAt * 1000, '—') : '未知'} · 读取时间：{formatBeijingTime(current.observedAt, '—')}{current.truncated ? ' · 单次展示上限 256 KiB，超长行可能截断' : ''}</p></>}
+        {current && <><pre className="check-log-content">{current.content || '文件为空'}</pre><p className="check-note">文件更新时间：{selectedFile ? formatBeijingTime((selectedFile.modifiedAt ?? 0) * 1000, '—') : '未知'} · 读取时间：{formatBeijingTime(current.observedAt, '—')}{current.truncated ? ' · 单次展示上限 256 KiB，超长行可能截断' : ''}</p></>}
         {catalogue && !logs.length && <p>未找到可读的当前日志文件。</p>}
       </TabsContent>
       <TabsContent value="history">
@@ -204,7 +211,7 @@ export function ApplicationFileBrowser({ id, kind }: { id: string; kind: 'config
         {archive.phase && <output aria-live="polite">{archive.phase}{archive.total ? ` · ${size(archive.transferred || 0)} / ${size(archive.total)}` : ''}{archive.fileCount ? ` · ${archive.fileCount} 个文件` : ''}</output>}
         {archive.warnings?.map((warning, i) => <p className="check-note" key={i}>{warning}</p>)}
         {history.length > 0 && <div className="check-log-history"><table aria-label="历史日志文件列表"><thead><tr><th>文件路径</th><th>大小</th><th>修改时间</th></tr></thead><tbody>
-          {history.map((file) => <tr key={file.id}><td>{file.path}</td><td>{size(file.size)}</td><td>{formatBeijingTime(file.modifiedAt * 1000, '—')}</td></tr>)}
+          {history.map((file) => <tr key={file.id}><td>{file.path}</td><td>{size(file.size)}</td><td>{formatBeijingTime((file.modifiedAt ?? 0) * 1000, '—')}</td></tr>)}
         </tbody></table></div>}
         {catalogue && !history.length && <p>未找到历史日志文件。</p>}
       </TabsContent>

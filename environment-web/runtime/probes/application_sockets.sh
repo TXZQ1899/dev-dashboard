@@ -64,7 +64,7 @@ PS_FIELDS='pid=,ppid=,user:32=,etimes=,lstart=,comm=,%cpu=,%mem=,rss=,vsz=,args=
 ss_command=(ss)
 namespace_pid=${3:-}
 expected_ticks=${4:-}
-if [[ "$mode" == target ]]; then namespace_pid=$selector; fi
+if [[ "$mode" == target || "$mode" == nginx ]]; then namespace_pid=$selector; fi
 if [[ -n "$namespace_pid" ]]; then
   [[ "$namespace_pid" =~ ^[1-9][0-9]*$ && -d "/proc/$namespace_pid" ]] || exit 3
   before=$(ticks "$namespace_pid")
@@ -89,7 +89,51 @@ capture_total=0.000
 truncated_reason=
 collect_sample() {
 capture_begin=$(clock)
-if [[ "$mode" == target ]]; then
+if [[ "$mode" == nginx ]]; then
+  # Capture only direct workers of this master. Verify identity both sides of ss.
+  master_cmd=$(tr '\0' ' ' <"/proc/$selector/cmdline" 2>/dev/null)
+  [[ "$master_cmd" =~ ^nginx:[[:space:]]master\ process ]] || exit 3
+  bounded 5 ps ax -o pid=,ppid=,args= >"$tmp/nginx-ps" || exit 3
+  workers=$(awk -v p="$selector" '$2==p && $3=="nginx:" && $4=="worker" && $5=="process" {print $1}' "$tmp/nginx-ps")
+  pids="$selector $workers"
+  : >"$tmp/nginx-before"
+  for pid in $pids; do
+    start=$(ticks "$pid")
+    if [[ -z "$start" || ! -r "/proc/$pid/fd" || ! -x "/proc/$pid/fd" ]]; then
+      printf 'CHECK_WARNING\tNginx 进程身份或文件描述符不可读，采样不完整\n'
+      continue
+    fi
+    printf '%s %s\n' "$pid" "$start" >"$tmp/ticks-$pid"
+    find_sockets "$pid" | awk -v p="$pid" '{print p, $0}' >>"$tmp/nginx-before" ||
+      printf 'CHECK_WARNING\tNginx 文件描述符读取不完整\n'
+  done
+  [[ -n "$workers" ]] || printf 'CHECK_WARNING\t未发现该 master 的 Nginx worker，连接覆盖未知\n'
+  bounded 12 "${ss_command[@]}" -antnie >"$tmp/all" 2>"$tmp/err"
+  rc=$?
+  : >"$tmp/nginx-owners"
+  for pid in $pids; do
+    [[ -f "$tmp/ticks-$pid" ]] || continue
+    read -r old_pid old_ticks <"$tmp/ticks-$pid"
+    if [[ "$(ticks "$pid")" != "$old_ticks" ]]; then
+      printf 'CHECK_WARNING\tNginx 进程在采样期间退出或重启，已排除该进程\n'
+      continue
+    fi
+    if [[ "$pid" != "$selector" ]]; then
+      # Older procps mis-parses comma-separated empty headers with -p.
+      # Separate fields and request full width so the worker title is retained.
+      identity=$(bounded 2 ps -p "$pid" -ww -o ppid= -o args= 2>/dev/null)
+      [[ "$identity" =~ ^[[:space:]]*$selector[[:space:]]+nginx:[[:space:]]worker\ process ]] || {
+        printf 'CHECK_WARNING\tNginx worker 身份变化，已排除该进程\n'; continue; }
+    fi
+    find_sockets "$pid" >"$tmp/nginx-after" || {
+      printf 'CHECK_WARNING\tNginx 文件描述符读取不完整\n'; continue; }
+    [[ "$(ticks "$pid")" == "$old_ticks" ]] || { printf 'CHECK_WARNING\tNginx 进程在采样期间变化，已排除该进程\n'; continue; }
+    printf 'CHECK_NGINX_IDENTITY\t%s\t%s\n' "$pid" "$old_ticks"
+    awk -v p="$pid" 'NR==FNR{a[$0]=1;next} $1==p && a[$2]{gsub(/[^0-9]/,"",$2); print $2,p}' "$tmp/nginx-after" "$tmp/nginx-before" >>"$tmp/nginx-owners"
+  done
+  awk 'NR==FNR{owned[$1]=1;next} /^[^ \t]/{keep=0;for(i=1;i<=NF;i++) if($i ~ /^ino:/ && owned[substr($i,5)]) keep=1} keep' "$tmp/nginx-owners" "$tmp/all" >"$tmp/sockets"
+  awk '{printf "CHECK_INODE_OWNER\t%s\t%s\n",$1,$2}' "$tmp/nginx-owners"
+elif [[ "$mode" == target ]]; then
   # ss130716 has no -H. Headers are ignored by the PID filter / parser.
   [[ -r "/proc/$selector/fd" && -x "/proc/$selector/fd" ]] || exit 7
   find_sockets "$selector" >"$tmp/fd-before" ||
@@ -168,7 +212,7 @@ if [[ "$mode" == listeners ]]; then
 elif [[ -n "$listen_filter" ]]; then
   bounded 12 "${ss_command[@]}" -lntp "$listen_filter" >"$tmp/listen" 2>"$tmp/err"
   listen_rc=$?
-elif [[ "$mode" == target ]]; then
+elif [[ "$mode" == target || "$mode" == nginx ]]; then
   # The same enumeration already includes the selected process's listeners.
   awk '/^[^ \t]/{keep=($1=="LISTEN" || ($1 ~ /^tcp/ && $2=="LISTEN"))} keep' "$tmp/sockets" >"$tmp/listen"
   listen_rc=$rc
@@ -189,7 +233,7 @@ fi
 if [[ "$mode" == peer && -n "$namespace_pid" ]]; then
   pids=$(grep -oE 'pid=[0-9]+' "$tmp/sockets" "$tmp/listen" | sed 's/.*pid=//' | sort -un | head -40)
 fi
-if [[ "$mode" == target ]]; then
+if [[ "$mode" == target || "$mode" == nginx ]]; then
   socket_output "$tmp/listen"
 else
   awk -v pids="$(echo "$pids" | tr '\n' ',')" 'BEGIN{n=split(pids,ids,",")} {for(i=1;i<=n;i++) if(ids[i]!="" && index($0,"pid=" ids[i] ",")){print;break}}' "$tmp/listen"

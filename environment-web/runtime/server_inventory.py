@@ -816,13 +816,22 @@ def parse_nginx(dump):
     for args, context, _ in tree:
         if args[0] not in ('http','stream'): continue
         upstreams = {a[1]: [endpoint(v[0]) for v in values(c,'server') if v] for a,c,_ in context if a[0]=='upstream' and len(a)>1}
-        def visit(nodes, domains, listeners, uri, inherited=None, src=None, inherited_root=None, static_fallback=True):
+        def visit(nodes, domains, listeners, uri, inherited=None, src=None, inherited_root=None, static_fallback=True, inherited_satisfy='all', conditional=False, inherited_access=()):
+            satisfy = next((a[1] for a,c,p in nodes if a[0]=='satisfy' and len(a)==2), inherited_satisfy)
+            own_access = [(a,p) for a,c,p in nodes if a[0] in ('allow','deny') and len(a)==2]
+            access = own_access or inherited_access
+            deny_all = next(((a,p) for a,p in access if a == ['deny','all']), None)
+            # Preserve the configured rule without treating conditional access as an upstream.
+            if deny_all:
+                routes.append(dict(domains=domains, listen=listeners, uri=uri, directive='access_control',
+                                   target='deny all', upstream='', backends=[], file=deny_all[1], context=args[0]))
+            blocked = bool(deny_all and access[0][0] == ['deny','all'] and satisfy == 'all' and not conditional)
             proxies = [(a[0],a[1],p) for a,c,p in nodes if a[0] in ('proxy_pass','fastcgi_pass','grpc_pass','uwsgi_pass','scgi_pass') and len(a)>1]
             effective = proxies or inherited or []
             alias = next((a[1] for a,c,p in nodes if a[0]=='alias' and len(a)==2), None)
             own_root = next((a[1] for a,c,p in nodes if a[0]=='root' and len(a)==2), None)
             effective_root = own_root if own_root is not None else inherited_root
-            for directive, target, source in effective:
+            for directive, target, source in ([] if blocked else effective):
                 parsed=urlsplit(target if '://' in target else '//'+target)
                 name=parsed.netloc if '://' in target else target
                 backends=upstreams.get(name)
@@ -830,19 +839,19 @@ def parse_nginx(dump):
                     backends=[endpoint(name, '443' if parsed.scheme in ('https','grpcs') else '80')]
                 routes.append(dict(domains=domains, listen=listeners, uri=uri, directive=directive,
                                    target=target, upstream=name, backends=backends, file=source, context=args[0]))
-            if not effective and static_fallback:
+            if not blocked and not effective and static_fallback:
                 routes.append(dict(domains=domains,listen=listeners,uri=uri,directive='static/other',target=static_target(alias,effective_root,uri),upstream='',backends=[],file=src,context=args[0]))
             for a,c,p in nodes:
-                if a[0]=='location': visit(c,domains,listeners,' '.join(a[1:]),effective,p,effective_root)
+                if a[0]=='location': visit(c,domains,listeners,' '.join(a[1:]),effective,p,effective_root, inherited_satisfy=satisfy, conditional=conditional, inherited_access=access)
                 # if/limit_except are not routing contexts: capture only their own
                 # proxy directives; the parent block already emitted this uri's route.
-                elif a[0] in ('if','limit_except'): visit(c,domains,listeners,uri,None,p,effective_root,static_fallback=False)
+                elif a[0] in ('if','limit_except'): visit(c,domains,listeners,uri,None,p,effective_root,static_fallback=False, inherited_satisfy=satisfy, conditional=True, inherited_access=())
         for a,c,src in context:
             if a[0]=='server':
                 domains=[x for v in values(c,'server_name') for x in v]
                 # An explicit `location /` already covers the server-level fallback.
                 has_root_location = any(x[0][0]=='location' and x[0][1:]==['/'] for x in c)
-                visit(c,domains,[' '.join(v) for v in values(c,'listen')], '/' if args[0]=='http' else '(TCP/UDP)', src=src, static_fallback=not has_root_location)
+                visit(c,domains,[' '.join(v) for v in values(c,'listen')], '/' if args[0]=='http' else '(TCP/UDP)', src=src, static_fallback=not has_root_location, inherited_satisfy=next((a[1] for a,c,p in context if a[0]=='satisfy' and len(a)==2), 'all'), inherited_access=[(a,p) for a,c,p in context if a[0] in ('allow','deny') and len(a)==2])
     seen, unique = set(), []
     for r in routes:
         key = (tuple(r['listen']),tuple(r['domains']),r['uri'],r['directive'],r['target'],r['upstream'],
@@ -1252,54 +1261,8 @@ def nginx_process_config(processes):
 
 
 def collect_nginx_files(terminal, rows):
-    """Collect every reachable nginx config file.
-
-    Strategy: run nginx -T per running instance, then always sweep
-    <prefix>/conf.d/*.conf and base64-read every conf.d file that -T did not
-    yield (unloaded orphans or read failures). When no -T succeeded, the main
-    config and its include targets are read directly and routes are parsed from
-    the raw files on a best-effort basis.
-
-    Returns (files, routes, warnings, notes, via_nginx_t); `warnings` are
-    integrity issues that lower the collection status, `notes` are informational.
-    """
-    prefix, main_conf = nginx_process_config(rows)
-    # Containerized nginx lives in its own mount namespace: host-side `nginx -T`
-    # cannot see its config, so read the container files through /proc/<pid>/root.
-    fs_root = nginx_mount_root(terminal, rows)
-    commands = [] if fs_root else nginx_commands(rows)
-    all_files, all_routes, warnings, notes = [], [], [], []
-    collected = set()
-    via_nginx_t = False
-    for command in commands:
-        rc, dump = terminal.run(command, timeout=60)
-        if rc != 0 or not dump:
-            warnings.append('Nginx -T 读取失败：检查配置权限、证书权限或 nginx 版本')
-            continue
-        via_nginx_t = True
-        paths = list(dict.fromkeys(re.findall(r'(?m)^# configuration file (.+):\s*$', dump)))
-        files, file_errors = collect_config_files(terminal, paths, command.split()[0])
-        all_files.extend(files); warnings.extend(file_errors)
-        collected.update(f['path'] for f in files)
-        try:
-            routes, parse_warnings = parse_nginx(dump)
-            for route in routes: route['instance'] = command.split()[0]
-            all_routes.extend(routes); warnings.extend(parse_warnings)
-        except ValueError:
-            warnings.append('Nginx 配置解析不完整')
-    # conf.d 全量补采：-T 未列出（未加载）或读取失败的 .conf 一律直接读取
-    missing = [p for p in list_conf_d(terminal, prefix, fs_root) if p not in collected]
-    if missing:
-        files, errors = collect_config_files(terminal, missing, 'folidev', fs_root)
-        all_files.extend(files); warnings.extend(errors)
-        collected.update(f['path'] for f in files)
-        if via_nginx_t and files:
-            notes.append('conf.d 中存在未被加载的配置文件，已一并采集：'+', '.join(f['path'] for f in files))
-    if fs_root:
-        notes.append('Nginx 运行于容器（独立挂载命名空间），已通过 '+fs_root+' 读取容器内配置')
-    if not via_nginx_t:
-        warnings.extend(read_nginx_without_t(terminal, prefix, main_conf, collected, all_files, all_routes, fs_root))
-    return all_files, all_routes, warnings, notes, via_nginx_t
+    from application_config.nginx import collect
+    return collect(terminal, rows)
 
 
 def read_nginx_without_t(terminal, prefix, main_conf, collected, all_files, all_routes, fs_root=''):

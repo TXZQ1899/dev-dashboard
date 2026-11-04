@@ -56,7 +56,7 @@ function InstanceDetails({ unitId, environment, snapshotHash, includeHistory, on
       <TableHead>最后发布时间（Push In）</TableHead><TableHead>发布状态</TableHead>
     </TableRow></TableHeader>
     <TableBody>{rows.map((instance) => <TableRow key={instance.id}>
-      <TableCell>{instance.attributes.componentRole === 'KIBANA' && <span>Kibana（配套服务） </span>}{instance.ip ? <a className="catalog-app-link" href={`/jumpserver?q=${encodeURIComponent(instance.ip)}&view=processes`}><code>{instance.ip}</code></a> : <code>{instance.attributes.serviceEndpoints?.map((endpoint) => endpoint.address).join(', ') || '未提供'}</code>}</TableCell>
+      <TableCell>{instance.attributes.componentRole === 'KIBANA' && <span>Kibana（配套服务） </span>}{instance.ip ? <a className="catalog-app-link" href={`/jumpserver?q=${encodeURIComponent(instance.ip)}&view=processes`}><code>{instance.ip}</code></a> : <><code>{instance.attributes.serviceEndpoints?.map((endpoint) => endpoint.address).join(', ') || '未提供'}</code>{!!instance.dmsIps?.length && <small title="DMS 登记的实例 IP，不代表已核实的物理主机">DMS 实例 IP：{instance.dmsIps.join(', ')}</small>}</>}</TableCell>
       <TableCell title={instance.attributes.portBasis === 'DMS_RECORD' ? 'DMS 登记的访问端口，未核验实际监听' : instance.attributes.portBasis === 'DOCKER_PUBLISHED' ? 'Docker 发布的宿主机 TCP 端口；服务监听容器端口' : instance.attributes.portBasis === 'LIVE_LISTENER' ? '核查时进程持有的 TCP 监听端口' : instance.attributes.portBasis === 'APPLICATION_DEFAULT' ? '沿用应用声明端口，未核验实际监听' : '部署记录中的声明端口，未核验实际监听'}>{instance.port || instance.attributes.observedEndpoints?.map((endpoint) => `${endpoint.ip}:${endpoint.port}/${endpoint.protocol}`).join(', ') || '未提供'}</TableCell>
       <TableCell title={instance.attributes.branchSource}>{instance.attributes.branch || '未提供'}</TableCell>
       <TableCell><code>{instance.attributes.deploy || '—'} / {instance.attributes.config || '—'}</code></TableCell>
@@ -146,9 +146,9 @@ export default function DeploymentUnits() {
     <div className="catalog-summary" aria-label={`${categoryLabel(category)}汇总`}>
       <span>部署单元个数 <b>{loading ? '—' : result?.categorySummary.units ?? '—'}</b></span>
       {catalogEnvs.map((env) => <span key={env}>{catalogLabels[env]}{env === 'UNIDENTIFIED' ? '' : '环境'}实例数 / 服务器总数 <b>{loading || !result ? '—' : `${result.categorySummary.environments[env]?.instances || 0} / ${result.categorySummary.environments[env]?.servers || 0}`}</b></span>)}
-      <small>实例按当前观察统计；服务器按 IP 去重。汇总随搜索和历史单元筛选变化。</small>
+      <small>实例按当前观察统计；服务器按 IP 去重，托管服务按实例计数，不代表物理节点数。汇总随搜索和历史单元筛选变化。</small>
     </div>
-    <div className="list-notice catalog-notice"><span>应用数据来自 DevOps 快照；组件来自进程及配置核查。环境待识别不表示任何正式环境。</span></div>
+    <div className="list-notice catalog-notice"><span>应用数据来自 DevOps 快照；组件来自进程、配置核查及 DMS 登记。环境待识别不表示任何正式环境。</span></div>
     {error && !loading && <div className="catalog-message catalog-error" role="alert">{error}<Button variant="outline" size="sm" onClick={reload}>重试读取</Button></div>}
     {result?.job.error && <div className="catalog-message catalog-error" role="alert">{result.job.error}</div>}
     {result?.source && !result.activeSnapshot.matchesCatalog && <output className="catalog-message">
@@ -165,7 +165,6 @@ export default function DeploymentUnits() {
         <TableHeader><TableRow>
           <TableHead>部署单元</TableHead><TableHead>来源应用 ID</TableHead><TableHead>单元类型</TableHead>
           <TableHead>业务领域 / 系统</TableHead>{catalogEnvs.map((env) => <TableHead key={env}>{catalogLabels[env]}</TableHead>)}
-          <TableHead>来源状态</TableHead>
         </TableRow></TableHeader>
         <TableBody>{!loading && result?.units.map((unit) => <Fragment key={unit.id}>
           <TableRow>
@@ -177,20 +176,19 @@ export default function DeploymentUnits() {
               const value = unit.environments.find((entry) => entry.environment === env);
               const key = `${unit.id}:${env}`;
               const open = expanded === key;
-              return <TableCell key={env}><Button variant="ghost" size="sm" aria-label={`${unit.name} ${catalogLabels[env]}实例明细`} aria-expanded={open} aria-controls={open ? `catalog-${key}` : undefined} onClick={() => setExpanded(open ? null : key)}>
+              return <TableCell key={env}>{!value?.instanceCount && (!value || value.configurationState === 'UNKNOWN') ? '-' : <Button variant="ghost" size="sm" aria-label={`${unit.name} ${catalogLabels[env]}实例明细`} aria-expanded={open} aria-controls={open ? `catalog-${key}` : undefined} onClick={() => setExpanded(open ? null : key)}>
                 {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                 {value?.instanceCount ? `${value.instanceCount} 实例 / ${value.serverCount} 台` : configurationLabels[value?.configurationState || 'UNKNOWN']}
-              </Button>{!!value?.unresolvedCount && <small className="catalog-warning">{value.unresolvedCount} 条待解析</small>}
-              {value?.coverageState !== 'COMPLETE' && <small>观察范围待核实</small>}</TableCell>;
+              </Button>}{!!value?.unresolvedCount && <small className="catalog-warning">{value.unresolvedCount} 条待解析</small>}
+              </TableCell>;
             })}
-            <TableCell>{unit.sourcePresence === 'PRESENT' ? '已观察到' : '未再观察到'}<small>{unit.managementStatus === 'ACTIVE' ? '管理状态：启用' : unit.managementStatus}</small></TableCell>
           </TableRow>
-          {catalogEnvs.filter((env) => !loading && expanded === `${unit.id}:${env}`).map((env) => <TableRow key={env} className="expanded-row"><TableCell colSpan={9}>
+          {catalogEnvs.filter((env) => !loading && expanded === `${unit.id}:${env}`).map((env) => <TableRow key={env} className="expanded-row"><TableCell colSpan={8}>
             <div id={`catalog-${unit.id}:${env}`} className="catalog-instance-heading">{unit.name} / {catalogLabels[env]}<small>未定位目标和冲突记录保留为待解析，不生成占位实例。</small></div>
             <InstanceDetails key={`${result.source?.snapshotSha256}:${includeHistory}`} unitId={unit.id} environment={env} snapshotHash={result.source?.snapshotSha256 || ''} includeHistory={includeHistory} onReload={reload} />
           </TableCell></TableRow>)}
         </Fragment>)}
-        {!loading && !result?.units.length && <TableRow><TableCell colSpan={9}><div className="empty-state"><Layers3 size={28} />
+        {!loading && !result?.units.length && <TableRow><TableCell colSpan={8}><div className="empty-state"><Layers3 size={28} />
           <h2>{result?.source ? '未找到匹配的部署单元' : '尚未建立部署目录'}</h2>
           <p>{result?.source ? '调整搜索或勾选历史单元后重试。' : '使用当前已有应用快照创建部署单元和环境实例，无需重新采集。'}</p>
         </div></TableCell></TableRow>}

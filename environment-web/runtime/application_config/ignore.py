@@ -36,7 +36,7 @@ def is_ignored(path):
 def probe_script(name):
     directory = Path(__file__).parent/'probes' if name in ('application_configs.sh', 'application_jar_configs.sh') else RUNTIME/'probes'
     script = (directory/name).read_text()
-    if name not in ('application_files.sh', 'application_configs.sh'):
+    if name not in ('application_files.sh', 'application_configs.sh', 'container_configs.sh'):
         return script
     expression = []
     for pattern in ignore_patterns():

@@ -38,6 +38,8 @@
 
 ## 1. DevOps 应用环境
 
+应用列表的按需 Git 地址检查独立于采集快照，结果写入数据卷 `checks/git-address/latest.json`，包含来源版本、DevOps 快照时间、检查时间及各应用的原始地址、状态与原因；不修改原始快照。检查覆盖应用及各环境声明的地址，按规范化地址去重；当前仅检查 Codeup，其他平台保留待核实。`missing` 表示接口返回未找到（可能受账号权限限制），`denied` 表示明确无权，`unknown` 包含网络、认证及不支持的地址。应用列表只对匹配当前快照时间和原始地址的结果显示标签；检查不验证 Git clone 凭据。
+
 ### 根对象
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -689,6 +691,10 @@ AccessKey 采集按 LB 隔离故障。列表或详情明确为 `inactive` / `loc
 
 服务器进程列表对无法直接识别的容器 init 进程，以及唯一匹配容器发布配置的 Docker 代理，可根据容器启动命令或已知镜像名推断组件分类，并标注“容器推断”；代理行同时标明“Docker 端口代理”。这不确认该 PID 的实际服务角色，也不对容器子进程继承此分类。
 
+进程列表对有容器关联的行提供「容器信息」入口。页面通过 `POST /api/settings/container-info` 读取信息，参数为资产 ID、PID、当前快照中的完整容器 ID 及 `action: info | refresh | browse`。`info` 优先返回数据卷 `checks/container-info/<身份哈希>.json` 的缓存；没有缓存时实时采集，`refresh` 强制重新采集。缓存身份包含资产 ID、PID、快照进程启动时间和容器 ID，不按快照版本失效；响应 `cacheHit` 表示是否使用缓存，`observedAt` 保留实际采集时间。刷新失败保留旧缓存；缓存文件权限为 `0600`。实时采集重新核验所选进程及容器进程树，代理额外核验 Docker TCP 发布映射和唯一监听进程。信息返回镜像名称及 ID、容器 ID、init PID、关联依据及 `mounts[]`（`type`、`name`、`source`、`destination`、`readWrite`、`driver`、`propagation`）；只读取指定字段，不读取 Docker 环境变量。`bind` 和 `volume` 归为持久化挂载，其他类型单独展示，不以无挂载证明应用没有其他存储。
+
+`browse` 必须同时提交挂载索引、原来源与目标路径、相对于挂载根的路径；文件列表不缓存，在读取前后实时核验进程、容器和挂载身份，变化时拒绝返回。只按需列出宿主机挂载源的直接子项，每页最多 200 项，支持前后翻页，包含名称、文件类型、大小和修改时间，不读取内容，不跟随符号链接；挂载源本身是文件时列出该文件。权限不足、容器停止、代理或路径不唯一时保留错误，不推断空目录。该功能不修改原始采集快照。
+
 ### `Route`
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -696,8 +702,8 @@ AccessKey 采集按 LB 隔离故障。列表或详情明确为 `inactive` / `loc
 | `domains` | `string[]` | 是 | `server_name` |
 | `listen` | `string[]` | 是 | `listen` 指令参数 |
 | `uri` | `string` | 是 | `location` URI；非 location 为空 |
-| `directive` | `string` | 是 | `proxy_pass`、`fastcgi_pass` 等；静态/其他为 `static/other` |
-| `target` | `string` | 是 | 原转发目标；`static/other` 时为由 `alias`/`root` 解析出的静态目录（如 `/var/www/webapps/tc-fostay`），无 alias/root 或旧快照为空 |
+| `directive` | `string` | 是 | `proxy_pass`、`fastcgi_pass` 等；静态/其他为 `static/other`，访问控制声明为 `access_control` |
+| `target` | `string` | 是 | 原转发目标；`static/other` 时为由 `alias`/`root` 解析出的静态目录（如 `/var/www/webapps/tc-fostay`），无 alias/root 或旧快照为空；`access_control` 时保留原声明如 `deny all`，不表示已核验实际访问结果 |
 | `upstream` | `string` | 是 | upstream 名称或直接目标 |
 | `instance` | `string` | 是 | 运行中的 Nginx 可执行文件 |
 | `backends` | `Backend[]` | 是 | upstream 展开后的后端 |
@@ -1424,6 +1430,12 @@ STALE
 
 Tomcat 配置检测和实时文件列表会读取该实例 `conf/server.xml` 中 Host 下明确声明的 Context `docBase`，采集其展开目录的 `WEB-INF`；相对 `docBase` 相对于 Host 的 `appBase`（默认 `catalina.base/webapps`）。未展开的 WAR、包含变量的路径和无效 XML 不作猜测；多 Context 仅表示同一 JVM 的声明，不证明应用归属。检测仍受上述文件和大小限额约束，发现的目录优先读取。目录符号链接在远端解析。
 
+配置文件列表对 Tomcat 检查进程根文件系统；与宿主机不同时，通过 `/proc/<pid>/root` 读取进程推导的配置目录，路径仍为容器内路径，条目 `source` 为 `container`，列表 `processType` 为 `CONTAINER_TOMCAT`。读取前后核验 PID 启动时间，沿用配置忽略规则和快照限制；目录或文件路径包含符号链接时跳过，访问失败保留警告，不回退到宿主机同名路径。该支持限于配置文件列表与快照，TCP 配置端点解析及日志采集仍使用原有方式。
+
+容器内 Tomcat 配置列表还检查 `server.xml` 中 Host 明确指定的 `appBase`（没有可用 Host 时检查默认 `catalina.base/webapps`）下一级已展开应用的 `WEB-INF` 和 `config` 目录，最多发现 128 个目录；不展开 WAR、跟随符号链接或推断目录已实际部署。文件仍遵循忽略规则与原快照限制。
+
+从 Docker 端口代理打开配置文件时，先核验代理的完整 TCP 发布映射、唯一运行容器和该容器网络空间中唯一的实时监听 PID，再按该服务进程采集；无法确认或存在多个候选时返回原因，不选取猜测目标。列表 `dockerTarget` 记录容器 ID、名称、服务 PID 和启动时间标识，`selectedStartTicks` 记录所选代理进程的启动时间标识；原 `pid` / `startTicks` 属于实际采集的服务进程。代理重启后旧会话不会误用新进程，已保存的配置快照仍按原会话身份读取。
+
 `application*.yml/yaml` 和 `bootstrap*.yml/yaml` 中明确的 `nacos.config` 简单 YAML 声明支持 `server-addr`、`data-id`、`group`、`namespace` 及可选 `username` / `password`；多文档 YAML 分段解析，不跨文档拼接属性。仅访问声明的单个服务器，使用容器网络和 Nacos v1 配置 API，默认组为 `DEFAULT_GROUP`。顶层 `nacos.dataId` 按逗号拆分为完整 Data ID（包含冒号），使用顶层 `nacosUrl` 和 `namespace`；若顶层未声明 `group`，通过 Nacos 配置列表查询该命名空间和完整 Data ID，只有结果完整且可见 Group 唯一时才读取，并提示查询结果不证明应用实际使用该 Group。无权限、未匹配、多个 Group 和截断均保留警告。不推测变量、多个服务器、复杂 YAML、其他客户端配置格式或生效 profile。检测时配置内容仅用于提取 Endpoint，不写入报告；配置文件列表刷新时成功获取的原文写入 `checks/<id>/config-snapshots/<snapshot-id>/nacos/<identity-hash>.yaml|txt`（权限 `0600`），列表记录来源和不透明存储名，预览明文显示密码并遮盖其他常见凭证。每次最多读取 20 项，单文件最多 256 KiB，连接超时 5 秒，失败保留警告；容器必须能够访问 Nacos。原文可能包含凭据，应保护数据卷及其备份。
 
 Spring Cloud Alibaba 的 `spring.cloud.nacos.config` 支持从无 profile 文档读取 `spring.application.name` 和 `spring.profiles.active`，以进程命令中明确的同名参数覆盖，再选择一个匹配的 profile 文档。基于 `prefix` / `name` / 应用名及文件扩展名生成无后缀、带扩展名和带 profile 的 Data ID 候选。profile 不唯一、配置冲突或变量未解析时不跨环境猜测；环境变量及其他配置来源未核实，页面保留推导警告。暂不解析共享或扩展配置列表。
@@ -1462,8 +1474,8 @@ Spring Cloud Alibaba 的 `spring.cloud.nacos.config` 支持从无 profile 文档
 
 | 表 | 语义与身份 |
 |---|---|
-| `business_domain` | 业务领域，平台 UUID，唯一 code；本期空表 |
-| `business_system` | 业务系统，平台 UUID，唯一 code，`domain_id` 外键；本期空表 |
+| `business_domain` | 业务领域，平台 UUID，唯一 code；可从 Codeup 组织下的第一级代码组建立 |
+| `business_system` | 业务系统，平台 UUID，唯一 code，`domain_id` 外键；可从领域下的第二级代码组建立 |
 | `deployment_unit` | 部署单元，平台 UUID 与唯一 code；`system_id` 可空；单元类型 APPLICATION / DATABASE / MIDDLEWARE / OTHER，无必填应用 ID |
 | `deployment_unit_environment` | 唯一 `unit_id + environment`，TEST / SIMULATION / PRODUCT / UNIDENTIFIED；配置状态与本次观察完整性分开 |
 | `deployment_instance` | 分环境部署成员，平台 UUID；IP、声明端口、身份质量、来源可见性及最近观察引用；同 IP 可有多实例 |
@@ -1484,6 +1496,7 @@ Spring Cloud Alibaba 的 `spring.cloud.nacos.config` 支持从无 profile 文档
 - 完整且 `scope=all` 的快照才能标记缺失应用；完整且无冲突的环境才能标记缺失实例。`NOT_OBSERVED` 只表示未再观察到，不是删除、停机或真实发布事件。不完整环境保留旧记录，结合 lastSeenAt 和 coverageState 判断陈旧程度。
 - 配置状态为 UNCONFIGURED / CONFIGURED_EMPTY / HAS_DEPLOYMENTS / UNKNOWN；覆盖状态为 COMPLETE / PARTIAL / UNKNOWN。管理启停状态独立于来源可见性。
 - 名称默认 FOLLOW_SOURCE，可预留 MANUAL 策略；领域/系统、说明、管理状态不随采集覆盖。原始部署、配置 ID、分支、发布时间、发布状态等来源属性保存在观察 JSON。
+- `runtime/business_catalog.py` 默认预览，`--apply` 按当前完整 Codeup 及 DevOps 快照建立领域和系统：组织下第一级组为领域、第二级组为系统，更深组仍属于该系统。仅当 Codeup 清单中仓库路径及仓库关联的应用与 DevOps 应用声明的仓库地址一致时，绑定对应应用部署单元；没有可靠匹配的不归属。代码组路径、快照版本和绑定证据保存在分类描述及目录变更中；已有归属不覆盖，导入幂等。本操作是一次性导入，不随采集自动更新。
 - 当前目录不随应用历史快照切换而回滚。来源时间不一致时页面明确说明；本期无人工编辑、进程识别或完整历史目录回放 API。
 
 ### Zookeeper 单节点核查导入

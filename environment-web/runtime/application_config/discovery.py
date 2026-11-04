@@ -69,3 +69,28 @@ def tomcat_docbase_roots(content, process):
     return roots[:16]
 
 
+def tomcat_appbases(content, process):
+    """Return literal Host appBase directories, or the conventional webapps directory."""
+    try:
+        args = shlex.split(process.get('command', ''))
+        base = next((a.split('=', 1)[1] for a in args if a.startswith('-Dcatalina.base=')), '')
+        if not base.startswith('/'):
+            return []
+        values = []
+        if content and '<!DOCTYPE' not in content.upper() and '<!ENTITY' not in content.upper():
+            tree = ET.fromstring(content)
+            values = [host.get('appBase', 'webapps') for host in tree.iter('Host')]
+        if not values:
+            values = ['webapps']
+        roots = []
+        for value in values:
+            if not value or '${' in value or '\0' in value:
+                continue
+            path = posixpath.normpath(posixpath.join(base, value))
+            if path.startswith('/') and len([p for p in path.split('/') if p]) >= 3 and path not in roots:
+                roots.append(path)
+        return roots[:16]
+    except (ValueError, ET.ParseError):
+        return []
+
+

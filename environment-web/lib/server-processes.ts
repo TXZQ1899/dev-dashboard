@@ -208,9 +208,22 @@ export function processRows(assets: Asset[], now: number): ProcessRow[] {
     return rows;
   });
 }
+function isSingleIpv4(query: string): boolean {
+  const parts=query.trim().split('.');
+  return parts.length===4&&parts.every(part=>/^(0|[1-9]\d{0,2})$/.test(part)&&Number(part)<=255);
+}
+function assetHasIp(asset: Asset, ip: string): boolean {
+  return asset.ip.split(/[\s,;]+/).includes(ip);
+}
+export function matchesServerQuery(asset: Asset, query: string): boolean {
+  const search=query.trim().toLowerCase();
+  if(isSingleIpv4(search))return assetHasIp(asset,search);
+  return `${asset.ip} ${asset.hostname} ${asset.inspection?.reason||''} ${asset.inspection?.warnings?.join(' ')||''}`.toLowerCase().includes(search);
+}
 export function filterProcesses(rows: ProcessRow[], query: string, duration: Duration, type: ProcessType='全部进程') {
   const words=query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  return rows.filter(r=> (type==='全部进程'||r.type===type) && matchesDuration(r.seconds,duration) && words.every(word=>`${r.asset.ip} ${r.asset.hostname} ${r.process.pid} ${r.name} ${r.process.command} ${r.docker?.container.name||''} ${r.docker?.container.image||''}`.toLowerCase().includes(word)))
+  const ip=isSingleIpv4(query)?query.trim():null;
+  return rows.filter(r=> (type==='全部进程'||r.type===type) && matchesDuration(r.seconds,duration) && (ip?assetHasIp(r.asset,ip):words.every(word=>`${r.asset.ip} ${r.asset.hostname} ${r.process.pid} ${r.name} ${r.process.command} ${r.docker?.container.name||''} ${r.docker?.container.image||''}`.toLowerCase().includes(word))))
     .sort((a,b)=>b.seconds-a.seconds||a.asset.ip.localeCompare(b.asset.ip)||a.process.pid-b.process.pid||a.asset.id.localeCompare(b.asset.id));
 }
 // 服务器详情框内的进程搜索：按 PID、进程名（含业务名）、监听端口与详细命令匹配；

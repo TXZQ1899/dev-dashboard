@@ -202,3 +202,22 @@ test('appPorts skips assets without a valid IP and leaves foreign ip:port untouc
   assert.ok(!topology.nodes.some(n => n.id === 'endpoint:hostname-only:1:tcp'));
   assert.ok(topology.nodes.some(n => n.id === 'endpoint:10.58.9.217:7084:tcp'));
 });
+
+
+test('Nginx access control remains a route and does not create a fabricated upstream', async () => {
+  const { buildValidatedTopology } = await import('../lib/topology/topology-builder.ts');
+  const input = { devops:{apps:[]}, repositories:{repos:[]}, dns:{records:[]}, eip:{records:[]},
+    nat:{available:false}, clb:{available:false}, ecs:{instances:[]}, jumpserver:{assets:[{
+      id:'nginx-1', ip:'10.0.0.1', hostname:'web', inspection:{nginxRoutes:[{
+        domains:['example.test'], listen:['80'], uri:'~ /druid/', directive:'access_control',
+        target:'deny all', upstream:'', backends:[], file:'/etc/nginx/conf.d/site.conf', context:'http'
+      }]}
+    }]}};
+  const {topology, validation} = buildValidatedTopology(input);
+  assert.equal(validation.valid, true);
+  const route = topology.nodes.find(n=>n.type==='NGINX_ROUTE');
+  assert.equal(route.identity.target, 'deny all');
+  assert.ok(topology.edges.some(e=>e.type==='SERVED_BY' && e.to===route.id));
+  assert.ok(!topology.edges.some(e=>e.from===route.id && e.type==='USES_UPSTREAM'));
+  assert.ok(!topology.nodes.some(n=>n.type==='UPSTREAM'));
+});

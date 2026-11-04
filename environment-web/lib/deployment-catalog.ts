@@ -35,6 +35,7 @@ export type CatalogInstance = {
   id: string;
   environment: CatalogEnvironment;
   ip: string | null;
+  dmsIps?: string[];
   port: string | null;
   identityQuality: string;
   presenceStatus: string;

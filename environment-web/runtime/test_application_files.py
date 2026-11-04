@@ -19,6 +19,63 @@ from application_config import zookeeper as zk
 
 
 class FileTests(unittest.TestCase):
+    def test_container_tomcat_catalogue_and_snapshot_use_container_probe(self):
+        proc = process(command='java -Dcatalina.base=/opt/tomcat org.apache.catalina.startup.Bootstrap')
+        proc['kind'] = 'Tomcat'
+        enc = lambda value: base64.b64encode(value.encode()).decode()
+        root = '/opt/tomcat/conf'
+        record = base64.b64encode(b'100\t12\t/opt/tomcat/conf/server.xml\0').decode()
+        listing = 'ROOT\tconfig\t'+enc(root)+'\nFILE_BATCH_BEGIN\tconfig\t'+enc(root)+'\n'+record+'\nFILE_BATCH_END\nFILES_DONE\n'
+        content = base64.b64encode(b'<Server/>').decode()
+        with patch.object(f, 'run_script', side_effect=['CONTAINER_ROOT\nFILES_DONE', listing,
+                'CONTENT_BEGIN\n'+content+'\nCONTENT_END\nFILES_DONE', 'FILES_DONE']) as run:
+            result = f.catalogue(None, proc, kind='config')
+        self.assertEqual(result['processType'], 'CONTAINER_TOMCAT')
+        self.assertEqual(result['files'][0]['source'], 'container')
+        self.assertTrue(all(call.args[1] == 'container_configs.sh' for call in run.call_args_list))
+        entry = result['files'][0]
+        with tempfile.TemporaryDirectory() as folder, patch.object(f, 'run_script', return_value='SNAPSHOT\t'+entry['id']+'\t'+content+'\nFILES_DONE') as run:
+            f.snapshot_configs(None, proc, result, folder)
+            self.assertEqual((Path(folder)/entry['id']).read_bytes(), b'<Server/>')
+            self.assertEqual(run.call_args.args[1], 'container_configs.sh')
+
+    def test_tomcat_unknown_filesystem_never_falls_back_to_host(self):
+        proc = process(command='java -Dcatalina.base=/opt/tomcat org.apache.catalina.startup.Bootstrap')
+        proc['kind'] = 'Tomcat'
+        with patch.object(f, 'run_script', return_value='FILES_DONE') as run:
+            with self.assertRaisesRegex(ValueError, '无法确认进程文件系统'):
+                f.catalogue(None, proc, kind='config')
+            self.assertEqual(run.call_count, 1)
+
+    def test_container_tomcat_discovers_non_root_expanded_app(self):
+        proc = process(command='java -Dcatalina.base=/opt/tomcat org.apache.catalina.startup.Bootstrap')
+        proc['kind'] = 'Tomcat'
+        enc = lambda value: base64.b64encode(value.encode()).decode()
+        root = '/opt/tomcat/webapps/orders/WEB-INF'
+        records = base64.b64encode((f'100\t6\t{root}/classes/application.yml\0').encode()).decode()
+        listing = 'ROOT\tconfig\t'+enc(root)+'\nFILE_BATCH_BEGIN\tconfig\t'+enc(root)+'\n'+records+'\nFILE_BATCH_END\nFILES_DONE\n'
+        with patch.object(f, 'run_script', side_effect=['CONTAINER_ROOT\nFILES_DONE', 'FILES_DONE',
+                'APP_ROOT\t'+enc(root)+'\nFILES_DONE', listing]) as run:
+            result = f.catalogue(None, proc, kind='config')
+        self.assertEqual(result['files'][0]['path'], root+'/classes/application.yml')
+        self.assertEqual(result['files'][0]['source'], 'container')
+        self.assertEqual(run.call_args_list[2].args[-2:], ('discover-webapps', '/opt/tomcat/webapps'))
+
+    def test_container_tomcat_rejects_app_root_outside_appbase(self):
+        proc = process(command='java -Dcatalina.base=/opt/tomcat org.apache.catalina.startup.Bootstrap')
+        proc['kind'] = 'Tomcat'
+        root = base64.b64encode(b'/opt/tomcat/WEB-INF').decode()
+        with patch.object(f, 'run_script', side_effect=['CONTAINER_ROOT\nFILES_DONE', 'FILES_DONE', 'APP_ROOT\t'+root+'\nFILES_DONE']):
+            with self.assertRaisesRegex(ValueError, '无效容器应用目录'):
+                f.catalogue(None, proc, kind='config')
+
+    def test_container_tomcat_uses_declared_literal_appbases(self):
+        proc = process(command='java -Dcatalina.base=/opt/tomcat org.apache.catalina.startup.Bootstrap')
+        xml = '<Server><Service><Host appBase="/srv/apps/orders"/><Host appBase="${apps}"/></Service></Server>'
+        self.assertEqual(f.tomcat_appbases(xml, proc), ['/srv/apps/orders'])
+        self.assertEqual(f.tomcat_appbases('', proc), ['/opt/tomcat/webapps'])
+        self.assertEqual(f.tomcat_appbases('<Server>', proc), [])
+
     def test_jar_snapshot_feeds_nacos_and_honours_ignorelist(self):
         enc = lambda value: base64.b64encode(value).decode()
         archive = b'/opt/orders/app.jar'
@@ -46,6 +103,41 @@ class FileTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '无效 JAR'): f.snapshot_jar_configs(None, process(), {'files':[], 'warnings':[]}, folder)
         with tempfile.TemporaryDirectory() as folder, patch.object(f, 'run_script', return_value=''):
             with self.assertRaisesRegex(ValueError, '不完整'): f.snapshot_jar_configs(None, process(), {'files':[], 'warnings':[]}, folder)
+
+    def test_nginx_catalogue_reuses_collector_and_snapshots_exact_bytes(self):
+        master = process(command='nginx: master process /usr/sbin/nginx')
+        data = b'server { server_name example.test; location /api { proxy_pass http://backend; } }'
+        entry = {'path':'/etc/nginx/conf.d/a.conf', 'base64':base64.b64encode(data).decode()}
+        route = {'file':entry['path'], 'domains':['example.test'], 'listen':['80'], 'uri':'/api', 'target':'http://backend', 'upstream':'backend'}
+        with patch.object(f, 'run_script', return_value='FILES_DONE') as guard, \
+             patch('application_config.nginx.collect', return_value=([entry], [route], [], ['额外说明'], True)) as collect:
+            catalog = f.catalogue(None, master, kind='config')
+        self.assertEqual(guard.call_count, 2)
+        collect.assert_called_once_with(None, [master])
+        self.assertEqual(catalog['processType'], 'NGINX')
+        self.assertEqual(catalog['nginxRoutes'], [route])
+        self.assertIsNone(catalog['files'][0]['modifiedAt'])
+        with tempfile.TemporaryDirectory() as directory:
+            f.nginx_config.snapshot(catalog, directory)
+            self.assertNotIn('_nginxContents', catalog)
+            file = catalog['files'][0]
+            self.assertEqual(f.read_snapshot(file, directory, raw_config=True)['content'], data.decode())
+            self.assertEqual((Path(directory)/file['id']).stat().st_mode & 0o777, 0o600)
+
+    def test_nginx_respects_ignorelist_and_process_identity(self):
+        master = process(command='nginx: master process nginx')
+        entry = {'path':'/etc/nginx/private.conf', 'base64':base64.b64encode(b'secret').decode()}
+        with patch.object(f, 'run_script', return_value='FILES_DONE'), \
+             patch('application_config.nginx.collect', return_value=([entry], [{'file':entry['path']}], [], [], False)), \
+             patch.object(f.config_ignore, 'is_ignored', return_value=True):
+            catalog = f.catalogue(None, master, kind='config')
+        self.assertEqual(catalog['files'], [])
+        self.assertEqual(catalog['nginxRoutes'], [])
+        self.assertTrue(any('ignorelist' in w for w in catalog['warnings']))
+        with patch.object(f, 'run_script', side_effect=['FILES_DONE', ValueError('应用进程已重启')]), \
+             patch('application_config.nginx.collect', return_value=([entry], [], [], [], True)):
+            with self.assertRaisesRegex(ValueError, '已重启'):
+                f.catalogue(None, master, kind='config')
 
     def test_zookeeper_discovery_uses_live_argv_and_exact_file_only(self):
         encode = lambda value: base64.b64encode(value).decode()
@@ -329,6 +421,29 @@ class LinuxFileTests(unittest.TestCase):
                 r=subprocess.run(command,shell=True,capture_output=True,text=True,timeout=timeout)
                 return r.returncode,r.stdout
         self.terminal=Terminal()
+
+    def test_container_probe_emits_numeric_metadata_for_catalogue_and_snapshot(self):
+        binary = self.root/'bin'; binary.mkdir()
+        stat = binary/'stat'
+        stat.write_text('#!/bin/sh\ncase "$*" in *"/proc/"*"/root") echo simulated-root;; *) exec /usr/bin/stat "$@";; esac\n')
+        stat.chmod(0o755)
+        conf = self.root/'opt/tomcat/conf'; conf.mkdir(parents=True)
+        path = conf/'server.xml'; path.write_text('<Server/>')
+        (conf/'logging.properties').write_text('ignored')
+        (conf/'link.xml').symlink_to('/etc/passwd')
+        webinf = self.root/'opt/tomcat/webapps/orders/WEB-INF/classes'; webinf.mkdir(parents=True)
+        business = webinf/'application.yml'; business.write_text('value: orders')
+        proc = {**self.process, 'kind':'Tomcat', 'command':'java -Dcatalina.base='+str(self.root/'opt/tomcat')+' org.apache.catalina.startup.Bootstrap'}
+        with patch.dict(os.environ, {'PATH':str(binary)+':'+os.environ['PATH']}), \
+             patch.object(f, 'roots_for', return_value={'config':[str(conf)], 'log':[]}):
+            result = f.catalogue(self.terminal, proc, kind='config')
+            entries = {entry['path']:entry for entry in result['files']}
+            self.assertEqual(set(entries), {str(path), str(business)})
+            self.assertEqual(entries[str(path)]['size'], 9)
+            folder = self.root/'snapshot'
+            f.snapshot_configs(self.terminal, proc, result, folder)
+            self.assertEqual(f.read_snapshot(entries[str(path)], folder)['content'], '<Server/>')
+            self.assertEqual(f.read_snapshot(entries[str(business)], folder)['content'], 'value: orders')
 
     @unittest.skipUnless(shutil.which('java') and shutil.which('javac') and shutil.which('jar'), 'JDK required')
     def test_live_jar_config_snapshot(self):

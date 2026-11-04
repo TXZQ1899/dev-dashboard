@@ -18,6 +18,40 @@ def frame(seconds, rows, pid=123):
 
 
 class SamplingTests(unittest.TestCase):
+    def test_nginx_collects_only_verified_workers_and_deduplicates_shared_socket(self):
+        class Terminal:
+            def close(self): pass
+        master = process(123, 'nginx: master process /usr/sbin/nginx')
+        first = {**process(124, 'nginx: worker process'), 'ppid': 123, 'startTicks': '124'}
+        second = {**process(125, 'nginx: worker process'), 'ppid': 123, 'startTicks': '125'}
+        other = {**process(126, 'nginx: worker process'), 'ppid': 999, 'startTicks': '126'}
+        shared = socket(pid=124, cookie='shared')
+        shared['pids'] = [124, 125]
+        own = socket('10.0.0.1:50001', '10.0.0.3:6379', 125, cookie='second')
+        unrelated = socket('10.0.0.1:50002', '10.0.0.4:6379', 126, cookie='other')
+        listener = socket('0.0.0.0:8080', '0.0.0.0:0', 124, state='LISTEN')
+        sample = frame(1, [shared, own, unrelated])
+        sample.update(processes={p['pid']: p for p in (master, first, second, other)},
+                      nginxIdentities={123:'54321', 124:'124', 125:'125', 126:'126'}, listeners=[listener])
+        modes = []
+        def probe(_terminal, mode, _selector):
+            modes.append(mode)
+            return sample
+        report = c.inspect_application({'id':'target','ip':'10.0.0.1'}, master, [], [], {}, {}, 'TEST',
+            duration=0, terminal_opener=lambda *_:(Terminal(), 'root'), sample_probe=probe,
+            config_collector=lambda *_:{'status':'complete','endpoints':[],'warnings':[]})
+        self.assertEqual(modes, ['nginx'])
+        self.assertEqual(len(report['upstream']), 1)
+        self.assertEqual(len(report['downstream']), 1)
+        self.assertEqual(report['coverage']['targetOwnershipMethod'], 'nginx-master-workers-proc-fd-inode')
+        self.assertEqual(report['downstream'][0]['peer']['ip'], '10.0.0.3')
+
+    def test_nginx_worker_cannot_be_inspected_directly(self):
+        worker = process(124, 'nginx: worker process')
+        report = c.inspect_application({'id':'target','ip':'10.0.0.1'}, worker, [], [], {}, {}, 'TEST', duration=0)
+        self.assertEqual(report['status'], 'failed')
+        self.assertIn('只支持选择 master', report['error']['message'])
+
     def test_peer_history_is_consumed_once_and_application_matching_is_shared_per_frame(self):
         inventory = [app('caller', 'orders', '10.0.0.2')]
         buffer = c.PeerObservationBuffer()

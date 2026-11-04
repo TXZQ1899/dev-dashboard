@@ -24,6 +24,21 @@ class SettingsTests(unittest.TestCase):
             p=patch.object(s,name,value);p.start();self.addCleanup(p.stop)
         self.service=s.Service()
 
+    def test_managed_ips_use_matching_source_in_observation_version(self):
+        source = {'resourceKey': 'key', '实例地址': 'db.example:3306', 'cloudInstanceId': 'cloud'}
+        s.write(self.data/'versions'/'v1'/'dms-snapshot.json', {'instances': [
+            {**source, '实例IP': '192.0.2.1'}, {**source, '实例IP': '192.0.2.1'},
+            {**source, '实例IP': None}, {**source, '实例地址': 'other:3306', '实例IP': '192.0.2.2'},
+            {**source, 'resourceKey': 'other', '实例IP': '192.0.2.3'},
+        ]})
+        rows = [{'observationVersion': 'v1', 'attributes': {'mode': 'MANAGED', 'sourceRecords': [source]}},
+                {'observationVersion': '../v1', 'attributes': {'mode': 'MANAGED', 'sourceRecords': [source]}},
+                {'observationVersion': 'v1', 'attributes': {}}]
+        s.add_dms_instance_ips(rows)
+        self.assertEqual(rows[0]['dmsIps'], ['192.0.2.1'])
+        self.assertNotIn('dmsIps', rows[1])
+        self.assertNotIn('dmsIps', rows[2])
+
     def test_folidev_password_preserved_private_and_not_trimmed(self):
         password = ' 密码 with spaces '
         self.service.save_settings({'folidevPassword':password})
@@ -274,6 +289,145 @@ class SettingsTests(unittest.TestCase):
                     self.service.open_application_files(identifier)
             self.assertTrue(terminal.closed)
 
+    def test_config_session_resolves_proxy_and_preserves_both_identities(self):
+        from test_application_check import process
+        payload = self.application_check_fixture()
+        identifier = self.service.application_files({**payload, 'action':'open'})['id']
+        class Terminal:
+            def close(self): pass
+        proxy = process(command='/usr/bin/docker-proxy -proto tcp')
+        proxy.update(name='docker-proxy', exe='/usr/bin/docker-proxy')
+        target = process(pid=456, command='java -Dcatalina.base=/opt/tomcat org.apache.catalina.startup.Bootstrap')
+        target.update(kind='Tomcat', startTicks='77777')
+        container = {'id':'a'*64, 'name':'example'}
+        file = {'id':'b'*32, 'kind':'config', 'path':'/opt/tomcat/conf/server.xml', 'root':'/opt/tomcat/conf'}
+        def capture(_terminal, _process, result, folder):
+            folder.mkdir(parents=True)
+            (folder/file['id']).write_text('<Server/>')
+            result['files'][0]['snapshotName'] = file['id']
+        with patch('application_check.open_terminal', return_value=(Terminal(), None)), \
+             patch('application_check.probe', return_value={'processes':{123:proxy}, 'listeners':[]}), \
+             patch('application_check.resolve_docker_target', return_value=(container, target)) as resolve, \
+             patch('application_files.catalogue', return_value={'pid':456, 'startTicks':'77777', 'files':[file], 'warnings':[]}), \
+             patch('application_files.snapshot_configs', side_effect=capture), \
+             patch('application_files.collect_nacos'):
+            result = self.service.application_files({'id':identifier, 'action':'list', 'kind':'config'})
+            self.assertEqual(result['dockerTarget']['pid'], 456)
+            self.assertEqual(result['selectedStartTicks'], '54321')
+            self.assertEqual(self.service.application_files({'id':identifier, 'action':'cached', 'kind':'config'})['catalogue']['pid'], 456)
+            self.assertEqual(self.service.application_files({'id':identifier, 'action':'read', 'kind':'config', 'file':file['id']})['content'], '<Server/>')
+            self.assertEqual(resolve.call_count, 1)
+        self.assertEqual(s.read(self.data/'checks'/identifier/'identity.json'), {'startTicks':'54321'})
+
+    def test_config_proxy_resolution_failure_does_not_scan_proxy(self):
+        from test_application_check import process
+        from application_check import ProbeError
+        identifier = self.service.application_files({**self.application_check_fixture(), 'action':'open'})['id']
+        proxy = process(); proxy.update(name='docker-proxy', exe='/usr/bin/docker-proxy')
+        class Terminal:
+            def close(self): pass
+        with patch('application_check.open_terminal', return_value=(Terminal(), None)), \
+             patch('application_check.probe', return_value={'processes':{123:proxy}, 'listeners':[]}), \
+             patch('application_check.resolve_docker_target', side_effect=ProbeError('DOCKER_TARGET_AMBIGUOUS', 'docker_target', '多个监听 PID')):
+            with self.assertRaisesRegex(ValueError, '多个监听 PID'):
+                self.service.open_application_files(identifier, resolve_proxy=True)
+
+    def test_container_information_checks_snapshot_and_live_process(self):
+        from test_application_check import process
+        payload = self.application_check_fixture()
+        folder = self.service.version(self.service.status()['current']['id'])
+        snapshot = s.read(folder/'jumpserver-snapshot.json')
+        cid = 'a'*64
+        snapshot['assets'][0]['inspection']['docker'] = {'status':'complete', 'containers':[{'id':cid}]}
+        s.write(folder/'jumpserver-snapshot.json', snapshot)
+        info = {'id':cid, 'name':'orders', 'image':'orders:v1', 'imageId':'sha256:x', 'initPid':123,
+                'mounts':[{'source':'/srv/orders', 'destination':'/app', 'type':'bind'}]}
+        class Terminal:
+            closed = False
+            def close(self): self.closed = True
+        terminal = Terminal()
+        with patch('application_check.open_terminal', return_value=(terminal, None)), \
+             patch('application_check.probe', return_value={'processes':{123:process()}}), \
+             patch('container_info.inspect', return_value=info), \
+             patch('container_info.browse', return_value={'entries':[]}) as browse:
+            result = self.service.container_information({**payload, 'containerId':cid, 'action':'info'})
+            self.assertEqual(result['image'], 'orders:v1')
+            self.assertTrue(terminal.closed)
+            with self.assertRaisesRegex(ValueError, '挂载已变化'):
+                self.service.container_information({**payload, 'containerId':cid, 'action':'browse', 'mountIndex':0,
+                    'mountSource':'/wrong', 'mountDestination':'/app'})
+            browse.assert_not_called()
+            self.service.container_information({**payload, 'containerId':cid, 'action':'browse', 'mountIndex':0,
+                'mountSource':'/srv/orders', 'mountDestination':'/app'})
+            browse.assert_called_once()
+        with self.assertRaisesRegex(ValueError, '不在当前资产快照'):
+            self.service.container_information({**payload, 'containerId':'b'*64, 'action':'info'})
+
+    def test_container_information_revalidates_proxy_target(self):
+        from test_application_check import process
+        payload = self.application_check_fixture()
+        folder = self.service.version(self.service.status()['current']['id'])
+        snapshot = s.read(folder/'jumpserver-snapshot.json')
+        cid = 'a'*64
+        snapshot['assets'][0]['inspection']['docker'] = {'containers':[{'id':cid}]}
+        s.write(folder/'jumpserver-snapshot.json', snapshot)
+        proxy = process(); proxy.update(name='docker-proxy', exe='/usr/bin/docker-proxy')
+        target = process(pid=456); target['startTicks'] = '777'
+        class Terminal:
+            def close(self): pass
+        with patch('application_check.open_terminal', return_value=(Terminal(), None)), \
+             patch('application_check.probe', return_value={'processes':{123:proxy}}), \
+             patch('application_check.resolve_docker_target', return_value=({'id':cid}, target)), \
+             patch('container_info.inspect', return_value={'id':cid, 'mounts':[]}) as inspect:
+            result = self.service.container_information({**payload, 'containerId':cid, 'action':'info'})
+            self.assertEqual(result['servicePid'], 456)
+            self.assertEqual(inspect.call_args.args[1], target)
+        with patch('application_check.open_terminal', return_value=(Terminal(), None)), \
+             patch('application_check.probe', return_value={'processes':{123:proxy}}), \
+             patch('application_check.resolve_docker_target', return_value=({'id':'b'*64}, target)):
+            with self.assertRaisesRegex(ValueError, '容器已变化'):
+                self.service.container_information({**payload, 'containerId':cid, 'action':'refresh'})
+
+    def test_container_information_cache_persists_and_refresh_is_explicit(self):
+        from test_application_check import process
+        payload = self.application_check_fixture()
+        folder = self.service.version(self.service.status()['current']['id'])
+        snapshot = s.read(folder/'jumpserver-snapshot.json')
+        cid = 'c'*64
+        snapshot['assets'][0]['inspection']['docker'] = {'containers':[{'id':cid}]}
+        s.write(folder/'jumpserver-snapshot.json', snapshot)
+        info = {'id':cid, 'name':'orders', 'image':'orders:v1', 'imageId':'sha256:x', 'initPid':123, 'mounts':[]}
+        class Terminal:
+            def close(self): pass
+        query = {**payload, 'containerId':cid, 'action':'info'}
+        with patch('application_check.open_terminal', return_value=(Terminal(), None)), \
+             patch('application_check.probe', return_value={'processes':{123:process()}}), \
+             patch('container_info.inspect', return_value=info):
+            first = self.service.container_information(query)
+        self.assertFalse(first['cacheHit'])
+        files = list((self.data/'checks'/'container-info').glob('*.json'))
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0].stat().st_mode & 0o777, 0o600)
+        with patch('application_check.open_terminal', side_effect=ValueError('offline')) as remote:
+            second = s.Service().container_information(query)
+            self.assertTrue(second['cacheHit'])
+            self.assertEqual(second['observedAt'], first['observedAt'])
+            remote.assert_not_called()
+            with self.assertRaisesRegex(ValueError, 'offline'):
+                self.service.container_information({**query, 'action':'refresh'})
+            self.assertEqual(self.service.container_information(query)['image'], 'orders:v1')
+        with patch('application_check.open_terminal', return_value=(Terminal(), None)), \
+             patch('application_check.probe', return_value={'processes':{123:process()}}), \
+             patch('container_info.inspect', return_value={**info, 'image':'orders:v2'}):
+            updated = self.service.container_information({**query, 'action':'refresh'})
+        self.assertFalse(updated['cacheHit'])
+        self.assertEqual(self.service.container_information(query)['image'], 'orders:v2')
+        snapshot['assets'][0]['inspection']['processes'][0]['startedAt'] = 'different'
+        s.write(folder/'jumpserver-snapshot.json', snapshot)
+        with patch('application_check.open_terminal', side_effect=ValueError('new identity')):
+            with self.assertRaisesRegex(ValueError, 'new identity'):
+                self.service.container_information(query)
+
     def test_config_and_log_catalogues_are_separate_and_bound_to_original_version(self):
         payload = self.application_check_fixture()
         identifier = self.service.application_files({**payload, 'action':'open'})['id']
@@ -299,6 +453,29 @@ class SettingsTests(unittest.TestCase):
         self.assertFalse(self.service.files_lock.locked())
         s.write(self.data/'current.json', {'id':'unrelated-version'})
         self.assertEqual(self.service.application_file_context(identifier)[0]['id'], 'server')
+
+    def test_nginx_config_list_saves_snapshot_and_reads_without_second_login(self):
+        import base64
+        from test_application_check import process
+        identifier = self.service.application_files({**self.application_check_fixture(), 'action':'open'})['id']
+        master = process(command='nginx: master process /usr/sbin/nginx')
+        raw = b'server { server_name example.test; }'
+        file = {'path':'/etc/nginx/conf.d/site.conf','base64':base64.b64encode(raw).decode()}
+        route = {'file':file['path'],'domains':['example.test'],'uri':'/','target':'http://backend'}
+        class Terminal:
+            def close(self): pass
+        with patch.object(self.service, 'open_application_files', return_value=(Terminal(),master,None)) as remote, \
+             patch('application_files.run_script', return_value='FILES_DONE'), \
+             patch('application_config.nginx.collect', return_value=([file],[route],[],[],True)), \
+             patch('application_files.collect_nacos') as nacos:
+            result = self.service.application_files({'id':identifier,'action':'list','kind':'config'})
+            self.assertEqual(result['processType'], 'NGINX')
+            self.assertNotIn('_nginxContents', result)
+            preview = self.service.application_files({'id':identifier,'action':'read','kind':'config','file':result['files'][0]['id']})
+            self.assertEqual(preview['content'], raw.decode())
+            self.assertEqual(remote.call_count, 1)
+            nacos.assert_not_called()
+            self.assertNotIn('server_name example.test', (self.data/'checks'/identifier/'files-config.json').read_text())
 
     def test_nacos_catalogue_read_uses_session_storage(self):
         identifier = self.service.application_files({**self.application_check_fixture(), 'action':'open'})['id']

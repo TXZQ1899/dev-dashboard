@@ -52,6 +52,10 @@ import { appHasProcessOnIp, appProcessStatusSummary, appMatchesDeploymentPeriod,
 import { formatBeijingTime } from '@/lib/datetime';
 import { appRepositoryNameMatches } from '@/lib/repositories';
 type Filter = 'all' | 'single' | 'unknown';
+type GitCheckState = {
+  job: {status: string; completed?: number; total?: number; error?: string};
+  result?: {snapshotCollectedAt: string; checkedAt: string; apps: Record<string, {url: string; status: string; reason: string}[]>} | null;
+};
 
 // 环境列文案，页面展示与 CSV 导出共用同一口径。
 function envCellText(a: App, e: Env): string {
@@ -227,6 +231,31 @@ function AppList() {
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [appRefresh, setAppRefresh] = useState<Record<string,{busy:boolean;message:string;error:string}>>({});
+  const [gitCheck, setGitCheck] = useState<GitCheckState | null>(null);
+  const [gitError, setGitError] = useState('');
+  const [gitStarting, setGitStarting] = useState(false);
+  async function loadGitCheck() {
+    const response = await fetch('/api/settings/git-address-check', {cache: 'no-store'});
+    if (!response.ok) throw new Error('无法读取 Git 地址检查状态');
+    setGitCheck(await response.json() as GitCheckState);
+  }
+  useEffect(() => {
+    let active = true;
+    const load = () => { if (active) loadGitCheck().catch(() => { if (active) setGitError('无法读取 Git 地址检查状态'); }); };
+    load();
+    const timer = window.setInterval(load, 3000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, []);
+  async function startGitCheck() {
+    setGitStarting(true); setGitError('');
+    try {
+      const response = await fetch('/api/settings/git-address-check', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+      const data = await response.json() as {error?: string};
+      if (!response.ok) throw new Error(data.error || '启动失败');
+      await loadGitCheck();
+    } catch (error) { setGitError(error instanceof Error ? error.message : '启动失败'); }
+    finally { setGitStarting(false); }
+  }
   // 单独重新采集一个应用在 DevOps 的部署记录，只替换该应用，不覆盖其他应用数据。
   async function refreshDevopsApp(app: App) {
     setAppRefresh(prev=>({...prev,[app.id]:{busy:true,message:'',error:''}}));
@@ -509,6 +538,10 @@ function AppList() {
                     : ''}
               </span>
               <div className="result-actions">
+                <Button variant="outline" size="sm" onClick={startGitCheck} disabled={gitStarting || gitCheck?.job.status === 'running'}>
+                  <GitBranch size={14} />
+                  {gitCheck?.job.status === 'running' ? `检查中 ${gitCheck.job.completed || 0}/${gitCheck.job.total || 0}` : 'Git地址检查'}
+                </Button>
                 <Button
                   variant="outline"
                   size="sm"
@@ -534,6 +567,8 @@ function AppList() {
                 </Button>
               </div>
             </div>
+            {(gitError || gitCheck?.job.error) && <p role="alert" className="text-xs text-red-600">{gitError || gitCheck?.job.error}</p>}
+            {gitCheck?.result && <p className="text-xs text-slate-500">Git 地址最近检查：{formatBeijingTime(gitCheck.result.checkedAt)}{gitCheck.result.snapshotCollectedAt !== inventoryDate ? '（应用快照已变化，请重新检查）' : '；不存在结果可能受账号权限限制，请结合权限核实。'}</p>}
             <Table className="app-table">
               <TableHeader>
                 <TableRow>
@@ -554,6 +589,8 @@ function AppList() {
               <TableBody>
                 {visible.map((a) => {
                   const processStatus = appProcessStatusSummary(a);
+                  const urls = new Set([a.repository, ...envs.flatMap(e => info(a, e).rows.map(row => row.repository))]);
+                  const gitResults = gitCheck?.result?.snapshotCollectedAt === inventoryDate ? (gitCheck.result.apps[a.id] || []).filter(item => urls.has(item.url)) : [];
                   return (
                   <Fragment key={a.id}>
                     <TableRow
@@ -616,6 +653,10 @@ function AppList() {
                         </div>
                         <div className="app-id">
                           APP · {a.id}
+                          {(['missing', 'denied', 'unknown'] as const).map(status => {
+                            const matches = gitResults.filter(item => item.status === status);
+                            return matches.length ? <span key={status} className="single-badge" title={matches.map(item => `${item.url}：${item.reason}`).join('\n')}>{status === 'missing' ? 'Git地址失效' : status === 'denied' ? 'Git无权限' : 'Git待核实'}</span> : null;
+                          })}
                           {info(a, 'PRODUCT').single && (
                             <span className="single-badge">生产单点</span>
                           )}

@@ -507,7 +507,7 @@ class Catalog:
             unit = self.execute(conn, 'SELECT u.id FROM deployment_unit u JOIN deployment_unit_source s ON s.unit_id=u.id WHERE u.id=%s AND s.source_instance_key IN (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)', (unit_id, self.source_key, self.source_key + ':zookeeper', self.source_key + ':nacos', self.source_key + ':nginx', self.source_key + ':kong', self.source_key + ':redis', self.source_key + ':elasticsearch', self.source_key + ':rabbitmq', self.source_key + ':canal', self.source_key + ':kafka', self.source_key + ':mongodb', self.source_key + ':postgresql', self.source_key + ':jenkins', self.source_key + ':mysql', self.source_key + ':mysql-process'))
             if not unit:
                 raise CatalogInputError('部署单元不存在')
-            sql = 'SELECT i.*,e.environment,o.source_attributes_json AS attributes FROM deployment_instance i JOIN deployment_unit_environment e ON e.id=i.unit_environment_id LEFT JOIN catalog_observation o ON o.id=i.current_observation_id WHERE e.unit_id=%s'
+            sql = 'SELECT i.*,e.environment,o.source_attributes_json AS attributes,r.source_version AS observation_version FROM deployment_instance i JOIN deployment_unit_environment e ON e.id=i.unit_environment_id LEFT JOIN catalog_observation o ON o.id=i.current_observation_id LEFT JOIN catalog_import_run r ON r.id=o.import_run_id WHERE e.unit_id=%s'
             args = [unit_id]
             if environment:
                 sql += ' AND e.environment=%s'
@@ -518,7 +518,7 @@ class Catalog:
             return {'source': source, 'instances': [{'id': r['id'], 'environment': r['environment'],
                 'ip': r['primary_ip'], 'port': r['declared_port_raw'], 'identityQuality': r['identity_quality'],
                 'presenceStatus': r['presence_status'], 'managementStatus': r['management_status'],
-                'lastSeenAt': iso(r['last_seen_at']), 'attributes': decode(r['attributes'], {})} for r in rows]}
+                'lastSeenAt': iso(r['last_seen_at']), 'observationVersion': r['observation_version'], 'attributes': decode(r['attributes'], {})} for r in rows]}
         where, args = 's.source_instance_key IN (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)', [self.source_key, self.source_key + ':zookeeper', self.source_key + ':nacos', self.source_key + ':nginx', self.source_key + ':kong', self.source_key + ':redis', self.source_key + ':elasticsearch', self.source_key + ':rabbitmq', self.source_key + ':canal', self.source_key + ':kafka', self.source_key + ':mongodb', self.source_key + ':postgresql', self.source_key + ':jenkins', self.source_key + ':mysql', self.source_key + ':mysql-process']
         if presence == 'present':
             where += " AND s.presence_status='PRESENT'"
@@ -541,7 +541,7 @@ class Catalog:
         units = []
         for row in rows:
             attrs = decode(row['attributes'], {})
-            environments = self.execute(conn, "SELECT e.*,o.source_attributes_json AS attributes,COUNT(CASE WHEN i.presence_status='PRESENT' THEN i.id END) AS instance_count,COUNT(DISTINCT CASE WHEN i.presence_status='PRESENT' THEN i.primary_ip END) AS server_count FROM deployment_unit_environment e LEFT JOIN deployment_instance i ON i.unit_environment_id=e.id LEFT JOIN catalog_observation o ON o.id=e.current_observation_id WHERE e.unit_id=%s GROUP BY e.id,o.source_attributes_json ORDER BY e.environment", (row['id'],))
+            environments = self.execute(conn, "SELECT e.*,o.source_attributes_json AS attributes,COUNT(CASE WHEN i.presence_status='PRESENT' THEN i.id END) AS instance_count,COUNT(DISTINCT CASE WHEN i.presence_status='PRESENT' AND i.instance_kind<>'MANAGED_SERVICE' THEN NULLIF(i.primary_ip,'') END)+COUNT(DISTINCT CASE WHEN i.presence_status='PRESENT' AND i.instance_kind='MANAGED_SERVICE' THEN i.id END) AS server_count FROM deployment_unit_environment e LEFT JOIN deployment_instance i ON i.unit_environment_id=e.id LEFT JOIN catalog_observation o ON o.id=e.current_observation_id WHERE e.unit_id=%s GROUP BY e.id,o.source_attributes_json ORDER BY e.environment", (row['id'],))
             units.append({'id': row['id'], 'code': row['code'], 'name': row['name'], 'unitType': row['unit_type'],
                 'appId': decode(row['native_key_json']).get('appId'), 'appType': attrs.get('appType') or row['technology_code'],
                 'groupingState': attrs.get('groupingState'),
@@ -552,8 +552,8 @@ class Catalog:
                     'unresolvedCount': decode(e['attributes'], {}).get('unresolvedCount', 0)} for e in environments]})
         summary = self.execute(conn, "SELECT COUNT(*) AS units,SUM(presence_status='PRESENT') AS present_units FROM deployment_unit_source WHERE source_instance_key IN (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", (self.source_key, self.source_key + ':zookeeper', self.source_key + ':nacos', self.source_key + ':nginx', self.source_key + ':kong', self.source_key + ':redis', self.source_key + ':elasticsearch', self.source_key + ':rabbitmq', self.source_key + ':canal', self.source_key + ':kafka', self.source_key + ':mongodb', self.source_key + ':postgresql', self.source_key + ':jenkins', self.source_key + ':mysql', self.source_key + ':mysql-process'))[0]
         instance_count = self.execute(conn, "SELECT COUNT(*) AS n FROM deployment_instance i JOIN deployment_unit_environment e ON e.id=i.unit_environment_id JOIN deployment_unit_source s ON s.unit_id=e.unit_id WHERE s.source_instance_key IN (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) AND i.presence_status='PRESENT'", (self.source_key, self.source_key + ':zookeeper', self.source_key + ':nacos', self.source_key + ':nginx', self.source_key + ':kong', self.source_key + ':redis', self.source_key + ':elasticsearch', self.source_key + ':rabbitmq', self.source_key + ':canal', self.source_key + ':kafka', self.source_key + ':mongodb', self.source_key + ':postgresql', self.source_key + ':jenkins', self.source_key + ':mysql', self.source_key + ':mysql-process'))[0]['n']
-        # Aggregate before pagination; count distinct instances and IPs across all matched units.
-        env_rows = self.execute(conn, "SELECT e.environment,COUNT(DISTINCT i.id) AS instances,COUNT(DISTINCT NULLIF(i.primary_ip,'')) AS servers" + base +
+        # Aggregate before pagination; managed services count once without claiming a physical host.
+        env_rows = self.execute(conn, "SELECT e.environment,COUNT(DISTINCT i.id) AS instances,COUNT(DISTINCT CASE WHEN i.instance_kind<>'MANAGED_SERVICE' THEN NULLIF(i.primary_ip,'') END)+COUNT(DISTINCT CASE WHEN i.instance_kind='MANAGED_SERVICE' THEN i.id END) AS servers" + base +
             "JOIN deployment_unit_environment e ON e.unit_id=u.id LEFT JOIN deployment_instance i ON i.unit_environment_id=e.id AND i.presence_status='PRESENT' WHERE " + where + ' GROUP BY e.environment', tuple(args))
         category_summary = {'units': total, 'environments': {r['environment']: {'instances': r['instances'], 'servers': r['servers']} for r in env_rows}}
         return {'source': source, 'units': units, 'pagination': {'page': page, 'pageSize': page_size, 'total': total, 'totalPages': pages},

@@ -1,6 +1,7 @@
 """Local-only Settings API, persistent versions, and transactional web activation."""
 import hashlib
 import http.client
+import ipaddress
 import json
 import os
 import re
@@ -57,6 +58,28 @@ def now(): return datetime.now(TZ).isoformat(timespec='seconds')
 def read(path, default=None):
     try: return json.loads(path.read_text())
     except FileNotFoundError: return default
+
+
+def add_dms_instance_ips(instances):
+    """Attach only IPs from the same recorded DMS source and snapshot version."""
+    snapshots = {}
+    for instance in instances:
+        attrs = instance.get('attributes') or {}
+        version = instance.pop('observationVersion', None)
+        if attrs.get('mode') != 'MANAGED' or not isinstance(version, str) or not re.fullmatch(r'[A-Za-z0-9-]{1,80}', version):
+            continue
+        if version not in snapshots:
+            snapshots[version] = read(DATA/'versions'/version/'dms-snapshot.json', EMPTY_DMS)
+        keys = {(r.get('resourceKey'), r.get('实例地址'), r.get('cloudInstanceId')) for r in attrs.get('sourceRecords', []) if r.get('resourceKey') and r.get('实例地址') and r.get('cloudInstanceId')}
+        ips = set()
+        for record in snapshots[version].get('instances', []):
+            if (record.get('resourceKey'), record.get('实例地址'), record.get('cloudInstanceId')) not in keys:
+                continue
+            try:
+                ips.add(str(ipaddress.ip_address(record.get('实例IP', ''))))
+            except (ValueError, TypeError):
+                pass
+        instance['dmsIps'] = sorted(ips)
 
 
 def write(path, value):
@@ -187,6 +210,7 @@ class Service:
         (DATA / 'versions').mkdir(exist_ok=True)
         if (DATA/'secrets/cookies.json').exists(): write(DATA/'secrets/cookies.json', credentials())
         self.lock = threading.RLock()
+        self.git_check_job = {'status': 'idle'}
         self.collection_inputs = {}
         # Serialises the whole build/launch/swap in activate() so a concurrent
         # single-source retry cannot race the primary job for ports 3101/3102.
@@ -333,6 +357,8 @@ class Service:
             page_size=bounded_int(params, 'pageSize', 20, 1, 100), presence=presence,
             unit_id=unit_id, environment=environment, category=category)
         identifier, raw = self.catalog_context()
+        if unit_id:
+            add_dms_instance_ips(result.get('instances', []))
         current_snapshot = json.loads(raw)
         current_hash = hashlib.sha256(raw).hexdigest()
         result['activeSnapshot'] = {'version': identifier, 'collectedAt': current_snapshot.get('collectedAt'),
@@ -348,6 +374,39 @@ class Service:
         if not report or report['status'] != 'ready': raise ValueError('只能切换到完整版本')
         validate(folder)
         return folder
+
+    def git_check_state(self):
+        with self.lock:
+            return {'job': dict(self.git_check_job), 'result': read(DATA/'checks/git-address/latest.json')}
+
+    def start_git_check(self):
+        with self.lock:
+            if self.git_check_job['status'] == 'running':
+                raise ValueError('Git 地址检查正在进行')
+            if not aliyun_configured(credentials()):
+                raise ValueError('请先在设置中配置阿里云凭据')
+            identifier, raw = self.catalog_context()
+            snapshot = json.loads(raw)
+            saved = credentials()
+            self.git_check_job = {'status': 'running', 'startedAt': now(), 'completed': 0, 'total': 0}
+
+            def run():
+                try:
+                    from git_address_check import check_snapshot
+                    def progress(done, total):
+                        with self.lock:
+                            self.git_check_job.update(completed=done, total=total)
+                    results = check_snapshot(snapshot, saved, progress)
+                    result = {'version': identifier, 'snapshotCollectedAt': snapshot.get('collectedAt'),
+                              'checkedAt': now(), 'apps': results}
+                    with self.lock:
+                        write(DATA/'checks/git-address/latest.json', result)
+                        self.git_check_job.update(status='complete', finishedAt=now())
+                except Exception:
+                    with self.lock:
+                        self.git_check_job.update(status='failed', finishedAt=now(), error='检查失败，请核对凭据及网络后重试')
+            threading.Thread(target=run, daemon=True).start()
+            return dict(self.git_check_job)
 
     def application_check_state(self, identifier=None):
         with self.lock:
@@ -494,6 +553,71 @@ class Service:
                              'pid':selected['pid'], 'createdAt':now()})
             return {'id':identifier, 'sourceVersion':source, 'assetId':asset['id'], 'pid':selected['pid']}
 
+    def container_information(self, payload):
+        from application_check import open_terminal, probe, is_docker_proxy, resolve_docker_target, ProbeError
+        import container_info
+        container_id = payload.get('containerId')
+        if not isinstance(container_id, str) or not re.fullmatch(r'[0-9a-f]{64}', container_id):
+            raise ValueError('无效容器 ID')
+        action = payload.get('action')
+        if action not in ('info', 'refresh', 'browse'): raise ValueError('无效容器操作')
+        source, _, _, asset, selected = self.application_process_target(payload)
+        inventory = (asset.get('inspection') or {}).get('docker') or {}
+        matches = [c for c in inventory.get('containers', []) if c.get('id') == container_id]
+        if len(matches) != 1: raise ValueError('容器不在当前资产快照中，请重新采集')
+        key = json.dumps([asset['id'], selected['pid'], selected.get('startedAt'), container_id], ensure_ascii=False)
+        cache_path = DATA/'checks'/'container-info'/(hashlib.sha256(key.encode()).hexdigest()+'.json')
+        def read_cache():
+            try:
+                cached = read(cache_path)
+            except (ValueError, OSError):
+                return None
+            if (isinstance(cached, dict) and cached.get('id') == container_id and
+                    cached.get('assetId') == asset['id'] and cached.get('selectedPid') == selected['pid'] and
+                    isinstance(cached.get('mounts'), list) and isinstance(cached.get('observedAt'), str)):
+                return cached
+            return None
+        if action == 'info':
+            with self.lock:
+                cached = read_cache()
+            if cached is not None:
+                return {**cached, 'cacheHit':True}
+        terminal = None
+        try:
+            terminal, _ = open_terminal(asset, credentials(), read(DATA/'secrets/ip-password-map.json', {}))
+            sample = probe(terminal, 'target', selected['pid'])
+            process = sample['processes'].get(selected['pid'])
+            if not process or (selected.get('startedAt') and process.get('startedAt') != selected['startedAt']):
+                raise ValueError('所选进程已变化，请重新采集服务器')
+            basis = '进程树推断'
+            if is_docker_proxy(process):
+                try:
+                    container, process = resolve_docker_target(terminal, process, probe, {})
+                except ProbeError as exc:
+                    raise ValueError(exc.details['message']) from exc
+                if container['id'] != container_id: raise ValueError('Docker 代理关联的容器已变化，请重新采集')
+                basis = 'Docker 发布端口与实时监听推断'
+            info = container_info.inspect(terminal, process, container_id)
+            if action == 'browse':
+                index = payload.get('mountIndex')
+                if type(index) is not int or not 0 <= index < len(info['mounts']) or (
+                    info['mounts'][index]['source'] != payload.get('mountSource') or
+                    info['mounts'][index]['destination'] != payload.get('mountDestination')):
+                    raise ValueError('挂载已变化，请刷新容器信息')
+                return container_info.browse(terminal, process, container_id, info, payload.get('mountIndex'), payload.get('path', ''), payload.get('offset', 0))
+            result = {**info, 'assetId':asset['id'], 'selectedPid':selected['pid'], 'servicePid':process['pid'],
+                      'association':basis, 'sourceVersion':source, 'observedAt':now()}
+            with self.lock:
+                # A slower first load must not overwrite a concurrent successful refresh.
+                if action == 'info':
+                    cached = read_cache()
+                    if cached is not None:
+                        return {**cached, 'cacheHit':True}
+                write(cache_path, result)
+            return {**result, 'cacheHit':False}
+        finally:
+            if terminal: terminal.close()
+
     def application_file_context(self, identifier):
         if not isinstance(identifier, str) or not re.fullmatch(r'[A-Za-z0-9-]{1,80}', identifier):
             raise ValueError('无效应用文件会话 ID')
@@ -514,8 +638,9 @@ class Service:
         if len(processes) != 1: raise ValueError('原检测版本中目标进程不唯一')
         return assets[0], processes[0], report
 
-    def open_application_files(self, identifier):
-        from application_check import open_terminal, probe, ips, infer_environment, match_application
+    def open_application_files(self, identifier, resolve_proxy=False):
+        from application_check import (open_terminal, probe, ips, infer_environment, match_application,
+                                       is_docker_proxy, resolve_docker_target, ProbeError)
         asset, selected, report = self.application_file_context(identifier)
         terminal, _ = open_terminal(asset, credentials(), read(DATA/'secrets/ip-password-map.json', {}))
         try:
@@ -525,13 +650,26 @@ class Service:
             if not process or (selected.get('startedAt') and process.get('startedAt') != selected['startedAt']) or (
                 target.get('startTicks') and target['startTicks'] != process['startTicks']):
                 raise ValueError('应用进程已变化，请重新采集并打开页面')
+            selected_ticks = process['startTicks']
+            proxy_target = None
+            if resolve_proxy and is_docker_proxy(process):
+                evidence = {'resolution':'UNKNOWN', 'mappings':[], 'processes':[]}
+                try:
+                    container, process = resolve_docker_target(terminal, process, probe, evidence)
+                except ProbeError as exc:
+                    raise ValueError(exc.details['message']) from exc
+                proxy_target = {'containerId':container['id'], 'containerName':container['name'],
+                                'pid':process['pid'], 'startTicks':process['startTicks']}
             context = read(DATA/'checks'/identifier/'context.json')
             application = target.get('application')
             if context:
                 apps = read(self.version(context['sourceVersion'])/'snapshot.json', {}).get('apps', [])
-                environment = infer_environment(process, ips(asset.get('ip')), sample['listeners'], apps)
-                application = match_application(process, ips(asset.get('ip')), sample['listeners'], apps, environment)
-                write(DATA/'checks'/identifier/'identity.json', {'startTicks':process['startTicks']})
+                listeners = [] if proxy_target else sample['listeners']
+                environment = infer_environment(process, ips(asset.get('ip')), listeners, apps)
+                application = match_application(process, ips(asset.get('ip')), listeners, apps, environment)
+                write(DATA/'checks'/identifier/'identity.json', {'startTicks':selected_ticks})
+            if proxy_target:
+                process = {**process, '_selectedStartTicks':selected_ticks, '_dockerTarget':proxy_target}
             return terminal, process, application
         except Exception:
             terminal.close()
@@ -564,13 +702,16 @@ class Service:
             if action == 'cached':
                 catalog = read(path, {})
                 from application_config.zookeeper import is_server as is_zookeeper_server
+                from application_config.nginx import is_master as is_nginx_master
                 _, selected_process, _ = self.application_file_context(identifier)
+                if is_nginx_master(selected_process) and catalog.get('discoveryVersion') != 'nginx-v1':
+                    return {'catalogue':None}
                 if is_zookeeper_server(selected_process) and catalog.get('discoveryVersion') != 'zookeeper-v1':
                     return {'catalogue':None}
                 snapshot_id = catalog.get('configSnapshotId', '')
                 expected = report.get('target', {}).get('startTicks')
                 if (not isinstance(snapshot_id, str) or not re.fullmatch(r'[0-9a-f]{32}', snapshot_id) or
-                        not catalog.get('startTicks') or (expected and catalog['startTicks'] != expected)):
+                        not catalog.get('startTicks') or (expected and catalog.get('selectedStartTicks', catalog['startTicks']) != expected)):
                     return {'catalogue':None}
                 snapshot = DATA/'checks'/identifier/'config-snapshots'/snapshot_id
                 if snapshot.is_symlink() or not snapshot.is_dir():
@@ -589,14 +730,22 @@ class Service:
                     return not file.is_symlink() and file.is_file()
                 return {'catalogue':catalog if any(available(entry) for entry in catalog.get('files', [])) else None}
             if action == 'list':
-                terminal, process, application = self.open_application_files(identifier)
+                terminal, process, application = self.open_application_files(identifier, resolve_proxy=True) if kind == 'config' else self.open_application_files(identifier)
                 result = catalogue(terminal, process, application, kind=kind)
+                if process.get('_dockerTarget'):
+                    result['selectedStartTicks'] = process['_selectedStartTicks']
+                    result['dockerTarget'] = process['_dockerTarget']
+                    result['warnings'].append('由 Docker 端口映射和实时监听定位容器服务 PID '+str(process['pid'])+'，配置来自该进程')
                 if kind in (None, 'config'):
                     snapshot_id = uuid.uuid4().hex
                     new_snapshot = DATA/'checks'/identifier/'config-snapshots'/snapshot_id
                     new_snapshot.mkdir(parents=True, mode=0o700)
-                    snapshot_configs(terminal, process, result, new_snapshot/'files')
-                    if result.get('processType') != 'ZOOKEEPER':
+                    if result.get('processType') == 'NGINX':
+                        from application_config.nginx import snapshot as snapshot_nginx
+                        snapshot_nginx(result, new_snapshot/'files')
+                    else:
+                        snapshot_configs(terminal, process, result, new_snapshot/'files')
+                    if result.get('processType') not in ('ZOOKEEPER', 'NGINX'):
                         snapshot_jar_configs(terminal, process, result, new_snapshot/'files')
                         collect_nacos(terminal, process, result, new_snapshot/'nacos', snapshot_folder=new_snapshot/'files')
                     result['configSnapshotId'] = snapshot_id
@@ -610,7 +759,7 @@ class Service:
                 return result
             catalog = read(path)
             expected = report.get('target', {}).get('startTicks')
-            if not catalog or (expected and catalog.get('startTicks') != expected):
+            if not catalog or (expected and catalog.get('selectedStartTicks', catalog.get('startTicks')) != expected):
                 raise ValueError('请先刷新应用文件列表')
             entries = [f for f in catalog['files'] if f['id'] == payload.get('file')]
             if len(entries) != 1: raise ValueError('文件不在应用文件列表中')
@@ -1624,6 +1773,8 @@ class Handler(BaseHTTPRequestHandler):
         return host in ALLOWED_HOSTS
     def do_GET(self):
         if not self.allowed_host():return self.json(403,{'error':'仅允许本机访问'})
+        if urlsplit(self.path).path == '/api/settings/git-address-check':
+            return self.json(200, self.server.service.git_check_state())
         if urlsplit(self.path).path == '/api/catalog/deployment-units':
             try:
                 return self.json(200, self.server.service.catalog_query(parse_qs(urlsplit(self.path).query)))
@@ -1687,7 +1838,9 @@ class Handler(BaseHTTPRequestHandler):
             payload=json.loads(self.rfile.read(length))
             if not isinstance(payload,dict):raise ValueError('请求格式无效')
             service=self.server.service
-            if self.path=='/api/catalog/deployment-units/import':
+            if self.path=='/api/settings/git-address-check':
+                return self.json(202, service.start_git_check())
+            elif self.path=='/api/catalog/deployment-units/import':
                 return self.json(202, service.start_catalog_sync())
             elif self.path=='/api/settings/config':service.save_settings(payload)
             elif self.path=='/api/settings/application-check':
@@ -1696,6 +1849,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(200,service.cancel_application_check(payload.get('id')))
             elif self.path in ('/api/settings/application-check/files', '/api/settings/application-files'):
                 return self.json(200,service.application_files(payload))
+            elif self.path=='/api/settings/container-info':
+                return self.json(200,service.container_information(payload))
             elif self.path=='/api/settings/topology':service.generate_topology()
             elif self.path=='/api/settings/sync':service.start('sync')
             elif self.path=='/api/settings/sync/local-gitlab':service.start('local_gitlab')

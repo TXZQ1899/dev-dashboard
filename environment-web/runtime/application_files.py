@@ -11,10 +11,11 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import application_check as check
-from application_config import ignore as config_ignore, nacos, zookeeper as zookeeper_config
+from application_config import ignore as config_ignore, nacos, nginx as nginx_config, zookeeper as zookeeper_config
 from application_config.jar import snapshot_jar_configs
 from application_config.nacos import collect_nacos, read_nacos
 from application_config.zookeeper import zookeeper_catalogue
+from application_config.discovery import tomcat_appbases
 import application_log_policy as log_policy
 
 MAX_ARCHIVE = 536870912
@@ -125,11 +126,24 @@ def catalogue(terminal, process, application=None, kind=None):
     if kind not in (None, 'config', 'log'):
         raise ValueError('无效应用文件类型')
     requested_kind = kind
+    if kind == 'config' and nginx_config.is_master(process):
+        return nginx_config.catalogue(terminal, process)
     if kind == 'config' and zookeeper_config.is_server(process):
         return zookeeper_catalogue(terminal, process)
+    container_config = False
+    if kind == 'config' and process.get('kind') == 'Tomcat':
+        identity = run_script(terminal, 'container_configs.sh', process['pid'], process['startTicks'], 'detect')
+        if 'FILES_DONE' not in identity.splitlines():
+            raise ValueError('无法确认进程文件系统，请重试')
+        container_config = 'CONTAINER_ROOT' in identity.splitlines()
+        if not container_config and 'HOST_ROOT' not in identity.splitlines():
+            raise ValueError('无法确认进程文件系统，请重试')
     roots = roots_for(process, application)
     result = {'files': [], 'roots': {'config': [], 'log': []}, 'warnings': [], 'observedAt': check.now(),
               'pid': process['pid'], 'startTicks': process['startTicks'], 'logScopes': []}
+    if container_config:
+        result['processType'] = 'CONTAINER_TOMCAT'
+        result['warnings'].append('Tomcat 位于独立文件系统，配置从进程根目录读取；符号链接路径不予采集')
     seen = set()
     def add_file(kind, path, root, size, modified, scoped):
         group = log_policy.group_for(path, scoped) if kind == 'log' else None
@@ -138,6 +152,7 @@ def catalogue(terminal, process, application=None, kind=None):
         seen.add(path)
         entry = {'id':hashlib.sha256((kind+'\0'+path).encode()).hexdigest()[:32],
                  'kind':kind, 'path':path, 'root':root, 'size':int(size), 'modifiedAt':int(float(modified))}
+        if container_config and kind == 'config': entry['source'] = 'container'
         if group:
             entry['logGroup'] = group
         result['files'].append(entry)
@@ -149,7 +164,7 @@ def catalogue(terminal, process, application=None, kind=None):
     while requests:
         kind, mode, paths, pattern = requests.pop(0)
         args = [kind, *([pattern] if pattern is not None else []), *paths]
-        body = run_script(terminal, 'application_files.sh', process['pid'], process['startTicks'], mode, *args)
+        body = run_script(terminal, 'container_configs.sh' if container_config else 'application_files.sh', process['pid'], process['startTicks'], mode, *args)
         if 'FILES_DONE' not in body.splitlines():
             raise ValueError('文件列表不完整，请重试')
         for line in body.splitlines():
@@ -183,6 +198,7 @@ def catalogue(terminal, process, application=None, kind=None):
                 add_file(kind, path, root, size, modified, mode == 'list-match')
         if kind == 'config' and not discovered_tomcat:
             discovered_tomcat = True
+            content = ''
             try:
                 args = shlex.split(process.get('command', ''))
                 base = next((a.split('=', 1)[1] for a in args if a.startswith('-Dcatalina.base=')), '')
@@ -192,9 +208,31 @@ def catalogue(terminal, process, application=None, kind=None):
                     content = read_file(terminal, process, server)['content']
                     extra = [root for root in check.tomcat_docbase_roots(content, process) if root not in roots['config']]
                     if extra:
+                        result['warnings'].append('展开的应用目录按 Tomcat appBase 发现，不证明应用已部署或配置已生效')
                         requests.insert(0, ('config', 'list', extra, None))
             except (ValueError, OSError):
                 result['warnings'].append('Tomcat server.xml 读取失败，无法发现其声明的应用目录')
+            if container_config:
+                appbases = tomcat_appbases(content, process)
+                if appbases:
+                    discovered = run_script(terminal, 'container_configs.sh', process['pid'], process['startTicks'], 'discover-webapps', *appbases)
+                    if 'FILES_DONE' not in discovered.splitlines():
+                        raise ValueError('容器应用目录发现不完整，请重试')
+                    extra = []
+                    for line in discovered.splitlines():
+                        fields = line.split('\t')
+                        if len(fields) == 2 and fields[0] == 'WARNING':
+                            result['warnings'].append(fields[1])
+                        elif len(fields) == 2 and fields[0] == 'APP_ROOT':
+                            root = decode_path(fields[1])
+                            valid = any(root.startswith(base+'/') and re.fullmatch(r'[^/]+/(?:WEB-INF|config)', posixpath.relpath(root, base))
+                                        for base in appbases)
+                            if not valid:
+                                raise ValueError('远端返回无效容器应用目录')
+                            if root not in roots['config'] and root not in extra:
+                                extra.append(root)
+                    if extra:
+                        requests.insert(0, ('config', 'list', extra, None))
         if kind == 'config' and requested_kind != 'config' and not any(request[0] == 'config' for request in requests):
             log_configs = [entry for entry in result['files'] if entry['kind'] == 'config' and
                 posixpath.basename(entry['path']).startswith('logback') and entry['path'].endswith('.xml')]
@@ -268,7 +306,7 @@ def read_file(terminal, process, entry, raw_config=False):
         raise ValueError('该配置文件已在 ignorelist 中排除，请刷新应用文件列表')
     if entry['kind'] == 'log' and log_policy.group_for(entry['path']) != 'current':
         raise ValueError('仅支持预览 .log、.out、.txt 当前日志；历史日志请打包下载')
-    body = run_script(terminal, 'application_files.sh', process['pid'], process['startTicks'],
+    body = run_script(terminal, 'container_configs.sh' if entry.get('source') == 'container' else 'application_files.sh', process['pid'], process['startTicks'],
                       entry['kind'], entry['path'], entry['root'])
     match = re.search(r'(?m)^CONTENT_BEGIN\n(.*?)^CONTENT_END\s*$', body, re.S)
     if not match or 'FILES_DONE' not in body.splitlines():
@@ -300,7 +338,8 @@ def snapshot_configs(terminal, process, catalogue, folder):
     saved_size = 0
     for batch in batches:
         args = [value for entry in batch for value in (entry['id'], entry['path'], entry['root'])]
-        body = run_script(terminal, 'application_files.sh', process['pid'], process['startTicks'], 'snapshot', *args)
+        script = 'container_configs.sh' if catalogue.get('processType') == 'CONTAINER_TOMCAT' else 'application_files.sh'
+        body = run_script(terminal, script, process['pid'], process['startTicks'], 'snapshot', *args)
         if 'FILES_DONE' not in body.splitlines():
             raise ValueError('配置快照读取不完整，请重试')
         pending = {entry['id']: entry for entry in batch}

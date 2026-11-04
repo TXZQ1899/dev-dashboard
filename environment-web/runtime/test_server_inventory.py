@@ -173,6 +173,37 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(next(r for r in routes if r['uri']=='/assets')['backends'],[])
         self.assertEqual(next(r for r in routes if r['uri']=='/assets')['file'],'/etc/nginx/conf.d/app.conf')
 
+    def test_nginx_deny_all_is_access_control_not_static_or_proxy(self):
+        dump = """# configuration file /etc/nginx/nginx.conf:
+http { server { root /usr/share/nginx/html/www1;
+  location ~ /druid/ { deny all;###block druid
+  }
+  location /allow { allow 192.0.2.0/24; deny all; }
+  location /proxy { deny all; proxy_pass http://example.test; }
+  location /conditional { if ($remote_addr) { deny all; } }
+  location /any { satisfy any; deny all; proxy_pass http://example.test; }
+} }
+"""
+        routes, _ = inv.parse_nginx(dump)
+        druid = [r for r in routes if r['uri'] == '~ /druid/']
+        self.assertEqual([(r['directive'], r['target'], r['backends']) for r in druid],
+                         [('access_control', 'deny all', [])])
+        self.assertEqual([r['directive'] for r in routes if r['uri'] == '/proxy'], ['access_control'])
+        self.assertEqual({r['directive'] for r in routes if r['uri'] == '/allow'}, {'access_control','static/other'})
+        self.assertEqual({r['directive'] for r in routes if r['uri'] == '/any'}, {'access_control','proxy_pass'})
+        self.assertEqual({r['directive'] for r in routes if r['uri'] == '/conditional'}, {'access_control','static/other'})
+
+    def test_nginx_inherited_satisfy_any_does_not_claim_block(self):
+        dump = "# configuration file /etc/nginx/nginx.conf:\nhttp { satisfy any; server { location /a { deny all; proxy_pass http://backend; } } }"
+        routes, _ = inv.parse_nginx(dump)
+        self.assertEqual({r['directive'] for r in routes if r['uri'] == '/a'}, {'access_control','proxy_pass'})
+
+    def test_nginx_access_rules_are_inherited_unless_overridden(self):
+        dump = "# configuration file /etc/nginx/nginx.conf:\nhttp { deny all; server { root /www; location /blocked {} location /allowed { allow all; } } }"
+        routes, _ = inv.parse_nginx(dump)
+        self.assertEqual([r['directive'] for r in routes if r['uri'] == '/blocked'], ['access_control'])
+        self.assertEqual([r['directive'] for r in routes if r['uri'] == '/allowed'], ['static/other'])
+
     def test_openresty_lua_blocks_are_opaque(self):
         dump = """# configuration file /etc/nginx/nginx.conf:
 http { upstream kong { server 10.0.0.1:8000;
