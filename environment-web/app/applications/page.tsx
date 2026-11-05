@@ -51,7 +51,10 @@ import {
 import { appHasProcessOnIp, appProcessStatusSummary, appMatchesDeploymentPeriod, appOverYearUndeployed, appMatchOnIp, envServerVerdicts, ipServerState, ipSpecSummary, latestAppDeploymentTime, type ServerVerdicts } from '@/lib/process-comparison';
 import { formatBeijingTime } from '@/lib/datetime';
 import { appRepositoryNameMatches } from '@/lib/repositories';
+import { businessTab, type BusinessTab } from '@/lib/application-business';
 type Filter = 'all' | 'single' | 'unknown';
+type GitFilter = 'all' | 'valid' | 'missing' | 'denied' | 'unknown' | 'unchecked';
+type ApplicationDomains = {matchesCatalog: boolean; applications: {appId: string; domainName: string | null}[]};
 type GitCheckState = {
   job: {status: string; completed?: number; total?: number; error?: string};
   result?: {snapshotCollectedAt: string; checkedAt: string; apps: Record<string, {url: string; status: string; reason: string}[]>} | null;
@@ -232,6 +235,30 @@ function AppList() {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [appRefresh, setAppRefresh] = useState<Record<string,{busy:boolean;message:string;error:string}>>({});
   const [gitCheck, setGitCheck] = useState<GitCheckState | null>(null);
+  const [gitFilter, setGitFilter] = useState<GitFilter>('all');
+  const [business, setBusiness] = useState<BusinessTab>('group');
+  const [domains, setDomains] = useState<ApplicationDomains | null>(null);
+  const [domainsError, setDomainsError] = useState('');
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch('/api/catalog/application-domains', {cache: 'no-store', signal: controller.signal})
+      .then(async response => {
+        if (!response.ok) throw new Error('无法读取业务领域，请检查部署单元目录后刷新页面');
+        return await response.json() as ApplicationDomains;
+      }).then(data => { if (!controller.signal.aborted) setDomains(data); })
+      .catch(() => { if (!controller.signal.aborted) setDomainsError('无法读取业务领域，请检查部署单元目录后刷新页面'); });
+    return () => controller.abort();
+  }, []);
+  useEffect(() => {
+    if (!targetId || !domains) return;
+    const target = domains.applications.find(item => item.appId === targetId);
+    if (target) {
+      const tab = businessTab(target.domainName);
+      const byId = new Map(domains.applications.map(item => [item.appId, item.domainName] as const));
+      const index = apps.filter(app => byId.has(app.id) && businessTab(byId.get(app.id) ?? null) === tab).findIndex(app => app.id === targetId);
+      setBusiness(tab); setPage(Math.floor(Math.max(0, index) / 20) + 1);
+    }
+  }, [targetId, domains]);
   const [gitError, setGitError] = useState('');
   const [gitStarting, setGitStarting] = useState(false);
   async function loadGitCheck() {
@@ -269,7 +296,7 @@ function AppList() {
     }
   }
   useEffect(() => {
-    setCombination(null);setPublishEnv('');setPublishPeriod('');setRepoQuery('');
+    setCombination(null);setPublishEnv('');setPublishPeriod('');setRepoQuery('');setGitFilter('all');
     const f = params.get('filter');
     const e = params.get('env');
     setFilter(f === 'single' || f === 'unknown' ? f : 'all');
@@ -356,7 +383,7 @@ function AppList() {
                 setQuery((value.query as string) || '');
                 setFilter((value.filter as Filter) || 'all');
                 setEnv('ALL');
-                setCombination(null);setPublishEnv('');setPublishPeriod('');setRepoQuery('');
+                setCombination(null);setPublishEnv('');setPublishPeriod('');setRepoQuery('');setGitFilter('all');
                 setPage(1);
               });
               return {
@@ -371,6 +398,13 @@ function AppList() {
     } catch {}
     return () => lifecycle.abort();
   }, []);
+  const gitResultsForApp = (a: App) => {
+    if (gitCheck?.result?.snapshotCollectedAt !== inventoryDate) return [];
+    const urls = new Set([a.repository, ...envs.flatMap(e => info(a, e).rows.map(row => row.repository))]);
+    return (gitCheck.result.apps[a.id] || []).filter(item => urls.has(item.url) && !['登录或安全验证异常，未继续检查', '登录失效或发生重定向，停止后续检查', 'Cookie 已失效或需要重新登录', '响应不是 JSON，可能遇到登录页或安全验证'].includes(item.reason));
+  };
+  const domainByApp = new Map(domains?.applications.map(item => [item.appId, item.domainName] as const) || []);
+  const unmatchedDomains = domains ? apps.filter(a => !domainByApp.has(a.id)).length : 0;
   const filtered = apps.filter((a) => {
     const needle = query.trim().toLowerCase();
     const match = [
@@ -387,10 +421,12 @@ function AppList() {
     ];
     const selected = env === 'ALL' ? envs : [env];
     return (
+      domainByApp.has(a.id) && businessTab(domainByApp.get(a.id) ?? null) === business &&
       match &&
       appRepositoryNameMatches(a.id, repositoryUrls, repoQuery) &&
       matchesEnvironmentCombination(a,combination) &&
       appMatchesDeploymentPeriod(a,publishEnv,publishPeriod) &&
+      (gitFilter === 'all' || (gitFilter === 'unchecked' ? gitResultsForApp(a).length === 0 : gitResultsForApp(a).some(item => item.status === gitFilter))) &&
       (filter === 'single'
         ? info(a, 'PRODUCT').single
         : filter === 'unknown'
@@ -407,6 +443,7 @@ function AppList() {
     setQuery('');
     setRepoQuery('');
     setFilter('all');
+    setGitFilter('all');
     setEnv('ALL');
     setPage(1);
   };
@@ -432,6 +469,14 @@ function AppList() {
             </span>
           </div>
           <section className="list-panel">
+            <div className="business-tabs" role="tablist" aria-label="应用业务分类">
+              {([['group', '地中海度假集团'], ['travel', '商旅'], ['other', '其它']] as const).map(([key, label]) => (
+                <button key={key} type="button" role="tab" aria-selected={business === key} className={business === key ? 'selected' : ''} onClick={() => {setBusiness(key);setPage(1);}}>{label}</button>
+              ))}
+            </div>
+            {!domains && !domainsError && <p className="business-notice" role="status">正在读取业务领域…</p>}
+            {domainsError && <p className="business-notice" role="alert">{domainsError}</p>}
+            {domains && (!domains.matchesCatalog || unmatchedDomains > 0) && <p className="business-notice">{!domains.matchesCatalog && '部署单元目录与当前快照不同步，分类按当前目录展示。'}{unmatchedDomains > 0 && ` ${unmatchedDomains} 个应用尚未关联部署单元，无法确定业务分类，暂不显示。`}</p>}
             <div className="list-toolbar">
               <div className="search-field">
                 <Search size={17} />
@@ -507,6 +552,20 @@ function AppList() {
             </div>
             <div className="application-advanced-filters">
               <fieldset>
+                <legend>Git 状态</legend>
+                <div className="application-filter-controls">
+                  <select aria-label="Git 状态" value={gitFilter} onChange={e=>{setGitFilter(e.target.value as GitFilter);setPage(1);}}>
+                    <option value="all">全部 Git 状态</option>
+                    <option value="valid">Git 有效</option>
+                    <option value="missing">Git 地址失效</option>
+                    <option value="denied">Git 无权限</option>
+                    <option value="unknown">Git 待核实</option>
+                    <option value="unchecked">未检查</option>
+                  </select>
+                </div>
+                <p>任一地址符合所选状态即可匹配；未检查表示没有与当前快照匹配的检查结果。</p>
+              </fieldset>
+              <fieldset>
                 <legend>环境组合（精确匹配）</legend>
                 <div className="application-filter-controls">
                   <Button variant={combination===null?'secondary':'outline'} size="sm" onClick={()=>{setCombination(null);setEnv('ALL');setPage(1);}}>不限环境</Button>
@@ -568,7 +627,6 @@ function AppList() {
               </div>
             </div>
             {(gitError || gitCheck?.job.error) && <p role="alert" className="text-xs text-red-600">{gitError || gitCheck?.job.error}</p>}
-            {gitCheck?.result && <p className="text-xs text-slate-500">Git 地址最近检查：{formatBeijingTime(gitCheck.result.checkedAt)}{gitCheck.result.snapshotCollectedAt !== inventoryDate ? '（应用快照已变化，请重新检查）' : '；不存在结果可能受账号权限限制，请结合权限核实。'}</p>}
             <Table className="app-table">
               <TableHeader>
                 <TableRow>
@@ -589,8 +647,7 @@ function AppList() {
               <TableBody>
                 {visible.map((a) => {
                   const processStatus = appProcessStatusSummary(a);
-                  const urls = new Set([a.repository, ...envs.flatMap(e => info(a, e).rows.map(row => row.repository))]);
-                  const gitResults = gitCheck?.result?.snapshotCollectedAt === inventoryDate ? (gitCheck.result.apps[a.id] || []).filter(item => urls.has(item.url)) : [];
+                  const gitResults = gitResultsForApp(a);
                   return (
                   <Fragment key={a.id}>
                     <TableRow

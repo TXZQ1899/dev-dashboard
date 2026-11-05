@@ -25,7 +25,7 @@ function render(assets,options={}) {
   if(id==='react')return {...React,useEffect:(fn,deps)=>{if(options.runRequestEffect&&deps?.[0]===options.processRequest)fn();},useMemo:f=>f(),useState:initial=>{const i=index++;return [i<state.length?state[i]:typeof initial==='function'?initial():initial,value=>options.changes?.push([i,value])];}};
   if(id==='react/jsx-runtime')return require(id);
   if(id==='@/lib/jumpserver')return {jumpserver:{assets,collectedAt:'2026-09-17T12:00:00Z'},jumpserverLoginUrl:id=>'http://jump/luna/?login_to='+id};
-  if(id==='@/lib/server-processes')return lib;
+  if(id==='@/lib/server-processes')return options.processAssetCounts ? {...lib,processRows:(rows,...args)=>{options.processAssetCounts.push(rows.length);return lib.processRows(rows,...args);}} : lib;
   if(id==='@/lib/jumpserver-overview')return overviewLib;
   if(id==='@/lib/process-comparison')return {
     ipSpecSummary:ip=>ip==='10.0.0.2'?'2C 4G':'',
@@ -55,6 +55,19 @@ test('总览跳转按 IP 搜索并重置筛选、展开匹配资产',()=>{
  const changes=[]; const request={ip:'10.0.0.2'};
  render([asset],{processRequest:request,runRequestEffect:true,changes});
  assert.deepEqual(changes.map(([i,v])=>[i,JSON.parse(JSON.stringify(v))]),[[0,'can_login'],[1,'10.0.0.2'],[2,'all'],[3,'all'],[4,1],[8,''],[7,{a:{type:'全部进程',page:1}}],[10,{}]]);
+});
+test('精确 IP 跳转仅展示目标，并按资产采集状态选择标签',()=>{
+ const request={ip:'10.0.0.2',exact:true};
+ const similar={...asset,id:'other',ip:'10.0.0.20',hostname:'other-server'};
+ const html=render([asset,similar],{processRequest:request,query:request.ip});
+ assert.match(html,/10\.0\.0\.2/);assert.doesNotMatch(html,/10\.0\.0\.20/);
+ const counts=[];render([asset,similar],{processRequest:request,query:request.ip,processAssetCounts:counts});
+ assert.equal(counts[0],1);
+ const cleared=[];render([asset,similar],{processRequest:request,query:'',processAssetCounts:cleared});
+ assert.equal(cleared[0],2);
+ const unavailable={...asset,inspection:{...inspection,loginStatus:'cannot_login'}};
+ const changes=[];render([unavailable],{processRequest:request,runRequestEffect:true,changes});
+ assert.equal(changes.find(([i])=>i===0)[1],'cannot_login');
 });
 test('Docker 容器 init、子进程和代理在进程列表中显示证据和容器信息',()=>{
  const container={id:'container1',name:'redis4',image:'redis:5',initPid:100,command:'redis-server --port 6379',ports:[{containerPort:'6379/tcp',hostIp:'0.0.0.0',hostPort:'6379'}]};

@@ -13,3 +13,10 @@ test('backend counts distinguish memberships, unused groups, redirects and empty
  assert.equal(s.memberships,3);assert.equal(s.backends,2);assert.equal(s.used,1);assert.equal(s.empty,1);
  assert.equal(sandbox.exports.filterClb([i],'10.0.0.2').length,1);
 });
+test('certificate domain bindings select only exact rules and do not invent fallback routes',()=>{
+ const l={protocol:'HTTPS',port:443,groupId:'default',certificates:[{id:'c',domain:'*.example.com'},{id:'c',domain:'specific.example.com'},{id:'other',domain:''}],rules:[{domain:'*.example.com',groupId:'a'},{domain:'other.example.com',groupId:'b'},{domain:'other.com',groupId:'c'}]};
+ const routes=sandbox.exports.certificateRoutes(l,'c');
+ assert.equal(routes.defaultRoute,false);assert.equal(routes.rules.length,1);assert.equal(routes.rules[0].groupId,'a');
+ const instances=[{id:'lb',ip:'10.0.0.1',listeners:[l],groups:[{id:'a',servers:[]},{id:'b',servers:[]},{id:'c',servers:[]}]}];
+ assert.equal(sandbox.exports.certificatesFromClb(instances,'other.example.com').length,0);
+});

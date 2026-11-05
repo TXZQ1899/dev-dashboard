@@ -472,9 +472,9 @@ class Catalog:
         with self._category_cache_lock:
             self._category_cache.clear()
 
-    def categories(self, conn, base, where, args, presence):
+    def categories(self, conn, base, where, args, presence, business=None):
         # Component imports may run in other processes, so cache entries expire.
-        key = (self.source_key, presence)
+        key = (self.source_key, presence, business)
         with self._category_cache_lock:
             cached = self._category_cache.get(key)
             now = time.monotonic()
@@ -486,19 +486,30 @@ class Catalog:
             self._category_cache[key] = (time.monotonic() + 30, categories)
             return list(categories)
 
-    def read(self, *, query='', page=1, page_size=20, presence='present', unit_id=None, environment=None, category=None):
+    def application_domains(self):
+        self.migrate()
+        with self.connection() as conn:
+            head = self.head(conn)
+            if not head:
+                raise CatalogError('部署单元目录尚未导入')
+            rows = self.execute(conn, "SELECT s.native_key_json,bd.name AS domain_name FROM deployment_unit_source s JOIN deployment_unit u ON u.id=s.unit_id LEFT JOIN business_system bs ON bs.id=u.system_id LEFT JOIN business_domain bd ON bd.id=bs.domain_id WHERE s.source_instance_key=%s AND s.object_kind='DEVOPS_APPLICATION' AND u.unit_type='APPLICATION'", (self.source_key,))
+            return {'snapshotSha256': head['snapshot_sha256'], 'applications': [
+                {'appId': text(decode(row['native_key_json'], {}).get('appId')), 'domainName': row['domain_name']}
+                for row in rows if decode(row['native_key_json'], {}).get('appId') is not None]}
+
+    def read(self, *, query='', page=1, page_size=20, presence='present', unit_id=None, environment=None, category=None, business=None):
         self.migrate()
         with self.connection() as conn:
             conn.begin()
             try:
-                result = self._read(conn, query, page, page_size, presence, unit_id, environment, category)
+                result = self._read(conn, query, page, page_size, presence, unit_id, environment, category, business)
                 conn.commit()
                 return result
             except Exception:
                 conn.rollback()
                 raise
 
-    def _read(self, conn, query, page, page_size, presence, unit_id, environment, category):
+    def _read(self, conn, query, page, page_size, presence, unit_id, environment, category, business):
         head = self.head(conn)
         source = None if not head else {'sourceVersion': head['source_version'], 'snapshotSha256': head['snapshot_sha256'],
             'observedAt': iso(head['observed_at']), 'importedAt': iso(head['imported_at']),
@@ -523,8 +534,14 @@ class Catalog:
         if presence == 'present':
             where += " AND s.presence_status='PRESENT'"
         category_expr = "CASE WHEN u.unit_type='APPLICATION' THEN 'APPLICATION' ELSE COALESCE(NULLIF(u.technology_code,''), u.unit_type) END"
-        base = ' FROM deployment_unit u JOIN deployment_unit_source s ON s.unit_id=u.id '
-        categories = self.categories(conn, base, where, args, presence)
+        base = ' FROM deployment_unit u JOIN deployment_unit_source s ON s.unit_id=u.id LEFT JOIN business_system bs ON bs.id=u.system_id LEFT JOIN business_domain bd ON bd.id=bs.domain_id '
+        if business == 'other':
+            where += " AND (bd.name IS NULL OR bd.name='' OR bd.name='未分类')"
+        elif business == 'travel':
+            where += " AND bd.name='商旅'"
+        elif business == 'group':
+            where += " AND bd.name IS NOT NULL AND bd.name<>'' AND bd.name NOT IN ('未分类','商旅')"
+        categories = self.categories(conn, base, where, args, presence, business)
         if category:
             where += ' AND ' + category_expr + '=%s'
             args.append(category)
@@ -536,7 +553,7 @@ class Catalog:
         pages = max(1, (total + page_size - 1) // page_size)
         page = min(page, pages)
         rows = self.execute(conn, 'SELECT u.*,s.presence_status AS source_presence,s.native_key_json,o.source_attributes_json AS attributes,bs.name AS system_name,bd.name AS domain_name' + base +
-            'LEFT JOIN catalog_observation o ON o.id=s.latest_observation_id LEFT JOIN business_system bs ON bs.id=u.system_id LEFT JOIN business_domain bd ON bd.id=bs.domain_id WHERE ' + where +
+            'LEFT JOIN catalog_observation o ON o.id=s.latest_observation_id WHERE ' + where +
             ' ORDER BY u.name,u.id LIMIT %s OFFSET %s', (*args, page_size, (page - 1) * page_size))
         units = []
         for row in rows:

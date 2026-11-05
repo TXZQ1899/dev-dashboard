@@ -347,6 +347,9 @@ class Service:
         environment = params.get('environment', [None])[0]
         unit_id = params.get('unitId', [None])[0]
         category = params.get('category', [None])[0]
+        business = params.get('business', [None])[0]
+        if business not in (None, 'group', 'travel', 'other'):
+            raise CatalogInputError('业务分类无效')
         if category is not None and (not category or len(category) > 100):
             raise CatalogInputError('部署单元类型无效')
         if presence not in ('present', 'all') or environment not in (None, *ENVIRONMENTS_CATALOG):
@@ -355,7 +358,7 @@ class Service:
             raise CatalogInputError('部署单元 ID 无效')
         result = self.catalog_store.read(query=query, page=bounded_int(params, 'page', 1, 1, 1000000),
             page_size=bounded_int(params, 'pageSize', 20, 1, 100), presence=presence,
-            unit_id=unit_id, environment=environment, category=category)
+            unit_id=unit_id, environment=environment, category=category, business=business)
         identifier, raw = self.catalog_context()
         if unit_id:
             add_dms_instance_ips(result.get('instances', []))
@@ -364,6 +367,12 @@ class Service:
         result['activeSnapshot'] = {'version': identifier, 'collectedAt': current_snapshot.get('collectedAt'),
                                     'matchesCatalog': bool(result['source'] and result['source']['snapshotSha256'] == current_hash)}
         result['job'] = dict(self.catalog_job)
+        return result
+
+    def catalog_application_domains(self):
+        result = self.catalog_store.application_domains()
+        _, raw = self.catalog_context()
+        result['matchesCatalog'] = result.pop('snapshotSha256') == hashlib.sha256(raw).hexdigest()
         return result
 
     def version(self, identifier):
@@ -391,8 +400,8 @@ class Service:
             self.git_check_job = {'status': 'running', 'startedAt': now(), 'completed': 0, 'total': 0}
 
             def run():
+                from git_address_check import GitCheckAuthenticationError, check_snapshot
                 try:
-                    from git_address_check import check_snapshot
                     def progress(done, total):
                         with self.lock:
                             self.git_check_job.update(completed=done, total=total)
@@ -402,6 +411,9 @@ class Service:
                     with self.lock:
                         write(DATA/'checks/git-address/latest.json', result)
                         self.git_check_job.update(status='complete', finishedAt=now())
+                except GitCheckAuthenticationError as exc:
+                    with self.lock:
+                        self.git_check_job.update(status='failed', finishedAt=now(), error=str(exc))
                 except Exception:
                     with self.lock:
                         self.git_check_job.update(status='failed', finishedAt=now(), error='检查失败，请核对凭据及网络后重试')
@@ -1775,6 +1787,11 @@ class Handler(BaseHTTPRequestHandler):
         if not self.allowed_host():return self.json(403,{'error':'仅允许本机访问'})
         if urlsplit(self.path).path == '/api/settings/git-address-check':
             return self.json(200, self.server.service.git_check_state())
+        if urlsplit(self.path).path == '/api/catalog/application-domains':
+            try:
+                return self.json(200, self.server.service.catalog_application_domains())
+            except CatalogError as exc: return self.json(503, {'error': str(exc)})
+            except Exception: return self.json(503, {'error': '业务领域暂不可用，请稍后重试'})
         if urlsplit(self.path).path == '/api/catalog/deployment-units':
             try:
                 return self.json(200, self.server.service.catalog_query(parse_qs(urlsplit(self.path).query)))

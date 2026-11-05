@@ -3,7 +3,7 @@ import { Cpu, MemoryStick, Server } from 'lucide-react';
 import { Shell } from '../page';
 import { instances, tenantSnapshots } from '@/lib/ecs';
 import { localServers, summarize as summarizeLocal } from '@/lib/local-servers';
-import { capacity, cloudSiteLabel, partitionCloud, siteTenantMap } from '@/lib/server-resources';
+import { capacity, cloudSiteLabel, partitionCloud, siteTenantMap, serverTenantPath } from '@/lib/server-resources';
 import { useAliyunTenants } from '@/lib/aliyun-tenant-cache';
 import './servers.css';
 const colors = ['#328979', '#6286cc', '#e0a15a', '#a0a9a5'];
@@ -14,8 +14,8 @@ export default function ServerOverview() {
   const tenantSites = siteTenantMap([...tenantSnapshots, ...instances]);
   const local = summarizeLocal(localServers);
   const sites = [
-    { key: 'xiuping', name: cloudSiteLabel('xiuping', tenantSites, tenants, tenantLoadFailed), ...capacity(cloud.xiuping), href: '/servers/xiuping' },
-    { key: 'thomascookjv', name: cloudSiteLabel('thomascookjv', tenantSites, tenants, tenantLoadFailed), ...capacity(cloud.thomascookjv), href: '/servers/thomascookjv' },
+    { key: 'xiuping', name: cloudSiteLabel('xiuping', tenantSites, tenants, tenantLoadFailed), ...capacity(cloud.xiuping), href: serverTenantPath(tenantSites.xiuping) },
+    { key: 'thomascookjv', name: cloudSiteLabel('thomascookjv', tenantSites, tenants, tenantLoadFailed), ...capacity(cloud.thomascookjv), href: serverTenantPath(tenantSites.thomascookjv) },
     { key: 'local', name: '本地机房', count: local.count, cpu: local.cpu, memory: local.memory, href: '/datacenter' },
     ...(cloud.unknown.length ? [{ key: 'unknown', name: '云账号待确认', ...capacity(cloud.unknown), href: '/aliyun/instances' }] : []),
   ];

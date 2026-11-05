@@ -36,6 +36,17 @@ class CatalogServiceTests(unittest.TestCase):
         self.assertEqual(handler.json.call_args.args[0], 503)
         self.assertNotIn('secret', str(handler.json.call_args))
 
+    def test_get_application_domains_masks_unexpected_errors(self):
+        handler, service = self.handler('GET', '/api/catalog/application-domains')
+        service.catalog_application_domains.return_value = {'applications': [], 'matchesCatalog': True}
+        handler.do_GET()
+        handler.json.assert_called_once_with(200, {'applications': [], 'matchesCatalog': True})
+        handler.json.reset_mock()
+        service.catalog_application_domains.side_effect = RuntimeError('credential-secret')
+        handler.do_GET()
+        self.assertEqual(handler.json.call_args.args[0], 503)
+        self.assertNotIn('secret', str(handler.json.call_args))
+
     def test_import_requires_same_origin(self):
         handler, service = self.handler('POST', '/api/catalog/deployment-units/import', origin='http://other.invalid')
         handler.do_POST()
@@ -72,7 +83,7 @@ class CatalogServiceTests(unittest.TestCase):
     def test_catalog_query_rejects_invalid_filters_before_database_access(self):
         service = object.__new__(s.Service)
         service.catalog_store = Mock()
-        for params in ({'page': ['0']}, {'presence': ['deleted']}, {'environment': ['UAT']}, {'unitId': ['../../secret']}, {'q': ['a' * 201]}):
+        for params in ({'page': ['0']}, {'presence': ['deleted']}, {'environment': ['UAT']}, {'unitId': ['../../secret']}, {'q': ['a' * 201]}, {'business': ['invalid']}):
             with self.assertRaises((ValueError, s.CatalogInputError)): service.catalog_query(params)
         service.catalog_store.read.assert_not_called()
 

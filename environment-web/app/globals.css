@@ -735,6 +735,10 @@ h2 {
   border-radius: 10px;
   overflow: hidden;
 }
+.business-tabs { display: flex; flex-wrap: wrap; gap: 20px; padding: 0 22px; border-bottom: 1px solid var(--border); }
+.business-tabs button { padding: 15px 2px 12px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #6a8073; cursor: pointer; }
+.business-tabs button.selected { border-bottom-color: #397458; color: #397458; font-weight: 600; }
+.business-notice { padding: 10px 22px 0; color: #8a632f; font-size: 12px; }
 .list-toolbar {
   display: flex;
   align-items: center;

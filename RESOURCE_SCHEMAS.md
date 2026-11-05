@@ -38,7 +38,7 @@
 
 ## 1. DevOps 应用环境
 
-应用列表的按需 Git 地址检查独立于采集快照，结果写入数据卷 `checks/git-address/latest.json`，包含来源版本、DevOps 快照时间、检查时间及各应用的原始地址、状态与原因；不修改原始快照。检查覆盖应用及各环境声明的地址，按规范化地址去重；当前仅检查 Codeup，其他平台保留待核实。`missing` 表示接口返回未找到（可能受账号权限限制），`denied` 表示明确无权，`unknown` 包含网络、认证及不支持的地址。应用列表只对匹配当前快照时间和原始地址的结果显示标签；检查不验证 Git clone 凭据。
+应用列表的按需 Git 地址检查独立于采集快照，结果写入数据卷 `checks/git-address/latest.json`，包含来源版本、DevOps 快照时间、检查时间及各应用的原始地址、状态与原因；不修改原始快照。检查覆盖应用及各环境声明的地址，按规范化地址去重；当前仅检查 Codeup，其他平台保留待核实。`missing` 表示接口返回未找到（可能受账号权限限制），`denied` 表示明确无权，`unknown` 包含网络及不支持的地址。检测到登录或安全验证中断时，任务报错并保留此前结果，不将未检查地址写成新的结果。应用列表只对匹配当前快照时间和原始地址的结果显示标签，并忽略旧结果中的登录中断类标签；检查不验证 Git clone 凭据。
 
 ### 根对象
 
@@ -1526,7 +1526,8 @@ Spring Cloud Alibaba 的 `spring.cloud.nacos.config` 支持从无 profile 文档
 
 ### 查询与触发 API
 
-- `GET /api/catalog/deployment-units`：`q` 搜索名称/编码/应用 ID，`page`、`pageSize`（1–100），`presence=present|all`，`category`（应用为 `APPLICATION`，组件为技术类型）。返回 `source`、`units`、`summary`、`categories`、`categorySummary`、`pagination`、`activeSnapshot`、`job`。`categories` 按来源状态分别缓存最多 30 秒，目录导入发生变更时立即清除本进程缓存；`categorySummary` 跨分页按当前筛选统计单元和各环境当前观察实例，服务器按各环境内非空 IP 去重；历史筛选仅扩展单元范围，不将未再观察到的实例计入。
+- `GET /api/catalog/application-domains`：返回 DevOps 应用 ID 与当前目录业务领域的关联，以及目录与当前快照是否一致。应用列表依据该关联展示地中海度假集团、商旅和其它三个分类；没有部署单元关联的应用保持未确定，不视为未分类。
+- `GET /api/catalog/deployment-units`：`q` 搜索名称/编码/应用 ID，`page`、`pageSize`（1–100），`presence=present|all`，`category`（应用为 `APPLICATION`，组件为技术类型），可选 `business=group|travel|other` 按业务领域分类：商旅归 travel，未分类或无领域归 other，其余归 group。返回 `source`、`units`、`summary`、`categories`、`categorySummary`、`pagination`、`activeSnapshot`、`job`。`categories` 按业务分类及来源状态分别缓存最多 30 秒，不受搜索和类型筛选影响；目录导入发生变更时立即清除本进程缓存。`categorySummary` 跨分页按当前筛选统计单元和各环境当前观察实例，服务器按各环境内非空 IP 去重；历史筛选仅扩展单元范围，不将未再观察到的实例计入。
 - 同接口传 `unitId`、可选 `environment`，返回 `source`、`instances`、`activeSnapshot`、`job`；实例当前属性、最近时间和来源可见性分开返回。
 - `source` 含原始快照版本、哈希、采集/导入时间；`activeSnapshot.matchesCatalog` 表示当前页面快照是否与该目录来源相同。
 - `POST /api/catalog/deployment-units/import`：同源 JSON 空对象，返回 202 和任务状态；异步读取当前完整快照，无客户端文件路径参数。

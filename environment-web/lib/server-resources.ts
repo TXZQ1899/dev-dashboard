@@ -62,3 +62,7 @@ export function partitionCloud<T extends Capacity>(rows: T[], scopes: TenantScop
 export function capacity(rows: { cpu: number; memoryGiB: number }[]) {
   return { count: rows.length, cpu: rows.reduce((sum, row) => sum + row.cpu, 0), memory: rows.reduce((sum, row) => sum + row.memoryGiB, 0) };
 }
+
+export function serverTenantPath(id: string | undefined): string {
+  return id ? `/servers/${encodeURIComponent(id)}` : '/aliyun/instances';
+}

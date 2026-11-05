@@ -31,7 +31,7 @@ function browser(tenant = '') {
   }};
   const compiled=ts.transpileModule(fs.readFileSync('app/aliyun/clb/page.tsx','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText;
   vm.runInNewContext(compiled+'\nexports.DnsBrowser=DnsBrowser;',sandbox);
-  const props={tenant,rows:[{record,matches:[],eipMatches:[],status:'未匹配当前 CLB IP'}],query:'',expanded:{},onQuery(){},onExpand(){},onCollapse(){},toggle(){}};
+  const props={tenant,rows:[{record,matches:[],eipMatches:[],resolutions:[],status:'未匹配当前 CLB IP'}],query:'',expanded:{},onQuery(){},onExpand(){},onCollapse(){},toggle(){}};
   function nodes(node){
     if(Array.isArray(node))return node.flatMap(nodes);
     if(!React.isValidElement(node))return [];

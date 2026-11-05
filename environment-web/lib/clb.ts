@@ -13,6 +13,14 @@ export type Snapshot = { available: boolean; collectedAt: string | null; instanc
 export const clb = snapshot as Snapshot;
 export type Certificate = Listener['certificates'][number];
 export type CertificateView = { key: string; certificate: Certificate; instances: Array<{ instance: Clb; listeners: Listener[] }> };
+export function certificateRoutes(listener: Listener, certificateId: string) {
+  const bindings = listener.certificates.filter(c => c.id === certificateId);
+  const domains = new Set(bindings.map(c => c.domain.trim().toLowerCase()).filter(Boolean));
+  return {
+    defaultRoute: bindings.some(c => !c.domain.trim()),
+    rules: listener.rules.filter(rule => domains.has(rule.domain.trim().toLowerCase())),
+  };
+}
 export function referencedGroups(instance: Clb) {
   return new Set(instance.listeners.filter(l => l.forwardPort == null).flatMap(l => [l.groupId, ...l.rules.map(r => r.groupId)]));
 }
@@ -53,10 +61,14 @@ export function certificatesFromClb(instances: Clb[], query = ''): CertificateVi
         status: instance.status,
       }).toLowerCase();
       if (instanceText.includes(q)) return [{ instance, listeners }];
-      const matchedListeners = listeners.filter((listener) => JSON.stringify({
-        listener,
-        groups: instance.groups.filter((group) => [listener.groupId, ...listener.rules.map((rule) => rule.groupId)].includes(group.id)),
-      }).toLowerCase().includes(q));
+      const matchedListeners = listeners.filter((listener) => {
+        const routes = certificateRoutes(listener, view.certificate.id);
+        const groupIds = [...(routes.defaultRoute ? [listener.groupId] : []), ...routes.rules.map(rule => rule.groupId)];
+        return JSON.stringify({ protocol: listener.protocol, port: listener.port,
+          bindings: listener.certificates.filter(c => c.id === view.certificate.id), rules: routes.rules,
+          groups: instance.groups.filter(group => groupIds.includes(group.id)),
+        }).toLowerCase().includes(q);
+      });
       return matchedListeners.length ? [{ instance, listeners: matchedListeners }] : [];
     });
     return matchedInstances.length ? [{ ...view, instances: matchedInstances }] : [];

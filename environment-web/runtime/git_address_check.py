@@ -3,6 +3,10 @@ from check_codeup_access import Checker, normalize_url
 from aliyun_openapi import _codeup_client, _codeup_path_status
 
 
+class GitCheckAuthenticationError(Exception):
+    """The Codeup session cannot be used to complete the check."""
+
+
 def check_snapshot(snapshot, saved, progress=lambda done, total: None):
     references = {}
     for app in snapshot.get('apps', []):
@@ -35,15 +39,13 @@ def check_snapshot(snapshot, saved, progress=lambda done, total: None):
         if not cookie or '\n' in cookie or '\r' in cookie:
             raise ValueError('请先在设置中配置有效的阿里云 Cookie')
         client = Checker(cookie)
-    results, stopped = {}, False
+    results = {}
     for index, entry in enumerate(references.values(), 1):
         item = entry['item']
         if item.get('error'):
             status, reason = 'unknown', item['error']
         elif item['host'] != 'codeup.aliyun.com':
             status, reason = 'unknown', '非 Codeup 地址，未检查'
-        elif stopped:
-            status, reason = 'unknown', '登录或安全验证异常，未继续检查'
         else:
             try:
                 if mode == 'accesskey':
@@ -53,7 +55,11 @@ def check_snapshot(snapshot, saved, progress=lambda done, total: None):
                     status = {'是': 'valid', '地址不存在': 'missing', '暂无权限访问': 'denied'}.get(access, 'unknown')
                 else:
                     access, reason, _, code, stopped = client.check(item)
+                    if stopped:
+                        raise GitCheckAuthenticationError('Codeup 登录失效或遇到安全验证，请检查阿里云 Cookie 后重试')
                     status = 'valid' if access == '是' else 'denied' if code.upper() in ('FORBIDDEN', 'ACCESS_DENIED', '403') else 'missing' if code.upper() in ('NOT_FOUND', 'PROJECT_NOT_FOUND', '404') else 'unknown'
+            except GitCheckAuthenticationError:
+                raise
             except Exception:
                 status, reason = 'unknown', '检查失败，请核对网络及凭据'
         for app in entry['apps']:

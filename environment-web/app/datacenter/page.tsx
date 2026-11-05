@@ -19,7 +19,6 @@ import {
   inventoryDateStr,
   summarize,
   filterServers,
-  compareText,
   type LocalServer,
 } from '@/lib/local-servers';
 import './datacenter.css';
@@ -73,6 +72,38 @@ function exportCsv(rows: LocalServer[]) {
   link.download = 'local-datacenter-servers.csv';
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+const MAX_APP_NAMES = 3;
+
+function AppNamesCell({ row }: { row: LocalServer }) {
+  const [expanded, setExpanded] = useState(false);
+  const hidden = row.appNames.length - MAX_APP_NAMES;
+  const visible = expanded ? row.appNames : row.appNames.slice(0, MAX_APP_NAMES);
+  return (
+    <>
+      <strong>{row.appCount}</strong>
+      {visible.length > 0 && (
+        <small
+          className={`dc-app-names ${expanded ? 'dc-app-names-expanded' : ''}`}
+          title={row.appName}
+        >
+          {visible.join('、')}
+          {!expanded && hidden > 0 ? ` 等 ${hidden} 个` : ''}
+        </small>
+      )}
+      {hidden > 0 && (
+        <button
+          type="button"
+          className="dc-app-toggle"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {expanded ? '收起' : '展开'}
+        </button>
+      )}
+    </>
+  );
 }
 
 function Metrics({ rows }: { rows: LocalServer[] }) {
@@ -221,8 +252,7 @@ export default function DatacenterPage() {
                       </span>
                     </TableCell>
                     <TableCell>
-                      <strong>{r.appCount}</strong>
-                      <small className="dc-app-names">{r.appName}</small>
+                      <AppNamesCell row={r} />
                     </TableCell>
                     <TableCell>
                       <span className="dc-env-tags">

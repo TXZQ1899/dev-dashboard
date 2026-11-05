@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { Shell } from '@/app/page';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { clb, certificatesFromClb, filterClb, referencedGroups, summarizeClb, type Group, type Clb } from '@/lib/clb';
+import { clb, certificatesFromClb, certificateRoutes, filterClb, referencedGroups, summarizeClb, type Group, type Clb } from '@/lib/clb';
 import { instances as ecsInstances, fetchedAt as ecsFetchedAt } from '@/lib/ecs';
 import { jumpserver } from '@/lib/jumpserver';
 import './clb.css';
@@ -14,19 +14,21 @@ import { nat, portLabel, type DnatEntry, type NatGateway } from '@/lib/nat';
 import { TenantFilter, resourceTenantId } from '@/components/tenant-filter';
 import { tenantLabel, resourceIdentity } from '@/lib/tenants';
 import { formatBeijingTime } from '@/lib/datetime';
+import { dnsListenerRoutes, nginxRoutesForBackend, nginxFileIncludes, nginxServerNames, type ArchivedConfig } from '@/lib/dns-downstream';
+import type { Asset } from '@/lib/server-processes';
 
 const dnsIntegration = integrateDns(clb.instances, dns.records, eip.records, nat);
 const eipIntegration = integrateEip(clb.instances, dnsIntegration, eip.records, ecsInstances, nat);
 const viewLink = (view: string, query: string) => `/aliyun/clb?view=${view}&q=${encodeURIComponent(query)}`;
-function EipSummary({ record }: { record: Eip }) {
-  return <div className="clb-group"><strong><a href={viewLink('eip', record.id)}>{record.ip}</a> · {record.owner} · {record.name === '-' ? '未命名 EIP' : record.name}</strong>
+function EipSummary({ record, instance }: { record: Eip; instance?: Clb }) {
+  return <div className="clb-group"><strong><a href={viewLink('eip', record.id)}>{record.ip}</a> · {record.owner}{!instance && <> · {record.name === '-' ? '未命名 EIP' : record.name}</>}</strong>
     <small>{record.id} · {record.status} · {record.bandwidth}</small>
     <p>静态绑定：{record.bindingType || '未提供'} · {record.bindingName || '未提供'} · {record.bindingId || '未提供'}</p>
-    <EipBackends record={record} />
+    <EipBackends record={record} instance={instance} />
   </div>;
 }
-function DnatMapping({ entry }: { entry: DnatEntry }) {
-  const targets = clb.instances.filter(instance => instance.ip === entry.internalIp);
+function DnatMapping({ entry, instance }: { entry: DnatEntry; instance?: Clb }) {
+  const targets = instance ? [instance].filter(target => target.ip === entry.internalIp) : clb.instances.filter(target => target.ip === entry.internalIp);
   return <div className="clb-group"><strong>{entry.protocol.toUpperCase()} · {entry.name || entry.id}</strong>
     <p className="nat-mapping"><code>{entry.externalIp} : {portLabel(entry.externalPort)}</code> → <code>{entry.internalIp} : {portLabel(entry.internalPort)}</code></p>
     <small>规则状态：{entry.status} · {entry.id} · DNAT 表：{entry.tableId}</small>
@@ -34,7 +36,7 @@ function DnatMapping({ entry }: { entry: DnatEntry }) {
     {targets.map(instance => <p key={resourceIdentity(instance)}><a href={viewLink('instances', instance.id)}>CLB · {instance.name} · {instance.id}</a></p>)}
   </div>;
 }
-function EipBackends({ record }: { record: Eip }) {
+function EipBackends({ record, instance }: { record: Eip; instance?: Clb }) {
   const row = eipIntegration.find(row => row.record.key === record.key);
   if (!row) return null;
   if (record.bindingType === 'ECS实例') return <section><strong>绑定 ECS 的实例 IP</strong>
@@ -42,21 +44,34 @@ function EipBackends({ record }: { record: Eip }) {
     {row.ecsMatches.length ? row.ecsMatches.map(instance => <div key={resourceIdentity(instance)}><p><a href={`/aliyun/instances?q=${encodeURIComponent(instance.id)}`}>{instance.name} · {instance.id}</a></p><p>内网 IP：{instance.privateIps.join('、') || '未提供'}；公网 IP：{instance.publicIps.join('、') || '未提供'}</p><small>ECS 绑定记录未提供端口转换规则。</small></div>) : <p className="clb-note">当前 ECS 快照中未找到绑定实例 ID：{record.bindingId}。</p>}
   </section>;
   if (record.bindingType !== 'NAT网关') return null;
-  return <section><strong>DNAT 后端 IP / 端口映射（{row.mappings.length} 条）</strong>
+  const mappings = instance ? row.mappings.filter(({ entry }) => entry.internalIp === instance.ip) : row.mappings;
+  if (instance) {
+    const groups = { matched: [] as typeof mappings, missing: [] as typeof mappings, unknown: [] as typeof mappings };
+    for (const mapping of mappings) {
+      const port = mapping.entry.internalPort.trim();
+      if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) groups.unknown.push(mapping);
+      else if (instance.listeners.some(listener => listener.port === Number(port))) groups.matched.push(mapping);
+      else groups.missing.push(mapping);
+    }
+    const group = (label: string, items: typeof mappings, note: string) => <details onToggle={event => event.stopPropagation()}>
+      <summary>{label}（{items.length} 条）</summary><p className="clb-note">{note}</p>{items.map(({ entry }) => <DnatMapping key={entry.id} entry={entry} instance={instance} />)}
+    </details>;
+    return <section><small>NAT 快照：{formatBeijingTime(nat.collectedAt, '未采集')} · <a href={viewLink('nat', record.bindingId)}>{row.natGateway?.name || record.bindingId}</a></small>
+      {groups.matched.length > 0 && group('DNAT 有效监听端口', groups.matched, '仅表示端口配置匹配，不代表规则状态、协议或实际访问路径可用。')}
+      {groups.missing.length > 0 && group('DNAT 无效监听端口', groups.missing, '该端口无对应监听端口，访问路径不可达（依据当前 CLB 快照）。')}
+      {groups.unknown.length > 0 && group('DNAT 端口待核实', groups.unknown, '目标端口不是可明确比对的单个端口，需进一步核实。')}
+    </section>;
+  }
+  const content = <>
     {!nat.available ? <p className="clb-note">该版本尚未采集 NAT。<a href="/settings">打开 Settings 同步 NAT</a></p>
       : !row.natGateway ? <p className="clb-note">当前 NAT 快照未包含网关 {record.bindingId}，无法判断其 DNAT 映射。</p>
-      : <><small>NAT 快照：{formatBeijingTime(nat.collectedAt, '未采集')} · <a href={viewLink('nat', record.bindingId)}>{row.natGateway.name || record.bindingId}</a></small>{row.mappings.length ? row.mappings.map(({ entry }) => <DnatMapping key={entry.id} entry={entry} />) : <p className="clb-note">已采集该网关，但此 EIP 没有 DNAT 条目；SNAT 出站地址可能没有入站映射。</p>}</>}
-  </section>;
+      : <><small>NAT 快照：{formatBeijingTime(nat.collectedAt, '未采集')} · <a href={viewLink('nat', record.bindingId)}>{row.natGateway.name || record.bindingId}</a></small>{mappings.length ? mappings.map(({ entry }) => <DnatMapping key={entry.id} entry={entry} instance={instance} />) : <p className="clb-note">{instance ? '没有目标地址为此 CLB 的 DNAT 条目。' : '已采集该网关，但此 EIP 没有 DNAT 条目；SNAT 出站地址可能没有入站映射。'}</p>}</>}
+  </>;
+  return <section><strong>DNAT 后端 IP / 端口映射（{mappings.length} 条）</strong>{content}</section>;
 }
 function InstanceEips({ instance }: { instance: Clb }) {
-  const records = eipIntegration.filter(row => row.matches.some(match => match.instance.id === instance.id));
-  return <section className="clb-group"><strong>静态 EIP 关联（{records.length} 条）</strong>{records.length ? records.map(({ record, matches }) => <div key={record.key}><EipSummary record={record} /><small>关联依据：{matches.find(match => match.instance.id === instance.id)?.evidence.join('、')}</small></div>) : <p className="clb-note">三份 EIP 导出中未匹配此实例。</p>}</section>;
-}
-function InstanceDns({ instance }: { instance: Clb }) {
-  const records = dnsIntegration.filter(row => row.matches.some(match => match.instance.id === instance.id));
-  return <section className="clb-group"><strong>DNS 快照关联（{records.length} 条）</strong>
-    {records.length ? records.map(({ record, matches }) => <div key={record.id}><p><strong><a href={viewLink('dns', record.name)}>{record.name}</a></strong> · {record.type} · {record.line} · TTL {record.ttl} 秒</p><small>{matches.find(match => match.instance.id === instance.id)?.paths.map(path => `${path.chain.join(' → ')}${path.via ? `；经 ${path.via}` : ''}`).join('；')}</small></div>) : <p className="clb-note">当前 DNS 快照中暂无启用记录指向此实例；保留全部监听器与后端配置。</p>}
-  </section>;
+  const records = eipIntegration.filter(row => row.matches.some(match => resourceIdentity(match.instance) === resourceIdentity(instance)));
+  return <section className="clb-group"><strong>静态 EIP 关联（{records.length} 条）</strong>{records.length ? records.map(({ record }) => <div key={record.key}><EipSummary record={record} instance={instance} /></div>) : <p className="clb-note">三份 EIP 导出中未匹配此实例。</p>}</section>;
 }
 
 function ResourceLinks({ ip, showUnlinked = true }: { ip: string; showUnlinked?: boolean }) {
@@ -69,11 +84,11 @@ function ResourceLinks({ ip, showUnlinked = true }: { ip: string; showUnlinked?:
     {!ecs && !jump && showUnlinked ? <span className="clb-unlinked">未关联资源</span> : null}
   </span>;
 }
-function Backends({ group, port }: { group?: Group; port?: number | null }) {
+function Backends({ group, port, compact = false }: { group?: Group; port?: number | null; compact?: boolean }) {
   if (!group) return <p className="clb-warning">服务器组数据缺失</p>;
   return <div className="clb-group"><strong>{group.name}</strong><small>{group.id === 'default' ? '默认服务器组' : group.id}</small>
     {group.servers.length ? <div className="clb-backends">{group.servers.map((s,index) => <div key={`${s.id}-${s.port}-${index}`}>
-      <code>{s.ip || 'IP 未提供'} : {s.port ?? port ?? '由监听器指定'}</code>{s.ip ? <ResourceLinks ip={s.ip} /> : null}<small>{s.id} · {s.type} · 权重 {s.weight ?? '未提供'}</small>
+      <code>{s.ip || 'IP 未提供'} : {s.port ?? port ?? '由监听器指定'}</code>{!compact && s.ip ? <ResourceLinks ip={s.ip} /> : null}{!compact && <small>{s.id} · {s.type} · 权重 {s.weight ?? '未提供'}</small>}
     </div>)}</div> : <p className="clb-warning">无后端成员</p>}
   </div>;
 }
@@ -83,9 +98,21 @@ function Routes({ instance, listener }: { instance: Clb; listener: Clb['listener
     {listener.rules.map(rule => <section key={rule.id}><h3>域名：{rule.domain || '任意'} · 路径：{rule.path || '未限定'}</h3><small>{rule.id}</small><Backends group={instance.groups.find(g => g.id === rule.groupId)} /></section>)}
   </div>;
 }
-function ListenerDetails({ instance, listener, keyPrefix, expanded, toggle }: { instance: Clb; listener: Clb['listeners'][number]; keyPrefix: string; expanded: Record<string, boolean>; toggle: (key: string, open: boolean) => void }) {
+function ListenerDetails({ instance, listener, keyPrefix, expanded, toggle, hideSummary = false }: { instance: Clb; listener: Clb['listeners'][number]; keyPrefix: string; expanded: Record<string, boolean>; toggle: (key: string, open: boolean) => void; hideSummary?: boolean }) {
   const key = `${keyPrefix}-${listener.protocol}-${listener.port}`;
-  return <details className="clb-listener" open={!!expanded[key]} onToggle={e => { e.stopPropagation(); toggle(key, e.currentTarget.open); }}><summary><strong>{listener.protocol} : {listener.port}</strong><span>{listener.status} · {listener.rules.length} 条规则</span></summary><p className="clb-note">{listener.description} · 健康检查：{listener.healthCheck || '未提供'}</p>{listener.certificates.length > 0 && <p className="clb-note">绑定证书：{listener.certificates.map(c => c.domain || c.commonName || c.name || c.id).join('、')}</p>}<Routes instance={instance} listener={listener} /></details>;
+  return <details className="clb-listener" open={!!expanded[key]} onToggle={e => { e.stopPropagation(); toggle(key, e.currentTarget.open); }}><summary><strong>{listener.protocol} : {listener.port}</strong>{!hideSummary && <span>{listener.status} · {listener.rules.length} 条规则</span>}</summary><p className="clb-note">{listener.description} · 健康检查：{listener.healthCheck || '未提供'}</p>{listener.certificates.length > 0 && <p className="clb-note">绑定证书：{listener.certificates.map(c => c.domain || c.commonName || c.name || c.id).join('、')}</p>}<Routes instance={instance} listener={listener} /></details>;
+}
+function CertificateListener({ instance, listener, certificateId, keyPrefix, expanded, toggle }: { instance: Clb; listener: Clb['listeners'][number]; certificateId: string; keyPrefix: string; expanded: Record<string, boolean>; toggle: (key: string, open: boolean) => void }) {
+  const key = `${keyPrefix}-${listener.protocol}-${listener.port}`;
+  const routes = certificateRoutes(listener, certificateId);
+  return <details className="clb-listener" open={!!expanded[key]} onToggle={e => { e.stopPropagation(); toggle(key, e.currentTarget.open); }}>
+    <summary><strong>{listener.protocol} : {listener.port}</strong><span>绑定该证书</span></summary>
+    <div className="clb-routes">
+      {routes.defaultRoute && <section><h3>默认服务器组</h3><Backends compact group={instance.groups.find(g => g.id === listener.groupId)} port={listener.backendPort} /></section>}
+      {routes.rules.map(rule => <section key={rule.id}><h3>域名：{rule.domain} · 路径：{rule.path || '未限定'}</h3><Backends compact group={instance.groups.find(g => g.id === rule.groupId)} /></section>)}
+      {!routes.defaultRoute && !routes.rules.length && <p className="clb-note">域名扩展未找到域名一致的转发规则，后端待确认。</p>}
+    </div>
+  </details>;
 }
 function Toolbar({ label, placeholder, query, onQuery, onExpand, onCollapse }: { label: string; placeholder: string; query: string; onQuery: (value: string) => void; onExpand: () => void; onCollapse: () => void }) {
   return <section className="panel clb-toolbar"><Input aria-label={label} placeholder={placeholder} value={query} onChange={e => onQuery(e.target.value)} /><Button variant="outline" onClick={onExpand}>展开全部</Button><Button variant="outline" onClick={onCollapse}>折叠全部</Button></section>;
@@ -93,10 +120,10 @@ function Toolbar({ label, placeholder, query, onQuery, onExpand, onCollapse }: {
 function InstanceView({ rows, query, expanded, toggle, onQuery, onExpand, onCollapse }: { rows: Clb[]; query: string; expanded: Record<string, boolean>; toggle: (key: string, open: boolean) => void; onQuery: (value: string) => void; onExpand: () => void; onCollapse: () => void }) {
   const stats = summarizeClb(rows);
   return <><div className="clb-stats">{[['CLB 实例', stats.instances], ['监听入口', stats.listeners], ['去重后端', stats.backends], ['已关联后端', stats.used], ['后端关联记录', stats.memberships], ['无后端监听器', stats.empty]].map(([name,count]) => <section className="panel" key={name}><small>{name}</small><strong>{count}</strong></section>)}</div>
-    <Toolbar label="搜索 CLB" placeholder="搜索实例名称、IP、端口、域名或服务器组" query={query} onQuery={onQuery} onExpand={onExpand} onCollapse={onCollapse} /><p className="clb-note">CLB 实例页展示全部采集到的 CLB，不要求实例必须配置证书。DNS 使用静态导出与云采集快照的补充关联，无 DNS 匹配的实例仍完整展示。</p>
+    <Toolbar label="搜索 CLB" placeholder="搜索实例名称、IP、端口、域名或服务器组" query={query} onQuery={onQuery} onExpand={onExpand} onCollapse={onCollapse} /><p className="clb-note">CLB 实例页展示全部采集到的 CLB，不要求实例必须配置证书。EIP 和 DNAT 关联基于静态导出及 NAT 快照。</p>
     {!rows.length && <p>没有匹配的实例</p>}{rows.map(instance => { const used = referencedGroups(instance); const unused = instance.groups.filter(g => !used.has(g.id) && (g.id !== 'default' || g.servers.length)); return <details className="panel clb-instance" key={resourceIdentity(instance)} open={!!expanded[resourceIdentity(instance)]} onToggle={e => toggle(resourceIdentity(instance), e.currentTarget.open)}>
       <summary><strong>{instance.name} · {tenantLabel(instance)}</strong><code>{instance.ip}</code><span>{instance.addressType === 'intranet' ? '内网' : '公网'} · {instance.status} · {instance.listeners.length} 个监听器</span></summary><small className="clb-id">{instance.id}</small><div className="clb-branches">
-        <InstanceEips instance={instance} /><InstanceDns instance={instance} />{instance.listeners.map(listener => <ListenerDetails key={`${listener.protocol}-${listener.port}`} instance={instance} listener={listener} keyPrefix={resourceIdentity(instance)} expanded={expanded} toggle={toggle} />)}
+        <InstanceEips instance={instance} />{instance.listeners.map(listener => <ListenerDetails hideSummary key={`${listener.protocol}-${listener.port}`} instance={instance} listener={listener} keyPrefix={resourceIdentity(instance)} expanded={expanded} toggle={toggle} />)}
         {unused.length > 0 && <details open={!!expanded[`${instance.id}-unused`]} onToggle={e => { e.stopPropagation(); toggle(`${instance.id}-unused`, e.currentTarget.open); }}><summary>未被监听器或规则引用的服务器组（{unused.length}）</summary>{unused.map(group => <Backends key={group.id} group={group} />)}</details>}
       </div></details>; })}</>;
 }
@@ -105,12 +132,76 @@ function CertificateView({ tenant, query, expanded, onQuery, onExpand, onCollaps
   const rows = certificatesFromClb(scoped, query);
   const allCertificates = certificatesFromClb(scoped);
   const certificateInstances = new Set(allCertificates.flatMap(c => c.instances.map(i => i.instance.id)));
-  return <><div className="clb-stats">{[['域名证书', rows.length], ['全部 CLB 实例', clb.instances.length], ['证书关联 CLB', certificateInstances.size], ['未配置证书', scoped.filter(i => !certificateInstances.has(i.id)).length], ['ECS 关联 IP', new Set(ecsInstances.flatMap(i => i.privateIps)).size], ['JumpServer IP', new Set(jumpserver.assets.map(a => a.ip)).size]].map(([name,count]) => <section className="panel" key={name}><small>{name}</small><strong>{count}</strong></section>)}</div>
+  return <><div className="clb-stats">{[['域名证书', rows.length], ['全部 CLB 实例', clb.instances.length], ['证书关联 CLB', certificateInstances.size], ['未配置证书', scoped.filter(i => !certificateInstances.has(i.id)).length]].map(([name,count]) => <section className="panel" key={name}><small>{name}</small><strong>{count}</strong></section>)}</div>
     <Toolbar label="搜索域名证书" placeholder="搜索证书、域名、CLB、IP、端口或路由" query={query} onQuery={onQuery} onExpand={onExpand} onCollapse={onCollapse} /><p className="clb-note">证书页只展示实际绑定证书的 CLB；当前证书关联 {certificateInstances.size} 个实例，全部 CLB 为 {clb.instances.length} 个，差异为未配置证书或没有可识别证书绑定的实例。</p>
     {!rows.length && <p>没有匹配的证书，或当前快照尚未采集 CLB。</p>}{rows.map(certificate => <details className="panel clb-instance" key={certificate.key} open={!!expanded[certificate.key]} onToggle={e => toggle(certificate.key, e.currentTarget.open)}>
       <summary><strong>{certificate.certificate.domain || certificate.certificate.commonName || '未命名证书'}</strong><span>{certificate.certificate.name || certificate.certificate.id} · 到期：{certificate.certificate.expiresAt || '未提供'} · {certificate.instances.length} 个 CLB</span></summary><div className="clb-branches">
-        {certificate.instances.map(({ instance, listeners }) => <section key={resourceIdentity(instance)} className="clb-certificate-clb"><div className="clb-clb-heading"><strong>{instance.name} · {tenantLabel(instance)}</strong><code>{instance.ip}</code><small>{instance.addressType === 'intranet' ? '内网' : '公网'} · {instance.status} · {instance.id}</small></div><InstanceEips instance={instance} /><InstanceDns instance={instance} />{listeners.map(listener => <ListenerDetails key={`${listener.protocol}-${listener.port}`} instance={instance} listener={listener} keyPrefix={`${certificate.key}-${instance.id}`} expanded={expanded} toggle={toggle} />)}</section>)}
+        {certificate.instances.map(({ instance, listeners }) => <section key={resourceIdentity(instance)} className="clb-certificate-clb"><div className="clb-clb-heading"><strong>{instance.name} · {tenantLabel(instance)}</strong><code>{instance.ip}</code><small>{instance.addressType === 'intranet' ? '内网' : '公网'} · {instance.status} · {instance.id}</small></div>{listeners.map(listener => <CertificateListener key={`${listener.protocol}-${listener.port}`} instance={instance} listener={listener} certificateId={certificate.certificate.id} keyPrefix={`${certificate.key}-${instance.id}`} expanded={expanded} toggle={toggle} />)}</section>)}
       </div></details>)}</>;
+}
+function DnsBackend({ ip, port, domain }: { ip: string; port: number | null; domain: string }) {
+  const nginx = nginxRoutesForBackend(jumpserver.assets as Asset[], ip, port, domain);
+  const [references, setReferences] = useState<ReturnType<typeof nginxFileIncludes> | null>(null);
+  const [serverNames, setServerNames] = useState<ReturnType<typeof nginxServerNames>>([]);
+  const [referenceError, setReferenceError] = useState('');
+  const [referenceBusy, setReferenceBusy] = useState(false);
+  useEffect(() => {
+    if (!nginx.routes.length) return;
+    let active = true;
+    setReferences(null); setServerNames([]); setReferenceError('');
+    if (!nginx.version || !nginx.assetId) { setReferenceError('缺少配置版本或资产身份，无法读取配置归档。'); return; }
+    setReferenceBusy(true);
+    (async () => {
+      try {
+        const response = await fetch('/api/settings/nginx-configs?' + new URLSearchParams({ version: nginx.version, asset: nginx.assetId }), { cache: 'no-store' });
+        const data = await response.json() as { files?: ArchivedConfig[]; error?: string };
+        if (!response.ok) throw new Error(data.error || '无法读取配置归档');
+        if (active) { setServerNames(nginxServerNames(data.files || [], nginx.routes, domain)); setReferences(nginxFileIncludes(data.files || [], nginx.routes)); }
+      } catch (error) { if (active) setReferenceError(error instanceof Error ? error.message : '无法读取配置归档'); }
+      finally { if (active) setReferenceBusy(false); }
+    })();
+    return () => { active = false; };
+  }, [nginx.version, nginx.assetId, domain, ip, port]);
+  const ecs = ecsInstances.filter(item => item.privateIps.includes(ip) || item.publicIps.includes(ip));
+  const showRoute = (route: typeof nginx.routes[number], index: number) => <div key={`${route.file}-${route.uri}-${index}`}>
+    <p>路径：{route.uri || '未提供'} · {route.directive} {route.target && `→ ${route.target}`}{route.file && <> · 配置文件：<code>{route.file}</code></>}</p>
+    {route.backends.map((backend, i) => <p key={`${backend.host}-${backend.port}-${i}`}>下游：<code>{backend.host} : {backend.port || '端口未知'}</code></p>)}
+  </div>;
+  const main = nginx.routes.filter(route => route.uri === '/');
+  const others = nginx.routes.filter(route => route.uri !== '/');
+  return <div className="clb-group"><strong>{ecs.length === 1 ? `ECS · ${ecs[0].name}` : '后端'} · <code>{ip ? <a href={`/jumpserver?q=${encodeURIComponent(ip)}&view=processes&exact=1`}>{ip}</a> : 'IP 未提供'} : {port ?? '端口未知'}</code></strong>
+    {ecs.length > 1 && <p className="clb-note">多个 ECS 匹配此 IP，归属待核实。</p>}
+    {nginx.routes.length > 0 ? <section><p><strong>Nginx server_name 声明文件</strong></p>
+      {referenceBusy && <p className="clb-note">正在读取配置归档…</p>}
+      {referenceError && <p className="clb-warning">{referenceError}</p>}
+      {references && (serverNames.length ? serverNames.map((declaration, index) => <div key={`${declaration.path}-${index}`}><p><code>{declaration.path}</code></p><p>server_name：{declaration.names.join(' · ')}</p></div>) : <p className="clb-note">未能从路由来源文件中确定 server_name 声明，入口文件待核实。</p>)}
+      {references && <details onToggle={event => event.stopPropagation()}><summary>查看 include 引用</summary><p className="clb-note">以下为归档文件级引用；不表示每条引用均作用于该域名。路径、变量或未归档文件可能导致引用不完整。</p>
+        {references.edges.length ? references.edges.map(edge => <p key={`${edge.from}-${edge.to}`}><code>{edge.from}</code> → <code>{edge.to}</code></p>) : <p>未发现可展开的 include 引用。</p>}
+        {references.warnings.map(warning => <p className="clb-warning" key={warning}>{warning}</p>)}
+      </details>}{main.map(showRoute)}
+      {others.length > 0 && <details onToggle={event => event.stopPropagation()}><summary>其他路径和访问控制（{others.length} 条）</summary>
+        <div className="dns-route-table"><table><thead><tr><th>路径</th><th>处理方式</th><th>upstream / 下游</th><th>配置文件</th></tr></thead><tbody>
+          {others.map((route, index) => <tr key={`${route.file}-${route.uri}-${index}`}><td><code>{route.uri || '未提供'}</code></td><td>{route.directive || '未提供'}{route.directive !== 'proxy_pass' && route.target && <p>{route.target}</p>}</td>
+            <td>{route.upstream && <p>upstream：<code>{route.upstream}</code></p>}{route.directive === 'proxy_pass' && route.target && <p>proxy_pass：<code>{route.target}</code></p>}
+              {route.backends.length ? route.backends.map((backend, i) => <p key={`${backend.host}-${backend.port}-${i}`}>下游：<code>{backend.host} : {backend.port || '端口未知'}</code> · {backend.resolution}</p>) : <span>{route.upstream || route.directive === 'proxy_pass' ? '下游未解析' : '—'}</span>}
+            </td><td><code>{route.file || '未提供'}</code></td></tr>)}
+        </tbody></table></div>
+      </details>}
+    </section> : <p className="clb-note">未找到此域名及端口对应的 Nginx 配置；不能据此排除 Nginx 或其他转发。</p>}
+  </div>;
+}
+function DnsListener({ instance, listener, domain }: { instance: Clb; listener: Clb['listeners'][number]; domain: string }) {
+  const routes = dnsListenerRoutes(listener, domain);
+  const showGroup = (groupId: string, port: number | null, label: string) => {
+    const group = instance.groups.find(item => item.id === groupId);
+    return <section><h3>{label} · {group?.name || '服务器组未找到'}</h3>{group ? group.servers.length ? group.servers.map((server, i) => <DnsBackend key={`${server.id}-${i}`} ip={server.ip} port={server.port ?? port} domain={domain} />) : <p>服务器组没有后端成员。</p> : <p>后端待核实。</p>}</section>;
+  };
+  return <section className="clb-routes"><h3>{listener.protocol} : {listener.port} · {listener.status}</h3>
+    {listener.forwardPort != null ? <p>跳转到本实例 HTTPS : {listener.forwardPort}，目标监听器请另行核对。</p> : <>
+      {routes.rules.map(rule => <div key={rule.id}>{showGroup(rule.groupId, null, `域名：${rule.domain || '任意'} · 路径：${rule.path || '未限定'}`)}</div>)}
+      {routes.defaultPossible && showGroup(listener.groupId, listener.backendPort, '默认路由（其他规则未命中时）')}
+    </>}
+  </section>;
 }
 function DnsDomains({ rows, query, expanded, onQuery, onExpand, onCollapse, toggle }: { rows: DnsView[]; query: string; expanded: Record<string, boolean>; onQuery: (value: string) => void; onExpand: () => void; onCollapse: () => void; toggle: (key: string, open: boolean) => void }) {
   return <>
@@ -118,17 +209,32 @@ function DnsDomains({ rows, query, expanded, onQuery, onExpand, onCollapse, togg
     <div className="clb-stats">{[['筛选记录', rows.length], ['已关联 CLB 记录', rows.filter(r => r.matches.length).length], ['已关联 EIP 记录', rows.filter(r => r.eipMatches.length).length], ['关联 EIP', new Set(rows.flatMap(r => r.eipMatches.map(m => m.eip.key))).size], ['关联 CLB', new Set(rows.flatMap(r => r.matches.map(m => m.instance.id))).size], ['未启用', rows.filter(r => r.record.status !== '启用').length]].map(([label, count]) => <section className="panel" key={label}><small>{label}</small><strong>{count}</strong></section>)}</div>
     <Toolbar label="搜索 DNS 域名" placeholder="搜索域名、解析值、CLB、状态或线路" query={query} onQuery={onQuery} onExpand={onExpand} onCollapse={onCollapse} />
     {!rows.length && <p>没有匹配的 DNS 记录</p>}
-    {rows.map(({ record, matches, eipMatches, status }) => <details className="panel clb-instance" key={record.id} open={!!expanded[record.id]} onToggle={e => toggle(record.id, e.currentTarget.open)}>
+    {rows.map(({ record, matches, eipMatches, status, resolutions }) => <details className="panel clb-instance" key={record.id} open={!!expanded[record.id]} onToggle={e => toggle(record.id, e.currentTarget.open)}>
       <summary><strong>{record.name}</strong><code>{record.type} → {record.value}</code><span>{record.line} · {record.status} · {status}</span></summary>
       <p className="clb-note">TTL：{record.ttl ?? '未提供'} 秒 · 策略：{record.policy || '未提供'} · 权重：{record.weight ?? '未提供'} · 来源：{record.source}{record.row ? ` 第 ${record.row} 行` : ` · 记录 ID：${record.nativeId || record.id} · ${record.tenantName}`} · {record.observedAt ? formatBeijingTime(record.observedAt) : '静态导入'}{record.priority != null ? ` · 优先级：${record.priority}` : ''}{record.remark ? ` · 备注：${record.remark}` : ''}</p>
       {record.name.startsWith('*.') && <p className="clb-note">通配符记录，仅展示导出中的配置，不展开为具体子域名。</p>}
-      {eipMatches.map(({ eip, paths }) => <section key={eip.key}><EipSummary record={eip} />{paths.map((path, index) => <p className="clb-note" key={index}>解析链：{path.chain.join(' → ')}</p>)}</section>)}
-      {matches.map(({ instance, paths }) => <section key={resourceIdentity(instance)} className="clb-certificate-clb">
+      {eipMatches.map(({ eip, paths }) => <section key={eip.key} className="clb-group"><strong>EIP · <a href={viewLink('eip', eip.id)}>{eip.ip}</a></strong>{paths.map((path, index) => <p className="clb-note" key={index}>解析链：{path.chain.join(' → ')}</p>)}</section>)}
+      {eipMatches.some(({ eip }) => eip.bindingType === 'NAT网关') && <p className="clb-note">下方聚焦标准 HTTP 80 / HTTPS 443 公网入口，非标准端口可在 EIP 页面另行核实；DNS 本身不限定端口。</p>}
+      {eipMatches.filter(({ eip }) => eip.bindingType === 'NAT网关').map(({ eip }) => {
+        const mappings = eipIntegration.find(row => row.record.key === eip.key)?.mappings ?? [];
+        const found = mappings.some(({ entry }) => ['80','443'].includes(entry.externalPort) && entry.protocol.toLowerCase() === 'tcp' && entry.status.toLowerCase() === 'available' && matches.some(({ instance }) => instance.ip === entry.internalIp && instance.listeners.some(listener => ['HTTP','HTTPS'].includes(listener.protocol.toUpperCase()) && String(listener.port) === entry.internalPort)));
+        return !found ? <p className="clb-note" key={eip.key}>EIP {eip.ip} 的标准 HTTP/HTTPS 入口未找到可对应的 CLB 监听器，后续路径待核实。</p> : null;
+      })}
+      {matches.map(({ instance, paths }) => {
+        const direct = resolutions.some(result => result.ip === instance.ip) || eipMatches.some(({ eip }) => /SLB|CLB/i.test(eip.bindingType) && eip.bindingId === instance.id);
+        const mapped = eipMatches.flatMap(({ eip }) => eipIntegration.find(row => row.record.key === eip.key)?.mappings ?? []).filter(({ entry }) => entry.internalIp === instance.ip && ['80','443'].includes(entry.externalPort) && entry.protocol.toLowerCase() === 'tcp' && entry.status.toLowerCase() === 'available');
+        const listeners = direct ? instance.listeners : instance.listeners.filter(listener => mapped.some(({ entry }) => String(listener.port) === entry.internalPort) && ['HTTP','HTTPS'].includes(listener.protocol.toUpperCase()));
+        if (!direct && !listeners.length) return null;
+        return <section key={resourceIdentity(instance)} className="clb-certificate-clb">
         <div className="clb-clb-heading"><strong><a href={viewLink('instances', instance.id)}>{instance.name}</a></strong><code>{instance.ip}</code><small>{instance.id} · {instance.status}</small></div>
-        {paths.map((path, i) => <p className="clb-note" key={i}>解析链：{path.chain.join(' → ')}{path.via ? `；经 ${path.via}` : ''}</p>)}
-        <p className="clb-note">以下为该实例的监听器配置，域名解析不限定端口；路由列出路径条件及默认回退，证书绑定不代表 DNS 指向。</p>
-        {instance.listeners.map(listener => <ListenerDetails key={`${listener.protocol}-${listener.port}`} instance={instance} listener={listener} keyPrefix={`${record.id}-${instance.id}`} expanded={expanded} toggle={toggle} />)}
-      </section>)}
+        {direct && paths.map((path, i) => <p className="clb-note" key={i}>解析链：{path.chain.join(' → ')}</p>)}
+        <p className="clb-note">DNS 不指定端口或路径；以下为配置候选，需结合请求端口、协议、路径及网络范围判断。</p>
+        {listeners.length ? listeners.map(listener => <div key={`${listener.protocol}-${listener.port}`}>
+          {!direct && mapped.filter(({ entry }) => String(listener.port) === entry.internalPort).map(({ entry }) => <p className="clb-note" key={entry.id}>DNAT：{entry.externalIp}:{entry.externalPort} → {entry.internalIp}:{entry.internalPort} · {entry.protocol.toUpperCase()}</p>)}
+          <DnsListener instance={instance} listener={listener} domain={record.name} />
+        </div>) : <p>未采集到监听器，后续路径待核实。</p>}
+      </section>; })}
+      {!matches.length && resolutions.map(({ ip }) => ecsInstances.filter(item => item.privateIps.includes(ip) || item.publicIps.includes(ip)).map(item => <div className="clb-group" key={resourceIdentity(item)}>ECS · {item.name} · <code>{ip}</code><p className="clb-note">DNS 未提供目标端口，后续路径待核实。</p></div>))}
     </details>)}
   </>;
 }

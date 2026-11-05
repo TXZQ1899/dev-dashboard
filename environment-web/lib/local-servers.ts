@@ -14,6 +14,7 @@ export type LocalServer = {
   appCount: number;
   appId: string;
   appName: string;
+  appNames: string[];
   environments: string[];
 };
 
@@ -89,6 +90,7 @@ export const localServers: LocalServer[] = [...candidateIps]
       appCount: info?.appNames.size ?? 0,
       appId: info ? [...info.appIds].sort(compareText).join(', ') : '',
       appName: info ? [...info.appNames].sort(compareText).join(', ') : '',
+      appNames: info ? [...info.appNames].sort(compareText) : [],
       environments: info ? [...info.environments].sort() : [],
     };
   })

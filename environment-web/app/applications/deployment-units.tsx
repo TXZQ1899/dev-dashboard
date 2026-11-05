@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from '@/components/ui/table';
 import { envs, labels } from '@/lib/inventory';
 import { formatBeijingTime } from '@/lib/datetime';
+import type { BusinessTab } from '@/lib/application-business';
 import {
   catalogNeedsPolling, configurationLabels, isHistoricalCatalog,
   type CatalogEnvironment, type CatalogInstance, type CatalogResult,
@@ -15,7 +16,6 @@ import './deployment-units.css';
 
 const catalogEnvs: CatalogEnvironment[] = [...envs, 'UNIDENTIFIED'];
 const catalogLabels: Record<CatalogEnvironment, string> = { ...labels, UNIDENTIFIED: '待识别' };
-const categoryCacheKey = (includeHistory: boolean) => `deployment-catalog-categories:${includeHistory ? 'all' : 'present'}`;
 const categoryLabel = (category: string) => ({ APPLICATION: '应用', Elasticsearch: 'ES', Zookeeper: 'ZK' }[category] || category);
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -69,7 +69,8 @@ function InstanceDetails({ unitId, environment, snapshotHash, includeHistory, on
 export default function DeploymentUnits() {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('APPLICATION');
-  const [categories, setCategories] = useState<string[]>([]);
+  const [business, setBusiness] = useState<BusinessTab>('group');
+  const [categoryList, setCategoryList] = useState<{ key: string; values: string[] }>({ key: '', values: [] });
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [includeHistory, setIncludeHistory] = useState(false);
@@ -79,7 +80,9 @@ export default function DeploymentUnits() {
   const [importing, setImporting] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const requestKey = JSON.stringify([search, page, includeHistory, category, refresh]);
+  const requestKey = JSON.stringify([search, page, includeHistory, category, business, refresh]);
+  const categoryListKey = JSON.stringify([business, includeHistory]);
+  const categories = categoryList.key === categoryListKey ? categoryList.values : [];
   const loading = completedRequest !== requestKey;
   const reload = () => { setExpanded(null); setRefresh((n) => n + 1); };
 
@@ -88,24 +91,12 @@ export default function DeploymentUnits() {
     return () => window.clearTimeout(timer);
   }, [query]);
   useEffect(() => {
-    let cancelled = false;
-    void Promise.resolve().then(() => {
-      if (cancelled) return;
-      try {
-        const cached: unknown = JSON.parse(localStorage.getItem(categoryCacheKey(includeHistory)) || '[]');
-        setCategories(Array.isArray(cached) ? cached.filter((item): item is string => typeof item === 'string' && !!item) : []);
-      } catch { setCategories([]); }
-    });
-    return () => { cancelled = true; };
-  }, [includeHistory]);
-  useEffect(() => {
     const controller = new AbortController();
-    const params = new URLSearchParams({ q: search, page: String(page), presence: includeHistory ? 'all' : 'present', category });
+    const params = new URLSearchParams({ q: search, page: String(page), presence: includeHistory ? 'all' : 'present', category, business });
     fetch(`/api/catalog/deployment-units?${params}`, { cache: 'no-store', signal: controller.signal })
       .then((response) => readJson<CatalogResult>(response)).then((body) => {
         if (!controller.signal.aborted) {
-          setCategories(body.categories);
-          try { localStorage.setItem(categoryCacheKey(includeHistory), JSON.stringify(body.categories)); } catch { /* Storage may be unavailable. */ }
+          setCategoryList({ key: categoryListKey, values: body.categories });
           if (body.categories.length && !body.categories.includes(category)) {
             setCategory(body.categories[0]); setPage(1); setExpanded(null);
           }
@@ -115,7 +106,7 @@ export default function DeploymentUnits() {
         if (!controller.signal.aborted) { setResult(null); setError(err instanceof Error ? err.message : '部署单元读取失败'); }
       }).finally(() => { if (!controller.signal.aborted) setCompletedRequest(requestKey); });
     return () => controller.abort();
-  }, [search, page, includeHistory, category, refresh, requestKey]);
+  }, [search, page, includeHistory, category, business, refresh, requestKey, categoryListKey]);
   useEffect(() => {
     if (!result || !catalogNeedsPolling(result)) return;
     const timer = window.setTimeout(() => setRefresh((n) => n + 1), 3000);
@@ -139,6 +130,9 @@ export default function DeploymentUnits() {
     <div className="catalog-heading">
       <div><h1><Layers3 size={19} />部署单元</h1><p>管理应用及基础组件的部署单元和部署实例。</p></div>
       <Button onClick={importCurrent} disabled={pending || historical}><RefreshCw size={15} className={pending ? 'catalog-spinning' : ''} />{pending ? '正在更新…' : '从当前快照创建 / 更新'}</Button>
+    </div>
+    <div className="catalog-tabs" role="tablist" aria-label="部署单元业务分类">
+      {([['group', '地中海度假集团'], ['travel', '商旅'], ['other', '其它']] as const).map(([value, label]) => <button key={value} type="button" role="tab" aria-selected={business === value} className={business === value ? 'active' : ''} onClick={() => { setBusiness(value); setPage(1); setExpanded(null); }}>{label}</button>)}
     </div>
     <div className="catalog-tabs" role="tablist" aria-label="部署单元类型">
       {categories.map((item) => <button key={item} type="button" role="tab" aria-selected={category === item} className={category === item ? 'active' : ''} onClick={() => { setCategory(item); setPage(1); setExpanded(null); }}>{categoryLabel(item)}</button>)}

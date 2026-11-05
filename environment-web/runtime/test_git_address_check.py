@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 from unittest.mock import patch
 
-from git_address_check import check_snapshot
+from git_address_check import GitCheckAuthenticationError, check_snapshot
 import service
 
 
@@ -27,9 +27,29 @@ class GitAddressCheckTests(unittest.TestCase):
         snapshot = {'apps': [{'id': '1', 'repository': 'https://codeup.aliyun.com/org/a.git', 'envs': {'TEST': [{'repository': 'https://codeup.aliyun.com/org/b.git'}]}}]}
         with patch('git_address_check.Checker') as factory:
             factory.return_value.check.return_value = ('无法确认', '登录失效', '401', '', True)
-            result = check_snapshot(snapshot, {'aliyun': {'value': 'cookie'}})
+            with self.assertRaises(GitCheckAuthenticationError):
+                check_snapshot(snapshot, {'aliyun': {'value': 'cookie'}})
         self.assertEqual(factory.return_value.check.call_count, 1)
-        self.assertEqual([r['status'] for r in result['1']], ['unknown', 'unknown'])
+
+    def test_authentication_failure_preserves_previous_result(self):
+        class ImmediateThread:
+            def __init__(self, target, daemon): self.target = target
+            def start(self): self.target()
+        with tempfile.TemporaryDirectory() as directory:
+            instance = service.Service.__new__(service.Service)
+            instance.lock = threading.RLock()
+            instance.git_check_job = {'status': 'idle'}
+            instance.catalog_context = lambda: ('version-1', b'{"apps":[]}')
+            previous = Path(directory) / 'checks/git-address/latest.json'
+            previous.parent.mkdir(parents=True)
+            previous.write_text('{"version":"previous"}')
+            saved = {'aliyun': {'value': 'cookie'}}
+            with patch.object(service, 'DATA', Path(directory)), patch.object(service, 'credentials', return_value=saved), patch.object(service.threading, 'Thread', ImmediateThread), patch('git_address_check.check_snapshot', side_effect=GitCheckAuthenticationError('登录失效')):
+                instance.start_git_check()
+                state = instance.git_check_state()
+            self.assertEqual(state['job']['status'], 'failed')
+            self.assertEqual(state['job']['error'], '登录失效')
+            self.assertEqual(state['result']['version'], 'previous')
 
     def test_accesskey_denial_is_not_missing(self):
         snapshot = {'apps': [{'id': '1', 'repository': 'https://codeup.aliyun.com/org/a.git', 'envs': {}}]}

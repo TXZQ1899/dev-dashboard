@@ -43,3 +43,11 @@ test('uses a loading or error label until the configured tenant name is known', 
   assert.equal(cloudSiteLabel('xiuping', mapping, [{ id: 'legacy-aliyun', name: '珠海横琴旅文' }]), '阿里云-珠海横琴旅文');
   assert.equal(cloudSiteLabel('xiuping', mapping, [{ id: 'other', name: '其他租户' }]), '阿里云-租户未确认');
 });
+
+test('builds server routes from the tenant ID and encodes path segments', () => {
+  const { serverTenantPath } = context.exports;
+  assert.equal(serverTenantPath('e4bc8f2f-b9cb-4153-8da3-aadcdc772c2d'), '/servers/e4bc8f2f-b9cb-4153-8da3-aadcdc772c2d');
+  assert.equal(serverTenantPath('legacy-aliyun'), '/servers/legacy-aliyun');
+  assert.equal(serverTenantPath('tenant/example'), '/servers/tenant%2Fexample');
+  assert.equal(serverTenantPath(undefined), '/aliyun/instances');
+});

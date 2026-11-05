@@ -260,9 +260,9 @@ function specScore(ip: string): number {
   if(!cpu&&!mem)return -1;
   return (cpu?parseInt(cpu[1],10):0)*1000+(mem?parseFloat(mem[1]):0);
 }
-export function ServerInspections({processRequest}: {processRequest?: {ip: string} | null}) {
+export function ServerInspections({processRequest}: {processRequest?: {ip: string; exact?: boolean} | null}) {
   const [login,setLogin]=useState('can_login');
-  const [query,setQuery]=useState('');
+  const [query,setQuery]=useState(processRequest?.exact ? processRequest.ip : '');
   const [duration,setDuration]=useState<Duration>('all');
   const [env,setEnv]=useState<Env|'all'|'unknown'>('all');
   const [page,setPage]=useState(1);
@@ -287,22 +287,25 @@ export function ServerInspections({processRequest}: {processRequest?: {ip: strin
   const [now,setNow]=useState(()=>Date.parse(jumpserver.collectedAt));
   useEffect(()=>{
     if(!processRequest)return;
-    setLogin('can_login');setQuery(processRequest.ip);setDuration('all');setEnv('all');setPage(1);setSelected('');
+    const asset=(jumpserver.assets as Asset[]).find(item=>item.ip===processRequest.ip);
+    setLogin(processRequest.exact ? asset?.inspection?.loginStatus || 'unchecked' : 'can_login');setQuery(processRequest.ip);setDuration('all');setEnv('all');setPage(1);setSelected('');
     setExpanded(Object.fromEntries((jumpserver.assets as Asset[]).filter(asset=>asset.ip===processRequest.ip).map(asset=>[asset.id,{type:'全部进程',page:1}] )));
     setProcQuery({});
   },[processRequest]);
   useEffect(()=>{setNow(Date.now());const timer=setInterval(()=>setNow(Date.now()),60000);return ()=>clearInterval(timer);},[]);
   useEffect(()=>{if(selected)document.getElementById('selected-server-details')?.scrollIntoView({behavior:'smooth',block:'start'});},[selected]);
   const assets=jumpserver.assets as Asset[];
-  const rows=useMemo(()=>processRows(assets,now),[assets,now]);
+  const focusedIp=processRequest?.exact && query===processRequest.ip ? processRequest.ip : '';
+  const processAssets=useMemo(()=>focusedIp ? assets.filter(asset=>asset.ip===focusedIp) : assets,[assets,focusedIp]);
+  const rows=useMemo(()=>processRows(processAssets,now),[processAssets,now]);
   const searched=useMemo(()=>{
-    const filtered=filterProcesses(rows,query,duration);
+    const filtered=filterProcesses(rows,query,duration).filter(row=>!focusedIp || row.asset.ip===focusedIp);
     if(env==='all')return filtered;
     return filtered.filter(r=>{
       const deployed=ipDeployEnvironments(r.asset.ip);
       return env==='unknown'?deployed.length===0:deployed.includes(env);
     });
-  },[rows,query,duration,env]);
+  },[rows,query,duration,env,focusedIp]);
   // 筛选后的进程按服务器分组，每个 IP 一行；按当前排序字段排列。
   const ipGroups=useMemo(()=>{
     const byId=new Map<string,ProcessRow[]>();
@@ -319,7 +322,7 @@ export function ServerInspections({processRequest}: {processRequest?: {ip: strin
   const ipPage=paginate(ipGroups,page,size);
   const loginCount=(status: string)=>assets.filter(a=>(a.inspection?.loginStatus||'unchecked')===status).length;
   const serverMatches=(a: Asset)=>matchesServerQuery(a,query);
-  const serverRows=assets.filter(a=>(a.inspection?.loginStatus||'unchecked')===login&&serverMatches(a));
+  const serverRows=assets.filter(a=>(a.inspection?.loginStatus||'unchecked')===login&&(!focusedIp||a.ip===focusedIp)&&serverMatches(a));
   const serverPage=paginate(serverRows,page,size);
   const current=login==='can_login'?ipPage:serverPage;
   const selectedAsset=assets.find(a=>a.id===selected);

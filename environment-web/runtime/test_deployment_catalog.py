@@ -96,6 +96,15 @@ class CategoryCacheTests(unittest.TestCase):
             store.clear_category_cache()
             self.assertEqual(store.categories(None, '', '', [], 'present'), ['Kafka'])
 
+    def test_cache_is_separate_for_each_business_filter(self):
+        store = c.Catalog()
+        store.execute = Mock(side_effect=[[{'category': 'APPLICATION'}], [{'category': 'Canal'}], []])
+        self.assertEqual(store.categories(None, '', '', [], 'present', 'group'), ['APPLICATION'])
+        self.assertEqual(store.categories(None, '', '', [], 'present', 'other'), ['Canal'])
+        self.assertEqual(store.categories(None, '', '', [], 'present', 'travel'), [])
+        self.assertEqual(store.categories(None, '', '', [], 'present', 'group'), ['APPLICATION'])
+        self.assertEqual(store.execute.call_count, 3)
+
 
 @unittest.skipUnless(os.environ.get('ENVSCOPE_CATALOG_MYSQL_TEST') == '1', 'requires the isolated MySQL integration test container')
 class MySQLCatalogTests(unittest.TestCase):
@@ -147,6 +156,48 @@ class MySQLCatalogTests(unittest.TestCase):
         self.assertEqual(first['categorySummary']['environments']['PRODUCT'], {'instances': 4, 'servers': 1})
         self.assertEqual(self.store.read(category='Canal')['categorySummary']['units'], 0)
         self.assertEqual(self.store.read(category='APPLICATION', query='second')['categorySummary']['units'], 1)
+
+    def test_business_filter_applies_before_pagination_and_summary(self):
+        value = fixture()
+        for index in range(1, 5):
+            app = copy.deepcopy(value['apps'][0])
+            app['id'] = f'app-extra-{index}'
+            app['name'] = f'extra-{index}'
+            value['apps'].append(app)
+        self.ingest(value)
+        units = {unit['appId']: unit for unit in self.store.read(page_size=100)['units']}
+        with self.store.connection() as conn:
+            for app_id, name in [('app-1', '商旅'), ('app-extra-1', '未分类'), ('app-extra-2', '酒店'), ('app-extra-3', '酒店')]:
+                domain_id, system_id, now = c.identifier(), c.identifier(), c.utcnow()
+                self.store.insert(conn, 'business_domain', {'id': domain_id, 'code': domain_id, 'name': name, 'created_at': now, 'updated_at': now})
+                self.store.insert(conn, 'business_system', {'id': system_id, 'domain_id': domain_id, 'code': system_id, 'name': 'system', 'created_at': now, 'updated_at': now})
+                self.store.update(conn, 'deployment_unit', units[app_id]['id'], {'system_id': system_id})
+        for business, expected in [('travel', 1), ('other', 2), ('group', 2)]:
+            first = self.store.read(category='APPLICATION', business=business, page_size=1)
+            self.assertEqual(first['pagination']['total'], expected)
+            self.assertEqual(first['categorySummary']['units'], expected)
+            if expected > 1:
+                second = self.store.read(category='APPLICATION', business=business, page=2, page_size=1)
+                self.assertEqual(first['categorySummary'], second['categorySummary'])
+                self.assertNotEqual(first['units'][0]['id'], second['units'][0]['id'])
+
+    def test_categories_follow_business_and_presence_not_search_or_selected_type(self):
+        value = fixture()
+        other = copy.deepcopy(value['apps'][0])
+        other.update(id='app-2', name='component')
+        value['apps'].append(other)
+        self.ingest(value)
+        units = {unit['appId']: unit for unit in self.store.read(page_size=100)['units']}
+        with self.store.connection() as conn:
+            domain_id, system_id, now = c.identifier(), c.identifier(), c.utcnow()
+            self.store.insert(conn, 'business_domain', {'id': domain_id, 'code': domain_id, 'name': '酒店', 'created_at': now, 'updated_at': now})
+            self.store.insert(conn, 'business_system', {'id': system_id, 'domain_id': domain_id, 'code': system_id, 'name': 'system', 'created_at': now, 'updated_at': now})
+            self.store.update(conn, 'deployment_unit', units['app-1']['id'], {'system_id': system_id})
+            self.store.update(conn, 'deployment_unit', units['app-2']['id'], {'unit_type': 'MIDDLEWARE', 'technology_code': 'Canal'})
+        self.store.clear_category_cache()
+        self.assertEqual(self.store.read(business='group', category='Canal', query='no-match')['categories'], ['APPLICATION'])
+        self.assertEqual(self.store.read(business='other', category='APPLICATION')['categories'], ['Canal'])
+        self.assertEqual(self.store.read(business='travel')['categories'], [])
 
     def test_updates_keep_ids_and_manual_management_fields(self):
         self.ingest(fixture())

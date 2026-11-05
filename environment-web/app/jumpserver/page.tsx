@@ -534,17 +534,21 @@ function IpManagedQueryPanel({onRestore}: {onRestore: () => void}) {
 
 export default function JumpServerPage() {
   const [activeTab, setActiveTab] = useState<'overview' | 'servers'>('overview');
-  const [processRequest, setProcessRequest] = useState<{ip: string} | null>(null);
+  const [serversOpened, setServersOpened] = useState(false);
+  const [processRequest, setProcessRequest] = useState<{ip: string; exact?: boolean} | null>(null);
   const [query, setQuery] = useState('');
+  const [exactIp, setExactIp] = useState('');
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const search = query.trim();
   const groups = serverGroups.map((g) => ({
     ...g,
-    assets: g.assets.filter((a) => a.ip.includes(search)),
+    assets: g.assets.filter((a) => exactIp ? a.ip === exactIp : a.ip.includes(search)),
   }));
-  const matched = jumpserver.assets.filter((a) => a.ip.includes(search)).length;
+  const matched = jumpserver.assets.filter((a) => exactIp ? a.ip === exactIp : a.ip.includes(search)).length;
+  function showServers() { setServersOpened(true); setActiveTab('servers'); }
   function updateSearch(value: string) {
     setQuery(value);
+    setExactIp('');
     setOpen(
       Object.fromEntries(
         serverGroups.map((g) => [
@@ -558,9 +562,11 @@ export default function JumpServerPage() {
     const params = new URLSearchParams(window.location.search);
     const search = params.get('q');
     if (search) {
-      setActiveTab('servers');
+      showServers();
       updateSearch(search);
-      if (params.get('view') === 'processes') setProcessRequest({ip: search});
+      const exact = params.get('exact') === '1';
+      if (exact) setExactIp(search);
+      if (params.get('view') === 'processes') setProcessRequest({ip: search, exact});
     }
   }, []);
   let angle = 0;
@@ -582,14 +588,16 @@ export default function JumpServerPage() {
         </div>
         <div role="tablist" aria-label="JumpServer 页面" className="flex flex-wrap gap-2 mb-6">
           <button type="button" role="tab" id="jump-tab-overview" aria-selected={activeTab==='overview'} aria-controls="jump-panel-overview" className={`rounded border px-4 py-2 text-sm ${activeTab==='overview'?'bg-primary text-primary-foreground':'bg-background'}`} onClick={()=>setActiveTab('overview')}>信息总览</button>
-          <button type="button" role="tab" id="jump-tab-servers" aria-selected={activeTab==='servers'} aria-controls="jump-panel-servers" className={`rounded border px-4 py-2 text-sm ${activeTab==='servers'?'bg-primary text-primary-foreground':'bg-background'}`} onClick={()=>setActiveTab('servers')}>服务器与进程</button>
+          <button type="button" role="tab" id="jump-tab-servers" aria-selected={activeTab==='servers'} aria-controls="jump-panel-servers" className={`rounded border px-4 py-2 text-sm ${activeTab==='servers'?'bg-primary text-primary-foreground':'bg-background'}`} onClick={showServers}>服务器与进程</button>
         </div>
-        <div id="jump-panel-overview" role="tabpanel" aria-labelledby="jump-tab-overview" hidden={activeTab!=='overview'}><JumpserverOverview onShowProcesses={ip=>{setProcessRequest({ip});setActiveTab('servers');}} /></div>
+        <div id="jump-panel-overview" role="tabpanel" aria-labelledby="jump-tab-overview" hidden={activeTab!=='overview'}><JumpserverOverview onShowProcesses={ip=>{setProcessRequest({ip});showServers();}} /></div>
         <div id="jump-panel-servers" role="tabpanel" aria-labelledby="jump-tab-servers" hidden={activeTab!=='servers'}>
+        {serversOpened && <>
         <ServerInspections processRequest={processRequest} />
         <div className="mt-6">
-          <IpManagedQueryPanel onRestore={()=>setActiveTab('servers')} />
+          <IpManagedQueryPanel onRestore={showServers} />
         </div>
+        </>}
         <details className="mt-6"><summary className="cursor-pointer p-4 font-medium"><ListChecks size={14} className="inline mr-1" />资产分组概览</summary>
         <section className="panel jump-summary">
           <div>
