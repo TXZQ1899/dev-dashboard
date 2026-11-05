@@ -48,7 +48,7 @@ REQUEST_ENVIRONMENTS = ('PRODUCT','TEST','SIMULATION')
 # Single-source sync kinds that may run concurrently with a primary job, mapped
 # to the display names used by collect.py's parallel_collect() source states.
 SOURCE_LABELS = {'ecs':'ECS','clb':'CLB','nat':'NAT','dms':'DMS','cloud-dns':'CLOUD-DNS','jumpserver':'JumpServer',
-                 'codeup':'Codeup','local_gitlab':'Local GitLab','devops':'DevOps'}
+                 'codeup':'Codeup','devops':'DevOps'}
 TZ = ZoneInfo('Asia/Shanghai')
 
 
@@ -846,7 +846,11 @@ class Service:
         return path
 
     def nginx_configs(self, identifier, asset_id):
-        folder = self.version(identifier)
+        if not isinstance(identifier, str) or not re.fullmatch(r'[A-Za-z0-9-]{1,80}', identifier):
+            raise ValueError('无效版本')
+        folder = DATA/'versions'/identifier
+        if (read(folder/'version.json', {}) or {}).get('status') != 'ready':
+            raise ValueError('只能读取完整版本')
         snapshot = read(folder/'jumpserver-snapshot.json', {})
         if not any(a['id'] == asset_id for a in snapshot.get('assets', [])):
             raise ValueError('该版本不存在此资产')
@@ -1087,6 +1091,12 @@ class Service:
         except json.JSONDecodeError: raise ValueError('Nginx Location 查询结果无法解析')
         return {'topology':{'id':status['id'],'generatedAt':status['generatedAt']},'result':result}
 
+    def page_status(self):
+        with self.lock:
+            alerts = read(DATA/'cookie-alerts.json', {})
+            return {'current': read(DATA/'current.json'),
+                    'cookies': {key: {'alert': alerts.get(key)} for key in ('devops', 'aliyun', 'jumpserver')}}
+
     def status(self):
         with self.lock:
             saved = credentials()
@@ -1111,7 +1121,7 @@ class Service:
             return {'aliyunTenants': [public_tenant(t) for t in tenants], 'codeupTenantId': tenancy.LEGACY_TENANT,
                     'cookies':{key:{'configured':bool(saved.get(key,{}).get('value')),
                     'updatedAt':saved.get(key,{}).get('updatedAt'),
-                    'alert':alerts.get(key)} for key in ('devops','aliyun','jumpserver','local_gitlab')},
+                    'alert':alerts.get(key)} for key in ('devops','aliyun','jumpserver')},
                     'aliyunAccessKey':{'configured':bool(access_key_id and secret),
                     'mode':aliyun_mode(saved), 'accessKeyId':masked,
                     'updatedAt':access_key_updated,
@@ -1131,7 +1141,8 @@ class Service:
             saved = credentials()
             previous_legacy_auth = deepcopy(next(t for t in tenancy.normalize(saved)['tenants'] if t['id'] == tenancy.LEGACY_TENANT)['auth'])
             for key,value in payload.get('cookies',{}).items():
-                if key not in ('devops','aliyun','codeup','jumpserver','local_gitlab') or not isinstance(value,str): raise ValueError('无效 Cookie 字段')
+                if key == 'local_gitlab': continue  # Ignore legacy settings clients; retain existing stored value.
+                if key not in ('devops','aliyun','codeup','jumpserver') or not isinstance(value,str): raise ValueError('无效 Cookie 字段')
                 if key == 'codeup': key = 'aliyun'  # Existing open Settings tabs remain compatible.
                 value = value.strip()
                 if not value: continue  # Empty form fields preserve saved credentials.
@@ -1212,7 +1223,7 @@ class Service:
             write(DATA/'secrets/cookies.json',saved)
             alerts=read(DATA/'cookie-alerts.json',{})
             for key,value in payload.get('cookies',{}).items():
-                if isinstance(value,str) and value.strip(): alerts.pop('aliyun' if key=='codeup' else key,None)
+                if key != 'local_gitlab' and isinstance(value,str) and value.strip(): alerts.pop('aliyun' if key=='codeup' else key,None)
             if isinstance(access, dict) and isinstance(access.get('accessKeyId'), str) and access['accessKeyId'].strip():
                 alerts.pop('aliyun_accesskey_id', None)
             if 'aliyunTenants' in payload:
@@ -1245,7 +1256,7 @@ class Service:
                             'versionId': folder.name,
                         }
                 key=failure.get('credential')
-                if (failure.get('type') in ('cookie_expired','accesskey_invalid') and key in saved and
+                if (key != 'local_gitlab' and failure.get('type') in ('cookie_expired','accesskey_invalid') and key in saved and
                         failure.get('credentialUpdatedAt')==saved[key].get('updatedAt')):
                     alerts[key]={'message':failure['message'],'detectedAt':now()}
             write(DATA/'cookie-alerts.json',alerts)
@@ -1463,11 +1474,12 @@ class Service:
 
     def start(self, kind, identifier=None, asset_id=None, app_id=None, tenant_id=None):
         with self.lock:
+            if kind == 'local_gitlab': raise ValueError('Local GitLab 采集任务已下线')
             if self.files_lock.locked(): raise ValueError('请等待应用文件读取或下载完成后再采集或切换版本')
             if self.archive_job and self.archive_job.get('status') == 'running': raise ValueError('请等待日志下载结束后再采集或切换版本')
             if self.check_job and self.check_job.get('status') == 'running': raise ValueError('请等待应用核验任务结束后再采集或切换版本')
             if self.backend is None: raise ValueError('应用正在恢复当前版本，请稍后重试')
-            source_modes = ('local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'cloud-dns', 'aliyun', 'jumpserver', 'devops', 'jumpserver_asset', 'devops_app')
+            source_modes = ('codeup', 'ecs', 'clb', 'nat', 'dms', 'cloud-dns', 'aliyun', 'jumpserver', 'devops', 'jumpserver_asset', 'devops_app')
             # While a job is running only a single-source retry whose source already
             # failed in the running full sync may start, and it runs concurrently.
             is_extra = False
@@ -1500,8 +1512,7 @@ class Service:
                     if not saved.get('devops',{}).get('value'):
                         raise ValueError('请先保存 DevOps Cookie')
                 elif not saved.get(kind,{}).get('value'):
-                    raise ValueError('请先保存 Local GitLab Cookie' if kind == 'local_gitlab'
-                                     else '请先保存对应平台的 Cookie')
+                    raise ValueError('请先保存对应平台的 Cookie')
                 if kind == 'jumpserver_asset':
                     if not isinstance(asset_id, str) or not re.fullmatch(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}', asset_id):
                         raise ValueError('无效的资产 ID')
@@ -1520,6 +1531,7 @@ class Service:
                 write(folder/'version.json',{'id':identifier,'createdAt':now(),'status':'collecting','kind':kind,
                       'note':note,'tenantId':tenant_id})
                 frozen = deepcopy(saved)
+                frozen.pop('local_gitlab', None)
                 frozen['_tenantId'] = tenant_id
                 frozen['_ipPasswordMap'] = read(DATA/'secrets/ip-password-map.json',{})
                 self.collection_inputs[identifier] = frozen
@@ -1554,10 +1566,11 @@ class Service:
         if job is None: job = self.job
         frozen = self.collection_inputs.pop(identifier, None)
         try:
-            if kind in ('sync', 'local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'cloud-dns', 'aliyun', 'jumpserver', 'devops', 'jumpserver_asset', 'devops_app'):
+            if kind == 'local_gitlab': raise ValueError('Local GitLab 采集任务已下线')
+            if kind in ('sync', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'cloud-dns', 'aliyun', 'jumpserver', 'devops', 'jumpserver_asset', 'devops_app'):
                 self._set_job(job, phase='正在采集数据')
                 current_folder = self.version(read(DATA/'current.json')['id'])
-                if kind in ('local_gitlab', 'codeup', 'ecs', 'clb', 'nat', 'dms', 'cloud-dns', 'aliyun', 'jumpserver', 'devops', 'jumpserver_asset', 'devops_app'):
+                if kind in ('codeup', 'ecs', 'clb', 'nat', 'dms', 'cloud-dns', 'aliyun', 'jumpserver', 'devops', 'jumpserver_asset', 'devops_app'):
                     for name in FILES: shutil.copyfile(current_folder/name, folder/name)
                     for name in OPTIONAL_FILES: write(folder/name, read(current_folder/name, OPTIONAL_DEFAULTS[name]))
                     # A source sync must produce fresh data, not accidentally retain the copied snapshot.
@@ -1569,7 +1582,7 @@ class Service:
                                 (folder/f'{source}-snapshot.json').unlink()
                     with tempfile.TemporaryDirectory(prefix='envscope-input-') as tmp:
                         creds=Path(tmp)/'credentials.json'
-                        creds_data=deepcopy(frozen) if frozen is not None else credentials(); creds_data.setdefault('_ipPasswordMap',read(DATA/'secrets/ip-password-map.json',{}))
+                        creds_data=deepcopy(frozen) if frozen is not None else credentials(); creds_data.pop('local_gitlab',None); creds_data.setdefault('_ipPasswordMap',read(DATA/'secrets/ip-password-map.json',{}))
                         write(creds, creds_data)
                         command=['python3',str(APP/'runtime/collect.py'),str(folder),str(creds),kind]
                         if kind == 'jumpserver_asset': command.append(asset_id)
@@ -1602,7 +1615,7 @@ class Service:
                     with tempfile.TemporaryDirectory(prefix='envscope-input-') as tmp:
                         creds=Path(tmp)/'credentials.json'
                         with self.lock:
-                            creds_data=deepcopy(frozen) if frozen is not None else credentials(); creds_data.setdefault('_ipPasswordMap',read(DATA/'secrets/ip-password-map.json',{}))
+                            creds_data=deepcopy(frozen) if frozen is not None else credentials(); creds_data.pop('local_gitlab',None); creds_data.setdefault('_ipPasswordMap',read(DATA/'secrets/ip-password-map.json',{}))
                             write(creds,creds_data)
                         with (folder/'collection.log').open('w') as log:
                             p=subprocess.run(['python3',str(APP/'runtime/collect.py'),str(folder),str(creds)],stdout=log,stderr=log,timeout=7200)
@@ -1824,6 +1837,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 return self.json(200, self.server.service.nginx_configs(params.get('version',[''])[0], params.get('asset',[''])[0]))
             except ValueError as exc: return self.json(404, {'error':str(exc)})
+        if self.path=='/api/settings/page-state':return self.json(200,self.server.service.page_status())
         if self.path=='/api/settings/state':return self.json(200,self.server.service.status())
         if self.path == '/api/topology/domain-chain' or self.path.startswith('/api/topology/domain-chain?'):
             params=parse_qs(urlsplit(self.path).query)
@@ -1870,7 +1884,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(200,service.container_information(payload))
             elif self.path=='/api/settings/topology':service.generate_topology()
             elif self.path=='/api/settings/sync':service.start('sync')
-            elif self.path=='/api/settings/sync/local-gitlab':service.start('local_gitlab')
             elif self.path.startswith('/api/settings/sync/'):
                 source = self.path.rsplit('/', 1)[-1]
                 if source not in ('ecs', 'clb', 'nat', 'dms', 'cloud-dns', 'aliyun', 'jumpserver', 'devops', 'codeup'): return self.json(404,{'error':'不支持的数据源'})

@@ -48,7 +48,7 @@ npm run dev
 
 ## 更新快照
 
-在 `http://localhost:3001/settings` 点击同步（或配置每日定时）。同步在容器内采集 DevOps、Codeup、JumpServer 及启用租户的云资源，完整并校验通过后原子启用新版本。Local GitLab 不参与一键及每日同步。
+在 `http://localhost:3001/settings` 点击同步（或配置每日定时）。同步在容器内采集 DevOps、Codeup、JumpServer 及启用租户的云资源，完整并校验通过后原子启用新版本。Local GitLab 采集任务已下线，不再执行独立、全量或定时采集，也不校验其 Cookie；历史版本及已有仓库记录仍可读取。
 
 ## 统计口径
 

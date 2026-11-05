@@ -140,6 +140,8 @@
 
 ## 2. Codeup / Local GitLab 仓库
 
+Local GitLab 采集任务已下线，不再执行独立、全量或定时采集，也不校验其 Cookie。历史快照仍可读取；未重新采集的仓库状态不得据此推断为不存在或不可访问。
+
 ### 根对象
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -712,6 +714,8 @@ AccessKey 采集按 LB 隔离故障。列表或详情明确为 `inactive` / `loc
 `Backend`：`{ host: string, port: string | null, resolution: 'ip' | 'hostname' | 'dynamic' | 'unix' }`。
 
 ### 原始 Nginx 配置归档
+
+DNS 域名详情仅在展开时读取归档，同一页面按配置版本和资产复用请求结果。归档读取检查版本为 `ready` 且资产属于该版本，不重新执行整份版本完整性校验；归档、来源版本和资产身份仍是证据，不修改原始数据。
 
 每个可采集资产保存为 `versions/<version>/nginx-configs/<sha256(assetId)>.json`。
 

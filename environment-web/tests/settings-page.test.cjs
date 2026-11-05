@@ -106,7 +106,6 @@ test('per-source buttons are gated by server retryability', () => {
   // A single source is unlocked exactly when the server reports it retryable
   // (its own collection failed in the running full sync); otherwise locked.
   for (const action of [
-    "act('local_gitlab')",
     "syncSource('ecs')",
     "syncSource('clb')",
     "syncSource('nat')",
@@ -169,8 +168,9 @@ test('loaded settings keeps other platform credentials without duplicate Aliyun 
     versions: [], storage: 'Docker 数据卷',
   });
   assert.match(html, /阿里云租户管理/);
-  for (const id of ['cookie-devops', 'cookie-jumpserver', 'cookie-local_gitlab', 'folidev-password'])
+  for (const id of ['cookie-devops', 'cookie-jumpserver', 'folidev-password'])
     assert.ok(html.includes(`id="${id}"`), id);
+  assert.ok(!html.includes('id="cookie-local_gitlab"'));
   for (const id of ['cookie-aliyun', 'aliyun-auth-mode', 'aliyun-access-key-id', 'aliyun-access-key-secret', 'codeup-organization-id'])
     assert.ok(!html.includes(`id="${id}"`), `重复入口仍存在：${id}`);
 });

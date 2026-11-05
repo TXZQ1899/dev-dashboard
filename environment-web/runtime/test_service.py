@@ -109,10 +109,25 @@ class SettingsTests(unittest.TestCase):
         name = s.hashlib.sha256(b'server').hexdigest()+'.json'
         original = {'files':[{'path':'/etc/nginx/nginx.conf','content':'private config'}]}
         s.write(folder/'nginx-configs'/name, original)
-        self.assertEqual(self.service.nginx_configs(identifier,'server'), original)
+        with patch.object(s, 'validate', side_effect=AssertionError('应避免重新校验完整快照')):
+            self.assertEqual(self.service.nginx_configs(identifier,'server'), original)
         self.assertNotIn('private config', json.dumps(self.service.status()))
         with self.assertRaises(ValueError):self.service.nginx_configs('../other','server')
         with self.assertRaises(ValueError):self.service.nginx_configs(identifier,'../server')
+        version = s.read(folder/'version.json'); version['status'] = 'collecting'
+        s.write(folder/'version.json', version)
+        with self.assertRaises(ValueError): self.service.nginx_configs(identifier,'server')
+
+    def test_page_status_keeps_version_and_cookie_alerts_without_loading_full_settings(self):
+        alert = {'message': 'JumpServer Cookie 失效'}
+        s.write(self.data/'cookie-alerts.json', {'jumpserver': alert})
+        expected = self.service.status()
+        with patch.object(s, 'credentials', side_effect=AssertionError('不应读取凭据')):
+            result = self.service.page_status()
+        self.assertEqual(result['current'], expected['current'])
+        self.assertEqual(result['cookies']['jumpserver']['alert'], alert)
+        self.assertNotIn('versions', result)
+        self.assertNotIn('job', result)
 
     def test_seed_and_restart_preserve_current(self):
         current=s.read(self.data/'current.json')
@@ -823,6 +838,21 @@ class SettingsTests(unittest.TestCase):
             self.service.start('sync')
         self.assertTrue(s.read(self.data/'schedule.json')['enabled'])
 
+    def test_retired_local_gitlab_is_ignored_without_deleting_legacy_data(self):
+        saved = s.credentials()
+        saved['local_gitlab'] = {'value': 'old-cookie', 'updatedAt': 'old'}
+        s.write(self.data/'secrets/cookies.json', saved)
+        self.service.save_settings({'cookies': {'local_gitlab': 'bad\nheader', 'aliyun': 'a=1', 'devops': 'd=1', 'jumpserver': 'j=1'}})
+        self.assertEqual(s.credentials()['local_gitlab'], saved['local_gitlab'])
+        self.assertNotIn('local_gitlab', self.service.status()['cookies'])
+        self.assertNotIn('local_gitlab', self.service.page_status()['cookies'])
+        with self.assertRaisesRegex(ValueError, '已下线'):
+            self.service.start('local_gitlab')
+        self.service.backend = {'port': 3101}
+        with patch.object(s.threading.Thread, 'start'):
+            identifier = self.service.start('sync')
+        self.assertNotIn('local_gitlab', self.service.collection_inputs[identifier])
+
     def _failed_sync_with_retries(self, failures, retries):
         identifier='20261021-133619-271076'
         folder=self.data/'versions'/identifier;folder.mkdir(parents=True,exist_ok=True)
@@ -1107,7 +1137,7 @@ class SettingsTests(unittest.TestCase):
         self.assertTrue(states['clb']['busy'])
         self.assertFalse(states['clb']['retryable'])
         self.assertFalse(states['devops']['retryable'])
-        self.assertFalse(states['local_gitlab']['retryable'])
+        self.assertNotIn('local_gitlab', states)
 
     def test_activation_acquires_serialisation_lock(self):
         identifier=self.service.status()['current']['id']

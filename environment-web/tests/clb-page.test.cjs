@@ -45,7 +45,7 @@ function render(view, fixture, resources={}){
   if(id.includes('button'))return {Button:({children})=>React.createElement('button',null,children)};
   return {};
  });
- return renderToStaticMarkup(resources.dnsRows ? React.createElement(page.DnsDomains,{rows:resources.dnsRows,query:'',expanded:{},onQuery(){},onExpand(){},onCollapse(){},toggle(){}}) : React.createElement(page.default));
+ return renderToStaticMarkup(resources.dnsRows ? React.createElement(page.DnsDomains,{rows:resources.dnsRows,query:'',expanded:resources.expanded ?? Object.fromEntries(resources.dnsRows.map(row=>[row.record.id,true])),onQuery(){},onExpand(){},onCollapse(){},toggle(){}}) : React.createElement(page.default));
 }
 test('DNS view follows domain routes to the matching nginx host and keeps URI conditions',()=>{
  const listener={protocol:'HTTP',port:80,status:'running',groupId:'g',backendPort:80,forwardPort:null,rules:[{id:'other',domain:'other.example.com',path:'',groupId:'other'}],certificates:[]};
@@ -61,6 +61,8 @@ test('DNS view follows domain routes to the matching nginx host and keeps URI co
  assert.match(html,/proxy_pass：/);assert.match(html,/192\.0\.2\.1/);
  assert.match(html,/access_control/);assert.match(html,/deny all/);
  assert.doesNotMatch(html,/无关组|10\.0\.0\.9|9999/);
+ const closed=render('dns',[instance],{assets,dnsRows:[{record,matches:[{instance,paths:[]}],eipMatches:[],resolutions:[{ip:'10.0.0.1'}],status:'已关联 CLB'}],expanded:{}});
+ assert.match(closed,/nexus\.example\.com/);assert.doesNotMatch(closed,/Nginx server_name 声明文件|8981/);
 });
 test('DNS downstream preserves missing and ambiguous nginx evidence',()=>{
  const f=evaluate('lib/dns-downstream.ts',()=>({}));

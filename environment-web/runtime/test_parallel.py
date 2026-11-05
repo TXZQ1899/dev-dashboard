@@ -17,11 +17,12 @@ class ParallelTests(unittest.TestCase):
         self.assertNotIn('secret',unsafe['message'])
 
     def test_auth_platform_mapping_and_non_auth_failures(self):
-        for source,key in [('ECS','aliyun'),('CLB','aliyun'),('NAT','aliyun'),('Codeup','aliyun'),('DevOps','devops'),('JumpServer','jumpserver'),('Local GitLab','local_gitlab')]:
+        for source,key in [('ECS','aliyun'),('CLB','aliyun'),('NAT','aliyun'),('Codeup','aliyun'),('DevOps','devops'),('JumpServer','jumpserver')]:
             failure=collection_failure(AuthenticationError('private=secret'),source)
             self.assertEqual(failure['credential'],key)
             self.assertIn('Cookie 已失效',failure['message'])
             self.assertNotIn('secret',str(failure))
+        self.assertNotEqual(collection_failure(AuthenticationError('private=secret'),'Local GitLab')['type'],'cookie_expired')
         for status in (302,401):
             self.assertEqual(collection_failure(HTTPError('url',status,'private',{},None),'JumpServer')['type'],'cookie_expired')
         for exc in (TimeoutError('secret'),HTTPError('url',500,'private',{},None),HTTPError('url',403,'private',{},None)):

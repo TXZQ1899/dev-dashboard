@@ -514,7 +514,7 @@ def reconcile(devops, codeup, local_gitlab=None, codeup_status=None):
                             'groupId':find_group(path) if host=='codeup.aliyun.com' else '',
                             # 非 Codeup 域名未做访问检查，只能标为待核实，不能断言不可访问。
                             'access':(codeup_status or {}).get(url,{}).get('access','无法确认') if host=='codeup.aliyun.com' else '无法确认',
-                            'reason':(codeup_status or {}).get(url,{}).get('reason','未出现在当前账号可访问 Codeup 清单，不能据此判断仓库已删除') if host=='codeup.aliyun.com' else '未出现在当前账号可访问 Local GitLab 清单，可能无权限或项目已不存在',
+                            'reason':(codeup_status or {}).get(url,{}).get('reason','未出现在当前账号可访问 Codeup 清单，不能据此判断仓库已删除') if host=='codeup.aliyun.com' else ('未出现在当前账号可访问 Local GitLab 清单，可能无权限或项目已不存在' if local_gitlab is not None else '本次未采集 Local GitLab，无法确认仓库状态'),
                             'match':'完整地址未匹配','apps':[],'source':'local_gitlab' if host=='gitlab.dev.thomascook.com.cn' else 'codeup','inCodeup':False,'inDevops':True,'difference':'devops_only',
                             'branches':None,'mergeRequests':None,'commits':None,'lastCommittedAt':'','commitTimeStatus':'unavailable','description':''}
             repo=repos[url]

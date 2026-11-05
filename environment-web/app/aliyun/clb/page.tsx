@@ -14,7 +14,8 @@ import { nat, portLabel, type DnatEntry, type NatGateway } from '@/lib/nat';
 import { TenantFilter, resourceTenantId } from '@/components/tenant-filter';
 import { tenantLabel, resourceIdentity } from '@/lib/tenants';
 import { formatBeijingTime } from '@/lib/datetime';
-import { dnsListenerRoutes, nginxRoutesForBackend, nginxFileIncludes, nginxServerNames, type ArchivedConfig } from '@/lib/dns-downstream';
+import { dnsListenerRoutes, nginxRoutesForBackend, nginxFileIncludes, nginxServerNames } from '@/lib/dns-downstream';
+import { loadNginxArchive } from '@/lib/nginx-config-cache';
 import type { Asset } from '@/lib/server-processes';
 
 const dnsIntegration = integrateDns(clb.instances, dns.records, eip.records, nat);
@@ -153,9 +154,7 @@ function DnsBackend({ ip, port, domain }: { ip: string; port: number | null; dom
     setReferenceBusy(true);
     (async () => {
       try {
-        const response = await fetch('/api/settings/nginx-configs?' + new URLSearchParams({ version: nginx.version, asset: nginx.assetId }), { cache: 'no-store' });
-        const data = await response.json() as { files?: ArchivedConfig[]; error?: string };
-        if (!response.ok) throw new Error(data.error || '无法读取配置归档');
+        const data = await loadNginxArchive(nginx.version, nginx.assetId);
         if (active) { setServerNames(nginxServerNames(data.files || [], nginx.routes, domain)); setReferences(nginxFileIncludes(data.files || [], nginx.routes)); }
       } catch (error) { if (active) setReferenceError(error instanceof Error ? error.message : '无法读取配置归档'); }
       finally { if (active) setReferenceBusy(false); }
@@ -211,6 +210,7 @@ function DnsDomains({ rows, query, expanded, onQuery, onExpand, onCollapse, togg
     {!rows.length && <p>没有匹配的 DNS 记录</p>}
     {rows.map(({ record, matches, eipMatches, status, resolutions }) => <details className="panel clb-instance" key={record.id} open={!!expanded[record.id]} onToggle={e => toggle(record.id, e.currentTarget.open)}>
       <summary><strong>{record.name}</strong><code>{record.type} → {record.value}</code><span>{record.line} · {record.status} · {status}</span></summary>
+      {expanded[record.id] && <>
       <p className="clb-note">TTL：{record.ttl ?? '未提供'} 秒 · 策略：{record.policy || '未提供'} · 权重：{record.weight ?? '未提供'} · 来源：{record.source}{record.row ? ` 第 ${record.row} 行` : ` · 记录 ID：${record.nativeId || record.id} · ${record.tenantName}`} · {record.observedAt ? formatBeijingTime(record.observedAt) : '静态导入'}{record.priority != null ? ` · 优先级：${record.priority}` : ''}{record.remark ? ` · 备注：${record.remark}` : ''}</p>
       {record.name.startsWith('*.') && <p className="clb-note">通配符记录，仅展示导出中的配置，不展开为具体子域名。</p>}
       {eipMatches.map(({ eip, paths }) => <section key={eip.key} className="clb-group"><strong>EIP · <a href={viewLink('eip', eip.id)}>{eip.ip}</a></strong>{paths.map((path, index) => <p className="clb-note" key={index}>解析链：{path.chain.join(' → ')}</p>)}</section>)}
@@ -235,6 +235,7 @@ function DnsDomains({ rows, query, expanded, onQuery, onExpand, onCollapse, togg
         </div>) : <p>未采集到监听器，后续路径待核实。</p>}
       </section>; })}
       {!matches.length && resolutions.map(({ ip }) => ecsInstances.filter(item => item.privateIps.includes(ip) || item.publicIps.includes(ip)).map(item => <div className="clb-group" key={resourceIdentity(item)}>ECS · {item.name} · <code>{ip}</code><p className="clb-note">DNS 未提供目标端口，后续路径待核实。</p></div>))}
+      </>}
     </details>)}
   </>;
 }
