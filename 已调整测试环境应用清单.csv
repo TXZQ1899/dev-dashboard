@@ -1,0 +1,11 @@
+﻿应用ID,应用名称,From IP,To IP
+1394,fotour-internalapi,10.58.9.60,10.58.9.86
+1528,fotour-internalapijob,10.58.9.60,10.58.9.86
+1391,fotour-sys-crm,10.58.9.60,10.58.9.86
+1392,fotour-sys-order,10.58.9.60,10.58.9.86
+1389,fotour-xtaskschedule,10.58.9.60,10.58.9.86
+1427,fsop-productcenter,10.58.9.217,10.58.9.60
+1509,hotel-ari-abut,10.58.9.217,10.58.9.60
+1553,hotel-ari-api,10.58.9.217,10.58.9.60
+1510,hotel-ari-task,10.58.9.217,10.58.9.60
+1428,online-search,10.58.9.217,10.58.9.60

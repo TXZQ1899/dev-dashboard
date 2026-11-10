@@ -16,6 +16,7 @@ import application_log_policy as log_policy
 from test_application_check import process, app, socket
 import application_check as c
 from application_config import zookeeper as zk
+from application_config import kibana as kb
 
 
 class FileTests(unittest.TestCase):
@@ -174,6 +175,38 @@ class FileTests(unittest.TestCase):
         result = c.collect_config(None, process(command='java '+zk.MAIN_CLASS+' /etc/zoo.cfg'))
         self.assertEqual(result['status'], 'not_collected')
         self.assertEqual(result['endpoints'], [])
+
+    def test_kibana_discovery_uses_declared_config_option_and_lists_exact_file(self):
+        encode = lambda value: base64.b64encode(value).decode()
+        path = '/etc/kibana/kibana.yml'
+        command = '/usr/share/kibana/bin/../node/bin/node /usr/share/kibana/bin/../src/cli -c '+path
+        args = b'/usr/share/kibana/bin/../node/bin/node\0/usr/share/kibana/bin/../src/cli\0-c\0'+path.encode()+b'\0'
+        frames = 'ARGV\t'+encode(args)+'\nCWD\t'+encode(b'/usr/share/kibana')+'\nFILES_DONE'
+        metadata = 'EXACT_FILE\t'+encode(path.encode())+'\t42\t100\nFILES_DONE'
+        with patch.object(f, 'run_script', side_effect=[frames, metadata]) as run:
+            result = f.catalogue(None, process(command=command), kind='config')
+        self.assertEqual(result['processType'], 'KIBANA')
+        self.assertEqual(result['discoveryVersion'], 'kibana-v1')
+        self.assertEqual(result['files'][0]['path'], path)
+        self.assertEqual(result['files'][0]['role'], 'primary')
+        self.assertEqual(run.call_args.args[-2:], ('list-file', path))
+        self.assertEqual(kb.discover(['node', '-c', 'config/kibana.yml'], '/usr/share/kibana')[0],
+                         '/usr/share/kibana/config/kibana.yml')
+        self.assertIsNone(kb.discover(['node', '-c', 'config/kibana.yml'], '')[0])
+        self.assertIsNone(kb.discover(['node', '-c', '/etc/kibana/kibana.yml', '--config', '/x.yml'], '/')[0])
+        self.assertFalse(kb.is_server(process(command='/usr/bin/node /srv/kibana-helper.js')))
+
+    def test_kibana_config_feeds_endpoint_matching(self):
+        encode = lambda value: base64.b64encode(value.encode()).decode()
+        content = 'server.port: 5601\nelasticsearch.hosts: ["http://10.1.2.3:9200", "http://10.1.2.4:9200"]\n'
+        body = 'CONFIG_FILE\t'+encode('/etc/kibana/kibana.yml')+'\t'+encode(content)+'\nCONFIG_DONE'
+        class Terminal:
+            def run(self, *args, **kwargs): return (0, body)
+        command = '/usr/share/kibana/bin/../node/bin/node /usr/share/kibana/bin/../src/cli -c /etc/kibana/kibana.yml'
+        result = c.collect_config(Terminal(), process(command=command))
+        self.assertEqual(result['roots'], ['/etc/kibana'])
+        self.assertEqual({(x['host'], x['port'], x['kind']) for x in result['endpoints']},
+                         {('10.1.2.3', 9200, 'Elasticsearch'), ('10.1.2.4', 9200, 'Elasticsearch')})
 
     def test_snapshot_reads_bounded_batches_and_marks_unreadable_files(self):
         encode = lambda b: base64.b64encode(b).decode()

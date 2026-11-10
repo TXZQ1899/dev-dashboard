@@ -264,10 +264,9 @@ def jumpserver_asset(cookie, folder, folidev_pw, root_alt1, root_alt2, ip_map, a
 
 
 COOKIE_SOURCES = {'ecs':'aliyun', 'clb':'aliyun', 'nat':'aliyun', 'codeup':'aliyun',
-                  'local gitlab':'local_gitlab', 'local_gitlab':'local_gitlab',
                   'devops':'devops', 'jumpserver':'jumpserver'}
 COOKIE_LABELS = {'aliyun':'阿里云（ECS / Codeup / CLB / NAT 共用）',
-                 'local_gitlab':'Local GitLab', 'devops':'DevOps', 'jumpserver':'JumpServer'}
+                 'devops':'DevOps', 'jumpserver':'JumpServer'}
 
 # 由 main() 根据本次运行的凭据设置，供异常归因使用（默认保持原有 Cookie 行为）。
 ALIYUN_MODE = 'cookie'
@@ -395,6 +394,7 @@ def main():
     credentials = json.loads(Path(sys.argv[2]).read_text())
     # Cookies / AccessKey are temporary inputs, never stored in a historical snapshot.
     mode = sys.argv[3] if len(sys.argv) > 3 else 'full'
+    if mode == 'local_gitlab': raise ExportError('Local GitLab 采集任务已下线')
     normalize_tenants(credentials)
     auth = aliyun_credentials(credentials)
     ALIYUN_MODE = auth['mode']
@@ -502,30 +502,6 @@ def main():
                     repo.update(statuses[repo['url']])
             current.update(groups=groups, repos=sorted(repos.values(), key=lambda r:r['url']))
             daily.save_json(folder / 'repositories.json', mark_codeup(current, credentials))
-            return
-        if mode == 'local_gitlab':
-            daily.save_json(folder / 'progress.json', {'phase': '正在采集 Local GitLab 代码组和仓库', 'completed': 0, 'total': 0})
-            local_gitlab = daily.collect_local_gitlab(credentials['local_gitlab']['value'], folder / 'progress.json')
-            current = json.loads((folder / 'repositories.json').read_text())
-            groups = current.get('groups', []); repos = {}
-            for existing in current.get('repos', []):
-                parts = urlsplit(existing.get('url', ''))
-                canonical = daily.normalize_local_gitlab_url(parts.hostname or '', parts.path.strip('/')) or existing.get('url')
-                is_local = (parts.hostname or '').lower() == 'gitlab.dev.thomascook.com.cn'
-                repos[canonical] = {**existing, 'url': canonical, **({'source':'local_gitlab','access':'无法确认','reason':'未出现在当前账号可访问 Local GitLab 清单，可能无权限或项目已不存在，不能据此判断不可访问'} if is_local else {})}
-            def repo_id(url): return hashlib.sha256(url.encode()).hexdigest()[:20]
-            for repo in local_gitlab['repos']:
-                group_id = 'local-gitlab-' + repo['groupPath'].replace('/', '-')
-                group = next((g for g in groups if g['id'] == group_id), None)
-                if not group:
-                    group = {'id': group_id, 'name': repo['groupName'], 'description': 'Local GitLab 代码组', 'path': repo['groupPath'], 'total': 0, 'listed': True}; groups.append(group)
-                existing = repos.get(repo['url'], {})
-                repos[repo['url']] = {**existing, **repo, 'id': repo_id(repo['url']), 'groupId': group_id, 'access': '是', 'reason': '当前账号可访问 Local GitLab 项目列表返回', 'match': '完整仓库地址匹配', 'apps': existing.get('apps', []), 'source': 'local_gitlab', 'inDevops': existing.get('inDevops', False), 'difference': 'both' if existing.get('inDevops') else 'codeup_only'}
-            for group in groups:
-                if group['id'].startswith('local-gitlab-'): group['total'] = sum(r['groupId'] == group['id'] for r in repos.values())
-            current.update(groups=groups, repos=sorted(repos.values(), key=lambda r: r['url']))
-            daily.save_json(folder / 'repositories.json', current)
-            daily.save_json(folder / 'progress.json', {'phase': 'Local GitLab 采集完成', 'completed': len(local_gitlab['repos']), 'total': len(local_gitlab['repos'])})
             return
         # Collectors have independent progress/checkpoint directories; credentials are read-only.
         codeup_folder = folder/'sources'/'codeup'

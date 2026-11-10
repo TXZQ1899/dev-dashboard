@@ -23,7 +23,7 @@ from pathlib import Path
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 
 import server_inventory as si
-from application_config import ignore as config_ignore, nacos, zookeeper as zookeeper_config
+from application_config import ignore as config_ignore, kibana as kibana_config, nacos, zookeeper as zookeeper_config
 from application_config.discovery import config_roots, tomcat_docbase_roots
 from application_config.endpoints import config_kind, normal_ip, parse_config
 
@@ -781,6 +781,9 @@ def collect_config(terminal, process):
         return {'status': 'not_collected', 'roots': [], 'endpoints': [],
                 'warnings': ['ZooKeeper 配置的上下游解析尚不支持；配置文件可在配置文件页查看']}
     roots = config_roots(process)
+    kibana_root = kibana_config.config_root(process) if kibana_config.is_server(process) else None
+    if kibana_root and kibana_root not in roots:
+        roots = [kibana_root] + roots
     warnings = ['配置为声明信息，未确认生效 profile；占位符和 jar 内配置未展开']
     if not roots:
         return {'status': 'not_collected', 'roots': [], 'endpoints': [], 'warnings': warnings+['无法确定应用配置目录']}

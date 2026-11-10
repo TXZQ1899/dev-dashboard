@@ -11,8 +11,9 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import application_check as check
-from application_config import ignore as config_ignore, nacos, nginx as nginx_config, zookeeper as zookeeper_config
+from application_config import ignore as config_ignore, kibana as kibana_config, nacos, nginx as nginx_config, zookeeper as zookeeper_config
 from application_config.jar import snapshot_jar_configs
+from application_config.kibana import kibana_catalogue
 from application_config.nacos import collect_nacos, read_nacos
 from application_config.zookeeper import zookeeper_catalogue
 from application_config.discovery import tomcat_appbases
@@ -130,6 +131,8 @@ def catalogue(terminal, process, application=None, kind=None):
         return nginx_config.catalogue(terminal, process)
     if kind == 'config' and zookeeper_config.is_server(process):
         return zookeeper_catalogue(terminal, process)
+    if kind == 'config' and kibana_config.is_server(process):
+        return kibana_catalogue(terminal, process)
     container_config = False
     if kind == 'config' and process.get('kind') == 'Tomcat':
         identity = run_script(terminal, 'container_configs.sh', process['pid'], process['startTicks'], 'detect')

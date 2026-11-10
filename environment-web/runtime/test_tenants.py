@@ -115,6 +115,16 @@ class TenantCollectionTests(unittest.TestCase):
         self.folder = Path(self.tmp.name)
         self.saved = saved_accounts()
 
+    def test_retired_local_gitlab_collector_cannot_run(self):
+        import collect
+        credentials = self.folder/'credentials.json'
+        credentials.write_text('{}')
+        with patch('sys.argv', ['collect.py', str(self.folder), str(credentials), 'local_gitlab']), \
+             patch.object(collect.daily, 'collect_local_gitlab') as collector:
+            with self.assertRaisesRegex(ExportError, '已下线'):
+                collect.main()
+            collector.assert_not_called()
+
     def run_tasks(self, source=None, tenant_id=None, fail=False):
         def verify(tenant): tenant['accountId'] = '1001' if tenant['id'] == tenancy.LEGACY_TENANT else '2002'
         def collect_ecs(key, secret, out, region):

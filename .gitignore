@@ -3,4 +3,6 @@ exports/
 __pycache__/
 /reports/
 /config/
+scripts/
+outputs/
 .DS_Store

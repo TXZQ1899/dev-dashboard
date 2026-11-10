@@ -241,6 +241,15 @@ test('ZooKeeper configuration shows primary file and discovery warnings', () => 
   assert.match(empty, /未能读取 ZooKeeper 主配置文件/);
 });
 
+test('Kibana configuration shows primary file and discovery warnings', () => {
+  const html = harness({ kind:'config', processType:'KIBANA', typeConfidence:'EXACT', typeEvidence:'Kibana CLI', warnings:['关联配置尚未采集'], files:[{...config, path:'/etc/kibana/kibana.yml', discoveryEvidence:'Kibana 启动参数指定'}] }).html;
+  for (const text of ['主配置（1）', '/etc/kibana/kibana.yml', 'Kibana 启动参数指定', 'Kibana', '关联配置尚未采集']) assert.ok(html.includes(text), text);
+  assert.ok(!html.includes('profile:dev'));
+  const empty = harness({ kind:'config', processType:'KIBANA', files:[], warnings:['路径不可读'] }).html;
+  assert.match(empty, /路径不可读/);
+  assert.match(empty, /未能读取 Kibana 主配置文件/);
+});
+
 test('reusable file capability opens a process session without starting a TCP job', async () => {
   const effects = [], changes = [], calls = [];
   const sandbox = { exports: {}, fetch: async (url, options) => {

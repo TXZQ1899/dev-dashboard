@@ -45,7 +45,7 @@ export function findLocationBlock(content: string, uri: string): {start: number;
   }
   return null;
 }
-export const processTypes = ['全部进程','Tomcat','Java Jar','其他 Java','Nginx','Kong','Elasticsearch','ZooKeeper','Nacos','Canal','Kafka','RabbitMQ','RocketMQ','ActiveMQ','MongoDB','Redis','MySQL','PostgreSQL','Node','Python','其他进程','系统进程'] as const;
+export const processTypes = ['全部进程','Tomcat','Java Jar','其他 Java','Nginx','Kong','Elasticsearch','Kibana','ZooKeeper','Nacos','Canal','Kafka','RabbitMQ','RocketMQ','ActiveMQ','MongoDB','Redis','MySQL','PostgreSQL','Node','Python','其他进程','系统进程'] as const;
 export type ProcessType = typeof processTypes[number];
 export const durations = [
   ['all','全部运行时间'],['week','未超过1星期（≤7天）'],['fortnight','未超过2星期（≤14天）'],
@@ -82,6 +82,7 @@ export function processType(process: Process): ProcessType {
   if(named(/^elasticsearch$/i))return 'Elasticsearch';
   if(named(/^(?:rabbitmq-server|rabbitmq)$/i)||(/^(?:beam\.smp|beam)$/i.test(executable)&&/(?:^|\s)-s\s+rabbit\s+boot(?:\s|$)/i.test(command)))return 'RabbitMQ';
   if(named(/^(?:mongod|mongos)$/i))return 'MongoDB';
+  if(/(?:^|\s)\S*\/kibana\/(?:\S*\/)?(?:src\/cli|bin\/kibana)(?:\s|$)/i.test(command))return 'Kibana';
   if(/^nginx(?::|$)/i.test(executable)||process.name==='nginx')return 'Nginx';
   if(/^(node|nodejs)$/.test(executable)||/^(node|nodejs)$/.test(process.name))return 'Node';
   if(/^redis-server/.test(executable)||process.name==='redis-server')return 'Redis';
@@ -94,7 +95,7 @@ export function processType(process: Process): ProcessType {
 // 应用，但同样处于业务链路中，需要与业务应用一样提供“检测上下游”入口。
 // 已单独归类的中间件按类型判断；MongoDB/Elasticsearch/原生 RabbitMQ 等未归类的
 // 中间件按可执行文件名或命令行关键字识别。
-const middlewareTypes=new Set<ProcessType>(['MySQL','PostgreSQL','Redis','Kafka','Elasticsearch','ZooKeeper','Nacos','Kong','Canal','RabbitMQ','RocketMQ','ActiveMQ','MongoDB']);
+const middlewareTypes=new Set<ProcessType>(['MySQL','PostgreSQL','Redis','Kafka','Elasticsearch','Kibana','ZooKeeper','Nacos','Kong','Canal','RabbitMQ','RocketMQ','ActiveMQ','MongoDB']);
 export function isMiddlewareProcess(process: Process): boolean {
   if(process.system)return false;
   if(middlewareTypes.has(processType(process)))return true;
@@ -154,7 +155,7 @@ function containerProcessType(process: Process, docker?: DockerAssociation): {ty
   const commandType=processType({...process, name:'', command});
   if(commandType!=='其他进程'&&commandType!=='其他 Java'&&commandType!=='系统进程'&&commandType!=='Java Jar'&&commandType!=='Python'&&commandType!=='Node')return {type:commandType,typeBasis:'container-command'};
   const image=docker.container.image.split('@')[0].split('/').pop()?.split(':')[0].toLowerCase();
-  const images: Record<string,ProcessType>={rabbitmq:'RabbitMQ',elasticsearch:'Elasticsearch',zookeeper:'ZooKeeper',nacos:'Nacos','nacos-server':'Nacos',kong:'Kong','canal-server':'Canal',kafka:'Kafka',redis:'Redis',mysql:'MySQL',mariadb:'MySQL',postgres:'PostgreSQL',mongo:'MongoDB',mongodb:'MongoDB',rocketmq:'RocketMQ',activemq:'ActiveMQ'};
+  const images: Record<string,ProcessType>={rabbitmq:'RabbitMQ',elasticsearch:'Elasticsearch',kibana:'Kibana',zookeeper:'ZooKeeper',nacos:'Nacos','nacos-server':'Nacos',kong:'Kong','canal-server':'Canal',kafka:'Kafka',redis:'Redis',mysql:'MySQL',mariadb:'MySQL',postgres:'PostgreSQL',mongo:'MongoDB',mongodb:'MongoDB',rocketmq:'RocketMQ',activemq:'ActiveMQ'};
   return image&&images[image]?{type:images[image],typeBasis:'container-image'}:{type};
 }
 function dockerAssociations(inspection: Inspection): Map<number, DockerAssociation> {

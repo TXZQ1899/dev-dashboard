@@ -15,7 +15,7 @@ elif [[ "$mode" == list-file ]]; then
   if [[ "$file" == /* && "$(readlink -f -- "$file")" == "$file" && -f "$file" && -r "$file" ]]; then
     printf 'EXACT_FILE\t%s\t%s\t%s\n' "$(printf '%s' "$file" | b64)" "$(stat -c '%s' -- "$file")" "$(stat -c '%Y' -- "$file")"
   else
-    printf 'WARNING\tZooKeeper 主配置文件不存在、不可读或路径包含符号链接\n'
+    printf 'WARNING\t主配置文件不存在、不可读或路径包含符号链接\n'
   fi
 elif [[ "$mode" == list || "$mode" == list-match ]]; then
   errors=$(mktemp) || exit 2

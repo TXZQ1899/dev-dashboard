@@ -261,25 +261,37 @@ function AppList() {
   }, [targetId, domains]);
   const [gitError, setGitError] = useState('');
   const [gitStarting, setGitStarting] = useState(false);
-  async function loadGitCheck() {
-    const response = await fetch('/api/settings/git-address-check', {cache: 'no-store'});
-    if (!response.ok) throw new Error('无法读取 Git 地址检查状态');
-    setGitCheck(await response.json() as GitCheckState);
-  }
+  const gitStatus = gitCheck?.job.status;
   useEffect(() => {
-    let active = true;
-    const load = () => { if (active) loadGitCheck().catch(() => { if (active) setGitError('无法读取 Git 地址检查状态'); }); };
-    load();
-    const timer = window.setInterval(load, 3000);
-    return () => { active = false; window.clearInterval(timer); };
-  }, []);
+    if (gitStarting || (gitStatus && gitStatus !== 'running')) return;
+    const controller = new AbortController();
+    let timer: number | undefined;
+    const load = async () => {
+      try {
+        const response = await fetch('/api/settings/git-address-check', {cache: 'no-store', signal: controller.signal});
+        if (!response.ok) throw new Error('无法读取 Git 地址检查状态');
+        const state = await response.json() as GitCheckState;
+        if (controller.signal.aborted) return;
+        setGitCheck(state);
+        setGitError('');
+        if (state.job.status === 'running') timer = window.setTimeout(load, 3000);
+      } catch {
+        if (controller.signal.aborted) return;
+        setGitError('无法读取 Git 地址检查状态');
+        if (gitStatus === 'running') timer = window.setTimeout(load, 3000);
+      }
+    };
+    if (gitStatus) timer = window.setTimeout(load, 3000);
+    else void load();
+    return () => { controller.abort(); window.clearTimeout(timer); };
+  }, [gitStatus, gitStarting]);
   async function startGitCheck() {
     setGitStarting(true); setGitError('');
     try {
       const response = await fetch('/api/settings/git-address-check', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
-      const data = await response.json() as {error?: string};
+      const data = await response.json() as GitCheckState['job'] & {error?: string};
       if (!response.ok) throw new Error(data.error || '启动失败');
-      await loadGitCheck();
+      setGitCheck(previous => ({job: data, result: previous?.result}));
     } catch (error) { setGitError(error instanceof Error ? error.message : '启动失败'); }
     finally { setGitStarting(false); }
   }

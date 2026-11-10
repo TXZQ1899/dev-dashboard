@@ -10,7 +10,7 @@ export function SettingsLink() {
     let stopped = false;
     async function check() {
       try {
-        const response = await fetch('/api/settings/state', {
+        const response = await fetch('/api/settings/page-state', {
           cache: 'no-store',
         });
         if (!response.ok) return;
@@ -30,7 +30,7 @@ export function SettingsLink() {
       }
     }
     void check();
-    const timer = setInterval(check, 10000);
+    const timer = setInterval(check, 180000);
     return () => {
       stopped = true;
       clearInterval(timer);

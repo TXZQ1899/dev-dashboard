@@ -17,9 +17,9 @@ const datetimeLib=evaluate('lib/datetime.ts');
 const now=Date.parse('2026-09-18T12:00:00Z');
 function render(assets,options={}) {
  let index=0;
- // ServerInspections 的状态顺序：login, query, duration, env, page, size, sort, expanded, selected, procSort, procQuery, inspect, pwTarget, pwBusy, pwError, commandDialog, now；
+ // ServerInspections 的状态顺序：login, query, duration, env, owner, page, size, sort, expanded, selected, procSort, procQuery, inspect, pwTarget, pwBusy, pwError, commandDialog, now；
  // 之后是 ServerDetails：routeQuery, webappQuery, routeIndex, files, filesBusy, filesError；最后是密码弹窗的 password 输入。
- const state=[options.login||'can_login',options.query||'',options.duration||'all',options.env||'all',options.page||1,options.size||25,options.sort||{field:'ip',dir:'asc'},options.expanded||{},options.selected||'',options.procSort||{},options.procQuery||{},options.inspect||{},options.pwTarget||null,options.pwBusy||false,options.pwError||'',options.commandDialog||null,now,
+ const state=[options.login||'can_login',options.query||'',options.duration||'all',options.env||'all',options.owner||'all',options.page||1,options.size||25,options.sort||{field:'ip',dir:'asc'},options.expanded||{},options.selected||'',options.procSort||{},options.procQuery||{},options.inspect||{},options.pwTarget||null,options.pwBusy||false,options.pwError||'',options.commandDialog||null,now,
   options.routeQuery||'',options.webappQuery||'',typeof options.routeIndex==='number'?options.routeIndex:-1,options.files||null,false,'',''];
  const ui=evaluate('components/server-inspections.tsx',id=>{
   if(id==='react')return {...React,useEffect:(fn,deps)=>{if(options.runRequestEffect&&deps?.[0]===options.processRequest)fn();},useMemo:f=>f(),useState:initial=>{const i=index++;return [i<state.length?state[i]:typeof initial==='function'?initial():initial,value=>options.changes?.push([i,value])];}};
@@ -39,6 +39,7 @@ function render(assets,options={}) {
   };
   if(id==='@/lib/inventory')return {envs:['TEST','SIMULATION','PRODUCT'],shortLabels:{TEST:'测试',SIMULATION:'仿真',PRODUCT:'生产'},labels:{TEST:'测试环境',SIMULATION:'仿真环境',PRODUCT:'生产环境'}};
   if(id==='@/lib/datetime')return datetimeLib;
+  if(id==='@/lib/datacenter-networks')return {isLocalDatacenterIp:ip=>/^10\.58\.(1|9|10|140)\./.test(String(ip).trim())};
   if(id==='@/components/ui/input')return {Input:()=>null};
   if(id==='@/components/ui/button')return {Button:(props)=>React.createElement('button',props)};
   if(id==='@/components/application-check-link')return {ApplicationCheckLink:(props)=>React.createElement('a',{className:'check-link'},`检测上下游:${props.asset}:${props.pid}`)};
@@ -54,7 +55,7 @@ const asset={id:'a',ip:'10.0.0.2',hostname:'server',inspection};
 test('总览跳转按 IP 搜索并重置筛选、展开匹配资产',()=>{
  const changes=[]; const request={ip:'10.0.0.2'};
  render([asset],{processRequest:request,runRequestEffect:true,changes});
- assert.deepEqual(changes.map(([i,v])=>[i,JSON.parse(JSON.stringify(v))]),[[0,'can_login'],[1,'10.0.0.2'],[2,'all'],[3,'all'],[4,1],[8,''],[7,{a:{type:'全部进程',page:1}}],[10,{}]]);
+ assert.deepEqual(changes.map(([i,v])=>[i,JSON.parse(JSON.stringify(v))]),[[0,'can_login'],[1,'10.0.0.2'],[2,'all'],[3,'all'],[4,'all'],[5,1],[9,''],[8,{a:{type:'全部进程',page:1}}],[11,{}]]);
 });
 test('精确 IP 跳转仅展示目标，并按资产采集状态选择标签',()=>{
  const request={ip:'10.0.0.2',exact:true};
@@ -68,6 +69,14 @@ test('精确 IP 跳转仅展示目标，并按资产采集状态选择标签',()
  const unavailable={...asset,inspection:{...inspection,loginStatus:'cannot_login'}};
  const changes=[];render([unavailable],{processRequest:request,runRequestEffect:true,changes});
  assert.equal(changes.find(([i])=>i===0)[1],'cannot_login');
+});
+test('资源归属筛选只保留本地机房或阿里云资产',()=>{
+ const local={...asset,id:'local',ip:'10.58.9.10',hostname:'local-server'};
+ const cloud={...asset,id:'cloud',ip:'10.0.0.2',hostname:'cloud-server'};
+ const localHtml=render([local,cloud],{owner:'local'});
+ assert.match(localHtml,/10\.58\.9\.10/);assert.doesNotMatch(localHtml,/10\.0\.0\.2/);
+ const cloudHtml=render([local,cloud],{owner:'aliyun'});
+ assert.match(cloudHtml,/10\.0\.0\.2/);assert.doesNotMatch(cloudHtml,/10\.58\.9\.10/);
 });
 test('Docker 容器 init、子进程和代理在进程列表中显示证据和容器信息',()=>{
  const container={id:'container1',name:'redis4',image:'redis:5',initPid:100,command:'redis-server --port 6379',ports:[{containerPort:'6379/tcp',hostIp:'0.0.0.0',hostPort:'6379'}]};
@@ -323,6 +332,7 @@ test('classifies common middleware by its process entry point before generic run
   ['/usr/lib/erlang/erts/bin/beam.smp -W w -s rabbit boot','beam.smp','RabbitMQ'],
   ['nginx: master process /usr/local/openresty/nginx/sbin/nginx -p /usr/local/kong/ -c nginx.conf','nginx','Kong'],
   ['/usr/bin/mongod --config /etc/mongod.conf','mongod','MongoDB'],
+  ['/usr/share/kibana/bin/../node/bin/node /usr/share/kibana/bin/../src/cli -c /etc/kibana/kibana.yml','node','Kibana'],
  ]) assert.equal(classify(command,name),type,command);
  assert.equal(classify('java -jar /app/orders.jar --nacos-server=localhost --elasticsearch.host=localhost'),'Java Jar');
  assert.equal(classify('java -Des.path.home=/opt/elasticsearch -jar /app/orders.jar'),'Java Jar');
@@ -377,6 +387,7 @@ test('middleware processes are recognized for upstream/downstream detection',()=
  assert.equal(p({command:'java -cp libs/* kafka.Kafka config/server.properties'}),true,'Kafka');
  assert.equal(p({command:'/usr/bin/mongod --config /etc/mongod.conf',name:'mongod',kind:'未分类'}),true,'MongoDB');
  assert.equal(p({command:'java -cp libs/elasticsearch org.elasticsearch.bootstrap.Elasticsearch'}),true,'Elasticsearch');
+ assert.equal(p({command:'/usr/share/kibana/bin/../node/bin/node /usr/share/kibana/bin/../src/cli -c /etc/kibana/kibana.yml',name:'node',kind:'Node'}),true,'Kibana');
  assert.equal(p({command:'/usr/lib/rabbitmq/bin/rabbitmq-server',name:'rabbitmq-server',kind:'未分类'}),true,'原生 RabbitMQ');
  assert.equal(p({command:'node /srv/app.js',name:'node',kind:'Node'}),false,'Node 非中间件');
  assert.equal(p({command:'nginx: master process /usr/sbin/nginx',name:'nginx',kind:'Nginx'}),false,'Nginx 已另有入口');

@@ -147,11 +147,12 @@ export function ApplicationFileBrowser({ id, kind }: { id: string; kind: 'config
   }
   const configs = catalogue?.files.filter((f) => f.kind === 'config') || [];
   const isZooKeeper = catalogue?.processType === 'ZOOKEEPER';
+  const isKibana = catalogue?.processType === 'KIBANA';
   const isNginx = catalogue?.processType === 'NGINX';
-  const fixedGroups = isNginx ? ['nginx'] : isZooKeeper ? ['primary'] : ['webinf', 'tomcat', 'nacos', ...configProfiles.map((profile) => 'profile:' + profile)];
+  const fixedGroups = isNginx ? ['nginx'] : isZooKeeper || isKibana ? ['primary'] : ['webinf', 'tomcat', 'nacos', ...configProfiles.map((profile) => 'profile:' + profile)];
   const configGroups = new Map<string, Entry[]>(fixedGroups.map((key) => [key, []]));
   for (const file of configs) {
-    const group = isNginx ? 'nginx' : isZooKeeper ? 'primary' : configGroup(file);
+    const group = isNginx ? 'nginx' : isZooKeeper || isKibana ? 'primary' : configGroup(file);
     configGroups.set(group, [...(configGroups.get(group) || []), file]);
   }
   const groupKeys = [...configGroups.keys()];
@@ -166,15 +167,17 @@ export function ApplicationFileBrowser({ id, kind }: { id: string; kind: 'config
     {busy === 'cached' && <output>正在读取历史配置快照…</output>}
     {busy === 'list' && <output>{kind === 'config' ? '正在采集配置文件快照…' : '正在通过 JumpServer 读取文件列表…'}</output>}
     {kind === 'config' && <>
-    <p className="check-note">显示最近一次采集的配置快照{catalogue?.observedAt ? `（${formatBeijingTime(catalogue.observedAt, '—')}）` : ''}，点击刷新可重新采集。{isNginx ? '按选中 Nginx master 的配置发现文件；配置解析不等于实时流量。' : isZooKeeper ? '配置文件由进程启动参数定位，不代表已确认生效。' : '按文件名中的 profile 分组，不代表该 profile 已生效。'}预览明文显示密码，令牌和私钥等仍会遮盖。</p>
+    <p className="check-note">显示最近一次采集的配置快照{catalogue?.observedAt ? `（${formatBeijingTime(catalogue.observedAt, '—')}）` : ''}，点击刷新可重新采集。{isNginx ? '按选中 Nginx master 的配置发现文件；配置解析不等于实时流量。' : isZooKeeper || isKibana ? '配置文件由进程启动参数定位，不代表已确认生效。' : '按文件名中的 profile 分组，不代表该 profile 已生效。'}预览明文显示密码，令牌和私钥等仍会遮盖。</p>
     {isZooKeeper && <p className="check-note">进程类型：ZooKeeper（{catalogue?.typeConfidence === 'EXACT' ? '已识别' : '待确认'}）· {catalogue?.typeEvidence}</p>}
+    {isKibana && <p className="check-note">进程类型：Kibana（{catalogue?.typeConfidence === 'EXACT' ? '已识别' : '待确认'}）· {catalogue?.typeEvidence}</p>}
     {isNginx && catalogue?.warnings.map((warning, i) => <p className="check-note" key={i}>{warning}</p>)}
     {isNginx && !!catalogue?.nginxRoutes?.length && <details><summary>Nginx 域名、URI 和 upstream（{catalogue.nginxRoutes.length}）</summary>
       <table aria-label="Nginx 配置路由"><thead><tr><th>域名 / 监听</th><th>URI</th><th>转发目标</th><th>upstream</th><th>配置文件</th></tr></thead><tbody>
         {catalogue.nginxRoutes.map((route, i) => <tr key={i}><td>{route.domains.join(', ') || '—'} · {route.listen.join(', ') || '—'}</td><td>{route.uri || '—'}</td><td>{route.target || '—'}</td><td>{route.upstream || '—'}</td><td>{route.file || '未知'}</td></tr>)}
       </tbody></table></details>}
     {isZooKeeper && catalogue?.warnings.map((warning, i) => <p className="check-note" key={i}>{warning}</p>)}
-    {catalogue && !configs.length && <p>{isNginx ? '未能读取 Nginx 配置文件，请查看上述原因。' : isZooKeeper ? '未能读取 ZooKeeper 主配置文件，请查看上述原因。' : '已检查目录中没有找到配置文件。'}</p>}
+    {isKibana && catalogue?.warnings.map((warning, i) => <p className="check-note" key={i}>{warning}</p>)}
+    {catalogue && !configs.length && <p>{isNginx ? '未能读取 Nginx 配置文件，请查看上述原因。' : isZooKeeper ? '未能读取 ZooKeeper 主配置文件，请查看上述原因。' : isKibana ? '未能读取 Kibana 主配置文件，请查看上述原因。' : '已检查目录中没有找到配置文件。'}</p>}
     {catalogue && <Tabs value={currentConfigTab} onValueChange={(value) => setConfigTab(value ?? '')} className="check-config-tabs">
       <div className="check-config-tab-scroll"><TabsList aria-label="配置文件 profile" variant="line">
         {groupKeys.map((group) => <TabsTrigger key={group} value={group}>{group === 'nginx' ? 'Nginx 配置' : group === 'primary' ? '主配置' : configTabLabels[group]}（{configGroups.get(group)?.length}）</TabsTrigger>)}

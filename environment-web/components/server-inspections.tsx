@@ -11,6 +11,7 @@ import { loginClass } from '@/lib/jumpserver-overview';
 import { processType, processTypes, durations, processRows, filterProcesses, matchesProcessQuery, matchesServerQuery, formatDuration, paginate, locationHint, findLocationBlock, isMiddlewareProcess, formatCommand, COMMAND_COLLAPSE_THRESHOLD, type Asset, type Inspection, type ProcessRow, type ProcessType, type Duration } from '@/lib/server-processes';
 import { ipSpecSummary, tomcatInstanceName, tomcatProcessApp, jarBusinessName, jarProcessApp, ipDeployEnvironments, appDeployEnvironments } from '@/lib/process-comparison';
 import { envs, shortLabels, labels, type Env } from '@/lib/inventory';
+import { isLocalDatacenterIp } from '@/lib/datacenter-networks';
 import { formatBeijingTime } from '@/lib/datetime';
 type ConfigFile = { path: string; instance: string; content: string; base64: string; bytes: number };
 const statuses: Record<string,string> = {complete:'采集完整',partial:'采集不完整',failed:'采集失败',not_collected:'未采集',not_running:'未发现运行中的 Nginx',unknown:'无法确认',sudo_password_error:'sudo 密码错误，Nginx 未采集',sudo_unavailable:'sudo 不可用，Nginx 未采集'};
@@ -265,6 +266,7 @@ export function ServerInspections({processRequest}: {processRequest?: {ip: strin
   const [query,setQuery]=useState(processRequest?.exact ? processRequest.ip : '');
   const [duration,setDuration]=useState<Duration>('all');
   const [env,setEnv]=useState<Env|'all'|'unknown'>('all');
+  const [owner,setOwner]=useState<'all'|'local'|'aliyun'>('all');
   const [page,setPage]=useState(1);
   const [size,setSize]=useState(25);
   const [sort,setSort]=useState<{field:'ip'|'spec'|'cpu'|'mem';dir:'asc'|'desc'}>({field:'ip',dir:'asc'});
@@ -288,15 +290,20 @@ export function ServerInspections({processRequest}: {processRequest?: {ip: strin
   useEffect(()=>{
     if(!processRequest)return;
     const asset=(jumpserver.assets as Asset[]).find(item=>item.ip===processRequest.ip);
-    setLogin(processRequest.exact ? asset?.inspection?.loginStatus || 'unchecked' : 'can_login');setQuery(processRequest.ip);setDuration('all');setEnv('all');setPage(1);setSelected('');
+    setLogin(processRequest.exact ? asset?.inspection?.loginStatus || 'unchecked' : 'can_login');setQuery(processRequest.ip);setDuration('all');setEnv('all');setOwner('all');setPage(1);setSelected('');
     setExpanded(Object.fromEntries((jumpserver.assets as Asset[]).filter(asset=>asset.ip===processRequest.ip).map(asset=>[asset.id,{type:'全部进程',page:1}] )));
     setProcQuery({});
   },[processRequest]);
   useEffect(()=>{setNow(Date.now());const timer=setInterval(()=>setNow(Date.now()),60000);return ()=>clearInterval(timer);},[]);
   useEffect(()=>{if(selected)document.getElementById('selected-server-details')?.scrollIntoView({behavior:'smooth',block:'start'});},[selected]);
   const assets=jumpserver.assets as Asset[];
+  // 资源归属筛选：本地机房四个网段为本地，其余一律阿里云 ECS。
+  const ownedAssets=useMemo(
+    () => owner==='all' ? assets : assets.filter(a=>owner==='local' ? isLocalDatacenterIp(a.ip) : !isLocalDatacenterIp(a.ip)),
+    [assets,owner],
+  );
   const focusedIp=processRequest?.exact && query===processRequest.ip ? processRequest.ip : '';
-  const processAssets=useMemo(()=>focusedIp ? assets.filter(asset=>asset.ip===focusedIp) : assets,[assets,focusedIp]);
+  const processAssets=useMemo(()=>focusedIp ? ownedAssets.filter(asset=>asset.ip===focusedIp) : ownedAssets,[ownedAssets,focusedIp]);
   const rows=useMemo(()=>processRows(processAssets,now),[processAssets,now]);
   const searched=useMemo(()=>{
     const filtered=filterProcesses(rows,query,duration).filter(row=>!focusedIp || row.asset.ip===focusedIp);
@@ -320,9 +327,9 @@ export function ServerInspections({processRequest}: {processRequest?: {ip: strin
     });
   },[searched,sort]);
   const ipPage=paginate(ipGroups,page,size);
-  const loginCount=(status: string)=>assets.filter(a=>(a.inspection?.loginStatus||'unchecked')===status).length;
+  const loginCount=(status: string)=>ownedAssets.filter(a=>(a.inspection?.loginStatus||'unchecked')===status).length;
   const serverMatches=(a: Asset)=>matchesServerQuery(a,query);
-  const serverRows=assets.filter(a=>(a.inspection?.loginStatus||'unchecked')===login&&(!focusedIp||a.ip===focusedIp)&&serverMatches(a));
+  const serverRows=ownedAssets.filter(a=>(a.inspection?.loginStatus||'unchecked')===login&&(!focusedIp||a.ip===focusedIp)&&serverMatches(a));
   const serverPage=paginate(serverRows,page,size);
   const current=login==='can_login'?ipPage:serverPage;
   const selectedAsset=assets.find(a=>a.id===selected);
@@ -402,11 +409,15 @@ export function ServerInspections({processRequest}: {processRequest?: {ip: strin
     </div>
     <div id="server-inventory-panel" role="tabpanel" aria-labelledby={`login-tab-${login}`} className="space-y-4">
       <Input className="max-w-2xl" type="search" aria-label={login==='can_login'?'搜索进程详细命令、IP、进程名或 PID':'搜索服务器 IP、主机名或失败原因'} placeholder={login==='can_login'?'搜索详细命令，例如 app-api.jar；也支持 IP、进程名、PID':'搜索 IP、主机名或失败原因'} value={query} onChange={e=>{setQuery(e.target.value);reset();}}/>
+      <div className="flex flex-wrap items-center gap-3">
+        <label htmlFor="process-owner">资源归属</label>
+        <select id="process-owner" aria-label="按资源归属筛选" className="border rounded p-2" value={owner} onChange={e=>{setOwner(e.target.value as 'all'|'local'|'aliyun');reset();}}><option value="all">全部</option><option value="local">本地机房</option><option value="aliyun">阿里云</option></select>
+      </div>
       {login==='can_login'?<>
         <div className="flex flex-wrap items-center gap-3">
           <label htmlFor="process-duration">运行时间</label><select id="process-duration" className="border rounded p-2" value={duration} onChange={e=>{setDuration(e.target.value as Duration);reset();}}>{durations.map(([key,label])=><option key={key} value={key}>{label}</option>)}</select>
           <label htmlFor="process-env">环境</label><select id="process-env" className="border rounded p-2" value={env} onChange={e=>{setEnv(e.target.value as Env|'all'|'unknown');reset();}}><option value="all">全部环境</option>{envs.map(e=><option key={e} value={e}>{shortLabels[e]}</option>)}<option value="unknown">待识别</option></select>
-          <button className="border rounded p-2 text-sm" onClick={()=>{setQuery('');setDuration('all');setEnv('all');reset();}}>清空筛选</button>
+          <button className="border rounded p-2 text-sm" onClick={()=>{setQuery('');setDuration('all');setEnv('all');setOwner('all');reset();}}>清空筛选</button>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm"><thead><tr>
