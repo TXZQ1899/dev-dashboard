@@ -217,6 +217,10 @@ class Service:
         self.activate_lock = threading.Lock()
         self.catalog_store = Catalog.from_environment()
         self.catalog_lock = threading.Lock()
+        self.config_sync_job = read(DATA/'application-config-job.json', {'status':'idle'})
+        if self.config_sync_job.get('status') in ('queued', 'running'):
+            self.config_sync_job.update(status='failed', finishedAt=now(), error='容器重启，同步已中断；可手动重试')
+            write(DATA/'application-config-job.json', self.config_sync_job)
         self.catalog_job = read(DATA/'catalog-job.json', {'status': 'idle'})
         if self.catalog_job.get('status') in ('queued', 'running'):
             self.catalog_job = {'status': 'failed', 'finishedAt': now(), 'error': '容器重启，目录导入已中断；将重新读取当前快照'}
@@ -294,6 +298,88 @@ class Service:
             if report.get('status') != 'ready':
                 raise CatalogError('当前版本仍在完成激活，请稍后更新部署单元')
             return identifier, (folder/'snapshot.json').read_bytes()
+
+    def start_config_sync(self, payload=None):
+        with self.lock:
+            payload = payload or {}
+            resume = payload.get('resume', False)
+            if not isinstance(resume, bool): raise ValueError('resume 必须是布尔值')
+            if self.config_sync_job.get('status') in ('queued', 'running'):
+                raise ValueError('应用配置同步正在进行')
+            cookie = (credentials().get('aliyun') or {}).get('value', '')
+            if not cookie:
+                raise ValueError('请先配置可读取 Codeup 仓库的阿里云 Cookie')
+            version, raw = self.catalog_context()
+            snapshot = json.loads(raw)
+            repos = read(DATA/'versions'/version/'repositories.json', {})
+            if not isinstance(snapshot.get('apps'), list) or not isinstance(repos.get('repos'), list):
+                raise ValueError('当前版本缺少应用或仓库清单')
+            previous = self.config_sync_job
+            retained = []
+            if resume:
+                if previous.get('status') != 'failed' or previous.get('version') != version:
+                    raise ValueError('只能继续同一快照中已中断的配置同步')
+                retries = payload.get('retryAppIds', [])
+                if (not isinstance(retries,list) or len(retries)>361 or
+                        any(not isinstance(x,str) or not re.fullmatch(r'\d+',x) for x in retries)):
+                    raise ValueError('待重试应用 ID 无效')
+                old = previous.get('results')
+                if not isinstance(old,list): raise ValueError('上次同步结果无效')
+                from application_config_sync import catalog_app_ids
+                current_ids = set(catalog_app_ids(self.catalog_store))
+                old_ids = [r.get('appId') for r in old if isinstance(r,dict)]
+                if (len(old_ids) != len(old) or any(not isinstance(x,str) for x in old_ids) or len(set(old_ids)) != len(old_ids) or
+                        not set(old_ids).issubset(current_ids) or not set(retries).issubset(set(old_ids)) or
+                        any(r.get('status') not in ('ready','partial','failed','skipped') for r in old) or
+                        (previous.get('progress') and previous['progress'].get('total') != len(current_ids))):
+                    raise ValueError('目录或历史结果已变化，不能安全续传，请重新同步')
+                retained = [r for r in old if r['appId'] not in set(retries)]
+            self.config_sync_job = {'status':'queued','startedAt':previous.get('startedAt') if resume else now(),
+                                    'version':version,'results':retained}
+            if resume:
+                self.config_sync_job['resumedAt'] = now()
+                self.config_sync_job['progress'] = {'total':len(current_ids),'completed':len(retained),
+                    **{status:sum(r['status']==status for r in retained) for status in ('ready','partial','failed','skipped')}}
+            write(DATA/'application-config-job.json', self.config_sync_job)
+            threading.Thread(target=self._run_config_sync, args=(version,snapshot['apps'],repos['repos'],cookie,retained), daemon=True, name='application-config-sync').start()
+            return {'job':dict(self.config_sync_job)}
+
+    def _run_config_sync(self, version, apps, repos, cookie, previous_results=None):
+        from application_config_sync import CodeupAuthenticationError, run
+        last_activity_write = 0.0
+        def activity(current):
+            nonlocal last_activity_write
+            with self.lock:
+                previous = self.config_sync_job.get('current') or {}
+                self.config_sync_job['current'] = current
+                stamp = time.monotonic()
+                if (stamp - last_activity_write >= 1 or previous.get('appId') != current.get('appId')
+                        or previous.get('phase') != current.get('phase')):
+                    write(DATA/'application-config-job.json', self.config_sync_job)
+                    last_activity_write = stamp
+        def update(counts, result):
+            # Job metadata contains no configuration content or credentials.
+            with self.lock:
+                self.config_sync_job.update(status='running', progress=counts)
+                self.config_sync_job['results'].append(result)
+                write(DATA/'application-config-job.json', self.config_sync_job)
+        try:
+            with self.lock:
+                self.config_sync_job['status'] = 'running'
+                write(DATA/'application-config-job.json', self.config_sync_job)
+            counts = run(DATA, self.catalog_store, version, apps, repos, cookie, update, activity, previous_results)
+            with self.lock:
+                status = 'failed' if counts['failed'] and not (counts['ready'] or counts['partial']) else 'partial' if counts['failed'] or counts['partial'] else 'ready'
+                self.config_sync_job.update(status=status, finishedAt=now(), progress=counts, current=None)
+                write(DATA/'application-config-job.json', self.config_sync_job)
+        except CodeupAuthenticationError as exc:
+            with self.lock:
+                self.config_sync_job.update(status='failed', finishedAt=now(), error=str(exc))
+                write(DATA/'application-config-job.json', self.config_sync_job)
+        except Exception:
+            with self.lock:
+                self.config_sync_job.update(status='failed', finishedAt=now(), error='应用配置同步中断，请检查数据库、数据卷和凭据后重试')
+                write(DATA/'application-config-job.json', self.config_sync_job)
 
     def catalog_sync_once(self):
         if not self.catalog_lock.acquire(blocking=False):
@@ -1803,6 +1889,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self.allowed_host():return self.json(403,{'error':'仅允许本机访问'})
         if urlsplit(self.path).path == '/api/settings/git-address-check':
             return self.json(200, self.server.service.git_check_state())
+        if urlsplit(self.path).path == '/api/settings/application-config-sync':
+            with self.server.service.lock:
+                return self.json(200, {'job':dict(self.server.service.config_sync_job)})
         if urlsplit(self.path).path == '/api/catalog/application-domains':
             try:
                 return self.json(200, self.server.service.catalog_application_domains())
@@ -1874,6 +1963,8 @@ class Handler(BaseHTTPRequestHandler):
             service=self.server.service
             if self.path=='/api/settings/git-address-check':
                 return self.json(202, service.start_git_check())
+            elif self.path=='/api/settings/application-config-sync':
+                return self.json(202, service.start_config_sync(payload))
             elif self.path=='/api/catalog/deployment-units/import':
                 return self.json(202, service.start_catalog_sync())
             elif self.path=='/api/settings/config':service.save_settings(payload)

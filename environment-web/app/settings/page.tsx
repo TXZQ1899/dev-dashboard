@@ -61,6 +61,12 @@ type Job = {
   failures?: { source: string; type: string; credential?: string; message: string; credentialUpdatedAt?: string }[];
 };
 type SourceState = { busy: boolean; retryable: boolean; reason?: string };
+type ConfigSyncJob = {
+  status: string; version?: string; startedAt?: string; finishedAt?: string; error?: string;
+  current?: { appId: string; name: string; phase: string; completed: number; total: number } | null;
+  progress?: { total: number; completed: number; ready: number; partial: number; failed: number; skipped: number };
+  results?: { appId: string; name: string; status: string; error?: string; reason?: string; warnings?: string[] }[];
+};
 type State = {
   aliyunTenants?: AliyunTenant[];
   topology?: Topology | null;
@@ -85,6 +91,8 @@ function date(value?: string) {
   return formatBeijingTime(value, '—');
 }
 export default function SettingsPage() {
+  const [configJob, setConfigJob] = useState<ConfigSyncJob>({ status: 'idle' });
+  const [configBusy, setConfigBusy] = useState(false);
   const [state, setState] = useState<State | null>(null);
   const [cookies, setCookies] = useState({
     devops: '',
@@ -125,6 +133,33 @@ export default function SettingsPage() {
       clearInterval(timer);
     };
   }, []);
+  useEffect(() => {
+    let stopped = false;
+    async function refreshConfig() {
+      try {
+        const response = await fetch('/api/settings/application-config-sync', { cache: 'no-store' });
+        if (response.ok) {
+          const data = await response.json() as { job: ConfigSyncJob };
+          if (!stopped) setConfigJob(data.job);
+        }
+      } catch { /* Existing job state remains visible while the service reconnects. */ }
+    }
+    void refreshConfig();
+    const timer = setInterval(refreshConfig, 4000);
+    return () => { stopped = true; clearInterval(timer); };
+  }, []);
+  async function syncApplicationConfigs(resume = false) {
+    setConfigBusy(true); setError(''); setMessage('');
+    try {
+      const response = await fetch('/api/settings/application-config-sync', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ resume }),
+      });
+      const data = await response.json() as { job?: ConfigSyncJob; error?: string };
+      if (!response.ok || !data.job) throw new Error(data.error || '启动应用配置同步失败');
+      setConfigJob(data.job); setMessage(resume ? '已从中断处继续应用配置同步' : '应用配置同步任务已启动');
+    } catch (e) { setError(e instanceof Error ? e.message : '启动应用配置同步失败'); }
+    finally { setConfigBusy(false); }
+  }
   async function post(path: string, body: unknown) {
     const response = await fetch('/api/settings/' + path, {
       method: 'POST',
@@ -463,6 +498,36 @@ export default function SettingsPage() {
                 ))}
               </section>
             )}
+            <section className="panel settings-panel" id="application-config-settings">
+              <h2>应用配置文件</h2>
+              <p>手动同步当前部署单元中 Maven 构建的 WAR/JAR 应用配置，其他类型跳过。结果保存到数据卷 application-config；此任务不参与每日采集。</p>
+              <Button disabled={configBusy || ['queued', 'running'].includes(configJob.status)} onClick={() => void syncApplicationConfigs()}>
+                {['queued', 'running'].includes(configJob.status) ? '同步中…' : '一键同步所有应用配置'}
+              </Button>
+              {configJob.status === 'failed' && <Button disabled={configBusy} onClick={() => void syncApplicationConfigs(true)}>
+                从中断处继续
+              </Button>}
+              {configJob.progress && <p>已处理 {configJob.progress.completed} / {configJob.progress.total}；完成 {configJob.progress.ready}，部分完成 {configJob.progress.partial}，失败 {configJob.progress.failed}，跳过 {configJob.progress.skipped}</p>}
+              {['queued', 'running'].includes(configJob.status) && configJob.current && <p>
+                当前应用：{configJob.current.name || configJob.current.appId}（{configJob.current.appId}） · {configJob.current.phase}
+                {configJob.current.total > 0 ? ` ${configJob.current.completed} / ${configJob.current.total}` : configJob.current.phase === '下载 Nacos 配置' ? `（已尝试 ${configJob.current.completed} 项）` : ''}
+              </p>}
+              {configJob.error && <p>{configJob.error}</p>}
+              {configJob.version && <small>应用快照：{configJob.version} · 开始时间：{date(configJob.startedAt)} · 状态：{configJob.status}</small>}
+              {!!configJob.results?.some(r => r.status === 'partial' || r.status === 'failed') && <details>
+                <summary>查看未完成或需核查的应用</summary>
+                <ul>{configJob.results.filter(r => r.status === 'partial' || r.status === 'failed').map(r => <li key={r.appId}>
+                  {r.name || r.appId}（{r.appId}）：{r.error || r.warnings?.join('；') || r.status}
+                </li>)}</ul>
+              </details>}
+              {!!configJob.results?.some(r => r.status === 'skipped') && <details>
+                <summary>查看跳过的应用</summary>
+                <ul>{configJob.results.filter(r => r.status === 'skipped').map(r => <li key={r.appId}>
+                  {r.name || r.appId}（{r.appId}）：{r.reason || '已跳过'}
+                </li>)}</ul>
+              </details>}
+              <p className="settings-hint">读取 master 分支；无法唯一匹配模块、无法访问仓库或无法解析 Nacos 时保留原因。配置原文可能包含敏感信息。</p>
+            </section>
             <section className="panel settings-panel" id="topology-settings">
               <h2>Topology 数据</h2>
               {state.topology ? (

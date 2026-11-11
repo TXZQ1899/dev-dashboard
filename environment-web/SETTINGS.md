@@ -1,5 +1,31 @@
 # 本地数据同步与历史版本
 
+## 应用配置文件手动同步
+
+Settings 的「一键同步所有应用配置」只按需执行，不加入每日采集。任务固定启动时的应用与仓库快照以及 Codeup Cookie，枚举当前目录中 PRESENT 的 DevOps 应用单元；明显非 WAR/JAR 类型跳过，`app` 等候选仍需 Maven POM 证据。当前只支持 Codeup HTTPS 仓库和 master 分支。快照缺少仓库 ID 时按完整仓库路径只读查询 Codeup，只有明确返回唯一 PROJECT ID 才继续；无权限或未找到分别记录，不能认定仓库已删除。登录失效会停止任务并提示更新 Cookie。按 POM 的字面 `finalName` 唯一定位模块；`finalName` 明确为应用名加 `-exec`，或可从本 POM 中的简单 artifactId 引用解析为该名称时也可匹配，记录匹配依据。WAR 类型可用唯一 WAR 模块消除歧义。其他变量、父 POM 继承、其他仓库及无法唯一定位的情况不猜测，记录失败原因。
+
+明确记录为无权限的仓库按用户要求跳过，依据为当前仓库快照或 Codeup 实时 FORBIDDEN；未找到、无仓库地址或状态未知独立报告。POM 中直接声明 `应用名-exec`、或通过本 POM 明确的 artifactId / parent artifactId 能解析为该名称时，也可作为唯一模块匹配依据。
+
+结果写入数据卷 `application-config/<安全化应用名>-<应用ID>/{dev,test,uat,prod,other}/`。按资源文件名或目录中的精确环境名分组，公共及其他 profile 归 `other`。Nacos 按各 profile 中明确声明的连接、命名空间与 Group 读取；只支持现有解析器可确定的 YAML 和简单单行 properties，变量、复杂语法及跨文件配置可能无法解析。仓库文件和 Nacos 文件分开保存；`other/manifest.json` 保存来源及警告，不含配置原文和凭据。分支未固定提交，不能证明和实际运行配置一致。
+
+根 POM 不存在时在有限目录深度和数量内发现子目录 POM，跳过源码与构建目录；也可解析 `finalName` 中直接引用本 POM `artifactId` 的常见表达式。搜索超限、无法读取或匹配不唯一均保留错误，不按目录名直接认定模块。
+
+资源目录优先使用模块 POM 中明确声明的 `build.resources`，遵守可解析的 include/exclude；没有声明时读取 Maven 默认的 `src/main/resources`。构建时 `filtering` 不在下载时执行，保存的仍是仓库原文，并在结果中注明；继承或无法解析的资源规则保持待核查。
+
+Codeup 文件树接口若忽略分页并重复返回同一批条目，保留已读取的文件并标记目录完整性未确认，不将重复分页误报为整个应用失败。
+
+Nacos 声明中引用的地址类简单变量，仅在同一个 YAML 文档内存在唯一的字面值时解析；不会把不同 profile 文档的变量合并。重复键、复杂值和跨文件引用保持未解析。
+
+支持 properties 中 `nacos.config.ext-config[n].data-id` 的明确扩展声明，并使用同一文件中的连接与命名空间；扩展项未指定 Group 时使用 `DEFAULT_GROUP`。单文件无法解析时仍保留已下载的原文件并明确报告解析问题。
+
+Spring 的应用名可以来自匹配的 profile 文档；显式声明的 Nacos Data ID 可解析当前 profile 的 `spring.profiles.active` 引用，其他未解析引用保留警告。
+
+旧版 Spring Cloud Alibaba 的 `shared-dataids` 按当前 profile 中明确声明的地址和命名空间读取，Group 为 `DEFAULT_GROUP`；`refreshable-dataids` 只表示刷新设置，不额外增加下载项。任务运行时展示当前应用、阶段及可确定的文件计数；仅在单次任务中短期缓存仓库 POM 和目录清单，Nacos 配置原文不缓存。当前应用和阶段是进度信息，不表示应用已完成。
+
+Spring 自动推导的候选 Data ID 返回 404 时保留在 `missingCandidates`；同一 profile 至少取得一个推导配置时，其他候选 404 不单独导致部分完成。全部候选均未找到、显式声明的配置不存在、认证失败及无法解析仍作为警告。`notes` 保留推导依据和未验证运行时覆盖的限制，不把仓库配置等同于实际生效配置。
+
+单应用完成后替换该应用旧结果，失败保留上次结果；部分成功包含警告。任务状态与逐应用结果保存在数据卷 `application-config-job.json`，容器重启或 Cookie 失效时中断并显示失败；Settings 的「从中断处继续」会在同一快照和目录范围仍可验证时保留已完成结果，从下一个应用继续，不自动重试先前标记为失败或部分完成的应用。选择「一键同步所有应用配置」则重新处理全部应用。配置原文可能含密码，目录和文件权限分别为 0700 和 0600，应保护数据卷和备份。
+
 ## 阿里云多租户采集
 
 Settings 顶部的「阿里云租户管理」可为每个已有租户单独配置 Cookie、修改名称和启停。Cookie 留空保留已保存的值，不回显。Codeup 固定绑定现有租户，其企业 ID 在该租户中配置。Cookie 采集支持上海地域的 ECS、CLB、NAT 和 DMS；云 DNS 暂无 Cookie 采集能力，全量同步时保留该来源的既有数据及观察时间。旧版 AccessKey 配置和客户端 API 保持兼容。

@@ -88,11 +88,12 @@ def spring_declarations(content, process):
             return next(iter(values), '')
         name, profile = single('spring.application.name'), single('spring.profiles.active')
         args = shlex.split(process.get('command', ''))
+        name_override = False
         for key in ('spring.application.name', 'spring.profiles.active'):
             values = [arg.split('=', 1)[1] for arg in args if arg.startswith(('-D'+key+'=', '--'+key+'='))]
             if len(set(values)) > 1: raise ValueError('进程启动参数包含冲突的 '+key)
             if values:
-                if key.endswith('.name'): name = values[0]
+                if key.endswith('.name'): name = values[0]; name_override = True
                 else: profile = values[0]
         if not re.fullmatch(r'[\w.-]+', profile):
             raise ValueError('无法确定唯一 Spring profile')
@@ -101,6 +102,8 @@ def spring_declarations(content, process):
         if len(selected) != 1:
             raise ValueError('当前 profile 的 Nacos 声明不存在或不唯一')
         config = selected[0]
+        if not name_override:
+            name = config.get('spring.application.name') or name
         get = lambda key: config.get('spring.cloud.nacos.config.'+key, '')
         if get('enabled').lower() == 'false': return [], []
         prefix = get('prefix') or get('name') or name

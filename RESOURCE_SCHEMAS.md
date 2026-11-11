@@ -1474,6 +1474,16 @@ Spring Cloud Alibaba 的 `spring.cloud.nacos.config` 支持从无 profile 文档
 
 ## 部署管理目录（MySQL，独立于采集快照）
 
+### 应用配置手动同步
+
+Settings 手动任务以当前目录中 PRESENT 的 DevOps 应用及启动时固定的快照为范围，不参与每日采集；非 WAR/JAR 候选及快照或 Codeup 明确判定无权限的仓库标记 `skipped`，无权限跳过项的 `skipReason` 为 `REPOSITORY_FORBIDDEN`。未找到或不可见的仓库、缺失地址及未能唯一定位的 Maven 模块分别报告，不能当作无权限或不存在的确定结论。数据卷 `application-config/<安全化应用名>-<ID>/{dev,test,uat,prod,other}/` 保存仓库原文和 Nacos 原文，文件权限 0600；任务进度及各应用结果保存在 `application-config-job.json`。原文可包含凭据，应保护卷及备份。
+
+按 POM 的 `finalName`、应用名加 `-exec`，以及仅由本 POM 直接声明的 artifactId / parent artifactId 可解析的表达式匹配，匹配依据记录在 `moduleMatchBasis`；打包类型及唯一性仍需成立。模块显式 `build.resources` 的目录和可解析 include/exclude 优先于 Maven 默认资源目录，构建期 filtering 未执行并在 `notes` 留证。Spring Nacos 配置使用相应 profile 文档中的应用名和明确声明的 Data ID，不跨 profile 合并配置；自动推导的 Data ID 返回 404 记录在 `missingCandidates`，同 profile 有其他推导配置成功时不单独构成 `partial`。明确声明的 Data ID 读取失败、全部推导候选均未找到、无法解析和连接失败仍保留警告。仓库文件和 Nacos 文件不证明当前运行实例的实际生效配置。
+
+旧版 Spring `shared-dataids` 的各项作为显式 Data ID，使用所属 profile 明确声明的 Nacos 地址、命名空间和 `DEFAULT_GROUP` 下载；`refreshable-dataids` 不单独构成下载声明。共享项成功时，该 profile 的推导候选全部 404 不单独构成部分完成，显式项失败仍保留警告。运行任务的 `current` 包含应用 ID、名称、阶段及当前阶段可确定的完成数与总数；仅是进度，不代表应用完成。单任务内 POM 和目录响应使用有大小及时间上限的内存缓存，Nacos 内容不缓存。
+
+properties 文件中的 `nacos.config.ext-config[n].data-id` 等索引扩展项从同一文件读取；以扩展项声明的连接和 Group 为准，缺少连接时使用本文件的主连接，缺少 Group 时为 `DEFAULT_GROUP`，重复或未解析的值不猜测。中断的同步仅可在快照不变、原完成结果与当前目录可验证时手动续传；续传保留前面每个结果并从未完成应用继续，单项重新处理时替换该项结果，已保存文件不因中断而删除。
+
 入口为「部署单元」菜单（`/deployment-units`）。数据来自当前已完成版本 `versions/<id>/snapshot.json`，不改变该文件的任何定义。MySQL 8.4 库默认 `envscope`；迁移文件为 `environment-web/runtime/migrations/001_deployment_catalog.sql`，使用 `catalog_schema_migration` 记录迁移校验和。MySQL 数据保存在独立的 `envscope-mysql` 卷。
 
 | 表 | 语义与身份 |

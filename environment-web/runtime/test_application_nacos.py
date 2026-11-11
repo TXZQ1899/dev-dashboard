@@ -54,6 +54,14 @@ spring:
 
 
 class NacosTests(unittest.TestCase):
+    def test_spring_name_is_taken_from_selected_profile(self):
+        content = '''spring:\n  profiles:\n    active: test\n---\nspring:\n  profiles: test\n  application:\n    name: orders-test\n  cloud:\n    nacos:\n      config:\n        server-addr: 192.0.2.10:8848\n---\nspring:\n  profiles: prod\n  application:\n    name: orders-prod\n  cloud:\n    nacos:\n      config:\n        server-addr: 192.0.2.20:8848\n'''
+        test, _ = nacos.declarations(content, {'command':'java -Dspring.profiles.active=test'})
+        prod, _ = nacos.declarations(content, {'command':'java -Dspring.profiles.active=prod'})
+        self.assertEqual(test[-1]['dataId'], 'orders-test-test.properties')
+        self.assertEqual(prod[-1]['dataId'], 'orders-prod-prod.properties')
+        override, _ = nacos.declarations(content, {'command':'java -Dspring.profiles.active=prod -Dspring.application.name=override'})
+        self.assertEqual(override[-1]['dataId'], 'override-prod.properties')
     def test_spring_bootstrap_selects_profile_and_derives_data_ids(self):
         entries, warnings = nacos.declarations(SPRING_YAML, {'command':'java -jar app.jar'})
         self.assertEqual([e['dataId'] for e in entries], ['example-offline', 'example-offline.yaml', 'example-offline-dev.yaml'])
