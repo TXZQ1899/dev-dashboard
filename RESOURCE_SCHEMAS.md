@@ -1476,13 +1476,23 @@ Spring Cloud Alibaba 的 `spring.cloud.nacos.config` 支持从无 profile 文档
 
 ### 应用配置手动同步
 
+应用配置查看入口使用数据卷 `application-config` 中的已保存清单，而非最近任务状态：部署单元中有实际文件的应用显示入口，失败后保留的旧快照仍可查看。`GET /api/catalog/application-config` 返回有文件且身份唯一的应用 ID；带 `appId` 返回清单元数据，带 `appId` 和不透明 `file` ID 返回该清单中对应文件的预览。预览最多 256 KiB，沿用 JumpServer 配置页的密码与令牌遮盖规则；响应不缓存。不接受客户端文件路径，忽略目录外符号链接及无效或重复应用目录。详情标明保存时间、来源快照和分支，不证明运行配置已生效。
+
+仓库资源中 `mapper` / `mappers` 目录及其子目录不枚举；其他 MyBatis mapper XML 按 `*Mapper.xml` 文件名或 XML 中明确的 mapper DTD / namespace 识别并排除，其他 XML 配置保留。旧清单在读取展示时过滤 mapper XML，旧文件在该应用成功重采后随旧快照替换，失败或跳过仍保留旧文件。配置页可通过 `POST /api/catalog/application-config/refresh` 按当前快照和 PRESENT 目录应用 ID 刷新单个应用，`GET` 同一路径查询状态；单应用任务保存为 `application-config-single-job.json`，与全量和其他单应用任务互斥，不覆盖全量任务。容器重启将未完成的单应用任务标为失败。
+
+仓库资源目录内的 `static`、`template`、`templates` 按完整目录名不区分大小写跳过整个目录；Maven 显式资源根位于这些目录下时也不枚举。旧快照不原地修改，成功重新同步时由新结果替换。
+
 Settings 手动任务以当前目录中 PRESENT 的 DevOps 应用及启动时固定的快照为范围，不参与每日采集；非 WAR/JAR 候选及快照或 Codeup 明确判定无权限的仓库标记 `skipped`，无权限跳过项的 `skipReason` 为 `REPOSITORY_FORBIDDEN`。未找到或不可见的仓库、缺失地址及未能唯一定位的 Maven 模块分别报告，不能当作无权限或不存在的确定结论。数据卷 `application-config/<安全化应用名>-<ID>/{dev,test,uat,prod,other}/` 保存仓库原文和 Nacos 原文，文件权限 0600；任务进度及各应用结果保存在 `application-config-job.json`。原文可包含凭据，应保护卷及备份。
 
-按 POM 的 `finalName`、应用名加 `-exec`，以及仅由本 POM 直接声明的 artifactId / parent artifactId 可解析的表达式匹配，匹配依据记录在 `moduleMatchBasis`；打包类型及唯一性仍需成立。模块显式 `build.resources` 的目录和可解析 include/exclude 优先于 Maven 默认资源目录，构建期 filtering 未执行并在 `notes` 留证。Spring Nacos 配置使用相应 profile 文档中的应用名和明确声明的 Data ID，不跨 profile 合并配置；自动推导的 Data ID 返回 404 记录在 `missingCandidates`，同 profile 有其他推导配置成功时不单独构成 `partial`。明确声明的 Data ID 读取失败、全部推导候选均未找到、无法解析和连接失败仍保留警告。仓库文件和 Nacos 文件不证明当前运行实例的实际生效配置。
+按 POM 的 `finalName`、应用名加 `-exec`，以及仅由本 POM 直接声明的 artifactId / parent artifactId 可解析的表达式匹配，无 `finalName` 匹配时回退为含 POM 的模块目录名与应用名精确匹配，可去除末尾的 `（废弃）`、`(废弃)` 或 `-废弃` 标记；匹配依据记录在 `moduleMatchBasis`，打包类型及唯一性仍需成立。模块显式 `build.resources` 的目录和可解析 include/exclude 优先于 Maven 默认资源目录，构建期 filtering 未执行并在 `notes` 留证。Spring Nacos 配置使用相应 profile 文档中的应用名和明确声明的 Data ID，不跨 profile 合并配置；自动推导的 Data ID 返回 404 记录在 `missingCandidates`，同 profile 有其他推导配置成功时不单独构成 `partial`。明确声明的 Data ID 读取失败、全部推导候选均未找到、无法解析和连接失败仍保留警告。仓库文件和 Nacos 文件不证明当前运行实例的实际生效配置。
 
 旧版 Spring `shared-dataids` 的各项作为显式 Data ID，使用所属 profile 明确声明的 Nacos 地址、命名空间和 `DEFAULT_GROUP` 下载；`refreshable-dataids` 不单独构成下载声明。共享项成功时，该 profile 的推导候选全部 404 不单独构成部分完成，显式项失败仍保留警告。运行任务的 `current` 包含应用 ID、名称、阶段及当前阶段可确定的完成数与总数；仅是进度，不代表应用完成。单任务内 POM 和目录响应使用有大小及时间上限的内存缓存，Nacos 内容不缓存。
 
 properties 文件中的 `nacos.config.ext-config[n].data-id` 等索引扩展项从同一文件读取；以扩展项声明的连接和 Group 为准，缺少连接时使用本文件的主连接，缺少 Group 时为 `DEFAULT_GROUP`，重复或未解析的值不猜测。中断的同步仅可在快照不变、原完成结果与当前目录可验证时手动续传；续传保留前面每个结果并从未完成应用继续，单项重新处理时替换该项结果，已保存文件不因中断而删除。
+
+`POST /api/settings/application-config-sync` 的 `retryFailed: true` 以原任务范围为边界保留 `ready` 结果，重试 `partial`、`failed`、`skipped` 和未处理项，并保留用户排除的应用为 `skipped` / `USER_EXCLUDED`；重试使用启动时当前快照，保留项的 `snapshotVersion` 不变。原范围无法安全还原时拒绝，不扩大范围。`application-config-exclusions.json` 是卷内用户管理的应用 ID 清单，`GET/POST /api/settings/application-config-exclusions` 查询、按旧结果的仓库未找到或不可见、非 Codeup HTTPS、仓库匹配数量为 0、仓库地址缺失和已跳过类别标记或撤销；每次批量任务启动固定排除 ID，运行中修改仅影响后续任务，不覆盖单应用手动刷新。`USER_EXCLUDED` 是用户选择而非仓库不存在或无权限的证据。
+
+全量配置同步的详细日志在数据卷 `application-config-job.log`（轮转文件 `.1`），以有限长度 JSON 行保存阶段、请求开始及结束、应用 ID、可安全显示的仓库相对路径、分页、条目数和耗时；不保存 Cookie、URL、配置原文或 Nacos 连接参数。单文件最多 1 MiB，仅保留一个轮转文件，`GET /api/settings/application-config-sync/log` 仅读取当前日志尾部最多 250 条并标明截断。新全量任务重置日志，续传保留；日志写入失败不应中断同步，并在任务状态中报告。
 
 入口为「部署单元」菜单（`/deployment-units`）。数据来自当前已完成版本 `versions/<id>/snapshot.json`，不改变该文件的任何定义。MySQL 8.4 库默认 `envscope`；迁移文件为 `environment-web/runtime/migrations/001_deployment_catalog.sql`，使用 `catalog_schema_migration` 记录迁移校验和。MySQL 数据保存在独立的 `envscope-mysql` 卷。
 

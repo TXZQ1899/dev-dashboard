@@ -128,6 +128,26 @@ class ConfigSyncTest(unittest.TestCase):
         self.assertEqual(counts,{'total':2,'completed':2,'ready':1,'partial':0,'failed':0,'skipped':1})
         self.assertEqual([r['appId'] for r in updates], ['8'])
 
+    def test_single_run_processes_only_requested_app_and_keeps_previous_on_failure(self):
+        class Store:
+            source_key='source'
+            def connection(self):
+                class Context:
+                    def __enter__(self): return None
+                    def __exit__(self, *args): pass
+                return Context()
+            def execute(self, conn, sql, params): return [{'native_key_json':'{"appId":"7"}'}, {'native_key_json':'{"appId":"8"}'}]
+        apps=[{'id':str(i),'name':'app'+str(i),'appType':'app','repository':'https://codeup.aliyun.com/org/repo.git'} for i in (7,8)]
+        with tempfile.TemporaryDirectory() as d, patch.object(sync, 'sync_one', side_effect=ValueError('读取失败')) as call:
+            target=Path(d)/'application-config/app7-7/other'
+            target.mkdir(parents=True); (target/'existing.yml').write_text('old')
+            results=[]
+            counts=sync.run(Path(d),Store(),'v1',apps,[{'url':apps[0]['repository']}], 'cookie',lambda c,r: results.append(r),app_ids=['7'])
+            self.assertEqual((counts['total'],counts['failed']), (1,1))
+            self.assertEqual([x['appId'] for x in results], ['7'])
+            self.assertEqual(call.call_args.args[0]['id'], '7')
+            self.assertEqual((target/'existing.yml').read_text(), 'old')
+
     def test_repository_cache_is_bounded_and_expires(self):
         cache = sync.RepositoryCache(limit=5, ttl=10)
         with patch.object(sync.time, 'monotonic', return_value=100):
@@ -143,6 +163,106 @@ class ConfigSyncTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, patch.object(sync,'Codeup',Client):
             with self.assertRaisesRegex(ValueError,'无法唯一定位'):
                 sync.sync_one({'id':'1','name':'orders','appType':'app'}, {}, 'cookie', Path(d))
+
+    def test_directory_name_fallback_downloads_nested_resources(self):
+        class Modules:
+            def __init__(self, repo, cookie): pass
+            def raw(self, path):
+                return {'pom.xml': b'<project><packaging>pom</packaging><modules><module>tims-middle-producer</module><module>other</module></modules></project>',
+                        'tims-middle-producer/pom.xml': b'<project><artifactId>producer</artifactId></project>',
+                        'other/pom.xml': b'<project><artifactId>other</artifactId></project>',
+                        'tims-middle-producer/src/main/resources/config/application-test.yml': b'key: value'}[path]
+            def tree(self, path):
+                return {'tims-middle-producer/src/main/resources': [{'type':'tree','path':path+'/config'}],
+                        'tims-middle-producer/src/main/resources/config': [{'type':'blob','path':path+'/application-test.yml'}]}[path]
+        with tempfile.TemporaryDirectory() as d, patch.object(sync, 'Codeup', Modules):
+            result = sync.sync_one({'id':'1','name':'tims-middle-producer（废弃）','appType':'app'}, {}, 'cookie', Path(d))
+            self.assertEqual(result['module'], 'tims-middle-producer')
+            self.assertIn('deprecated suffix', result['moduleMatchBasis'])
+            self.assertTrue((Path(d)/'test/resources/config/application-test.yml').is_file())
+
+    def test_mapper_xml_is_excluded_but_mybatis_configuration_is_saved(self):
+        class MapperClient:
+            def __init__(self, repo, cookie): self.reads = []; self.trees = []
+            def raw(self, path):
+                self.reads.append(path)
+                return {'pom.xml':b'<project><build><finalName>orders</finalName></build></project>',
+                        'src/main/resources/mybatis-config.xml':b'<configuration><mappers/></configuration>',
+                        'src/main/resources/queries.xml':b'<?xml version="1.0"?><mapper namespace="example.User"><select id="a"/></mapper>'}[path]
+            def tree(self, path):
+                self.trees.append(path)
+                if path == 'src/main/resources':
+                    return [{'type':'tree','path':path+'/mapper'}, {'type':'tree','path':path+'/mybatis'},
+                            *[{'type':'blob','path':path+'/'+name} for name in ('UserMapper.xml','mybatis-config.xml','queries.xml')]]
+                if path == 'src/main/resources/mybatis':
+                    return [{'type':'tree','path':path+'/mappers'}]
+                return [{'type':'blob','path':path+'/User.xml'}]
+        client = MapperClient({}, '')
+        with tempfile.TemporaryDirectory() as d, patch.object(sync, 'Codeup', return_value=client):
+            result = sync.sync_one({'id':'1','name':'orders','appType':'app'}, {}, 'cookie', Path(d))
+            self.assertEqual([f['path'] for f in result['files']], ['src/main/resources/mybatis-config.xml'])
+            self.assertNotIn('src/main/resources/mapper/User.xml', client.reads)
+            self.assertNotIn('src/main/resources/UserMapper.xml', client.reads)
+            self.assertNotIn('src/main/resources/mapper', client.trees)
+            self.assertNotIn('src/main/resources/mybatis/mappers', client.trees)
+            self.assertTrue((Path(d)/'other/resources/mybatis-config.xml').exists())
+            self.assertFalse((Path(d)/'other/resources/queries.xml').exists())
+
+    def test_mapper_resource_root_is_skipped_but_module_named_mapper_is_not(self):
+        class Client:
+            def __init__(self, *args): self.trees = []
+            def tree(self, path):
+                self.trees.append(path)
+                if path.endswith('/mybatis/mappers'): raise AssertionError('must not enumerate mapper resource root')
+                return [{'type':'blob','path':path+'/mybatis-config.xml'}]
+            def raw(self, path): return b'<configuration/>'
+        client=Client()
+        rules=[('mapper/src/main/resources/mybatis/mappers',['**/*'],[],False), ('mapper/src/main/resources',['**/*'],[],False)]
+        with tempfile.TemporaryDirectory() as d, patch.object(sync,'Codeup',return_value=client), \
+             patch.object(sync,'maven_modules',return_value=[('mapper','jar','finalName')]), patch.object(sync,'resource_rules',return_value=rules):
+            result=sync.sync_one({'id':'1','name':'orders','appType':'app'}, {}, 'cookie', Path(d))
+        self.assertEqual(client.trees,['mapper/src/main/resources'])
+        self.assertEqual(len(result['files']),1)
+
+    def test_static_and_template_directories_are_never_enumerated(self):
+        class Client:
+            def __init__(self): self.trees=[]; self.reads=[]
+            def tree(self, path):
+                self.trees.append(path)
+                if path == 'static/src/main/resources':
+                    return [{'type':'tree','path':path+'/'+name} for name in ('static','Template','templates','static-assets','config')] + [
+                        {'type':'blob','path':path+'/static/nested/unexpected.xml'}]
+                if path.endswith(('/static-assets','/config')):
+                    return [{'type':'blob','path':path+'/application.yml'}]
+                raise AssertionError('must not enumerate an excluded directory: '+path)
+            def raw(self, path): self.reads.append(path); return b'key: value'
+        client=Client(); events=[]
+        def progress(*args): pass
+        progress.trace=lambda event, **kwargs: events.append((event,kwargs))
+        rules=[('static/src/main/resources/templates',['**/*'],[],False), ('static/src/main/resources',['**/*'],[],False)]
+        with tempfile.TemporaryDirectory() as d, patch.object(sync,'Codeup',return_value=client), \
+             patch.object(sync,'maven_modules',return_value=[('static','jar','finalName')]), patch.object(sync,'resource_rules',return_value=rules):
+            result=sync.sync_one({'id':'1','name':'orders','appType':'app'}, {}, 'cookie', Path(d), progress)
+        self.assertEqual(set(client.trees), {'static/src/main/resources','static/src/main/resources/static-assets','static/src/main/resources/config'})
+        self.assertEqual(len(result['files']),2)
+        self.assertFalse(any('/static/nested/' in path for path in client.reads))
+        self.assertEqual(sum(event == 'resource_skip' for event, _ in events),4)
+
+    def test_directory_fallback_requires_uniqueness_and_yields_to_final_name(self):
+        class Modules:
+            def __init__(self, final=False): self.final = final
+            def raw(self, path):
+                if path == 'pom.xml':
+                    return b'<project><modules><module>a/orders</module><module>b/orders</module><module>chosen</module></modules></project>'
+                if path == 'chosen/pom.xml' and self.final:
+                    return b'<project><build><finalName>orders</finalName></build></project>'
+                return b'<project/>'
+        candidates = sync.maven_modules(Modules(), 'orders')
+        self.assertEqual({x[0] for x in candidates}, {'a/orders', 'b/orders'})
+        with tempfile.TemporaryDirectory() as d, patch.object(sync, 'Codeup', return_value=Modules()):
+            with self.assertRaisesRegex(ValueError, '无法唯一定位'):
+                sync.sync_one({'id':'1','name':'orders','appType':'app'}, {}, 'cookie', Path(d))
+        self.assertEqual(sync.maven_modules(Modules(True), 'orders'), [('chosen', 'jar', 'finalName')])
 
     def test_non_deployable_aggregator_does_not_mask_unique_jar(self):
         with tempfile.TemporaryDirectory() as d, patch.object(sync,'Codeup',Client), \
@@ -353,5 +473,129 @@ class ConfigSyncTest(unittest.TestCase):
             self.assertEqual(result['progress']['completed'],1)
             self.assertEqual(result['progress']['total'],3)
             thread.return_value.start.assert_called_once()
+
+    def test_single_refresh_is_scoped_and_excludes_concurrent_batch(self):
+        import service
+        worker = service.Service.__new__(service.Service)
+        worker.lock = threading.RLock(); worker.catalog_store = object()
+        worker.catalog_context = lambda: ('v1', b'{"apps":[{"id":"7","name":"orders"}]}')
+        worker.config_sync_job = {'status':'ready', 'results':[{'appId':'old'}]}
+        worker.config_single_job = {'status':'idle'}
+        with tempfile.TemporaryDirectory() as d, patch.object(service,'DATA',Path(d)), \
+             patch.object(service,'credentials',return_value={'aliyun':{'value':'cookie'}}), \
+             patch.object(sync,'catalog_app_ids',return_value=['7','8']), \
+             patch.object(service.threading,'Thread') as thread:
+            service.write(Path(d)/'versions/v1/repositories.json', {'repos':[]})
+            job = worker.start_single_config_sync({'appId':'7'})['job']
+            self.assertEqual((job['appId'], job['status']), ('7','queued'))
+            self.assertEqual(worker.config_sync_job['results'], [{'appId':'old'}])
+            self.assertEqual(thread.call_args.kwargs['args'][0], '7')
+            with self.assertRaisesRegex(ValueError, '同步正在进行'): worker.start_config_sync()
+            with self.assertRaisesRegex(ValueError, '同步正在进行'): worker.start_single_config_sync({'appId':'7'})
+
+    def test_single_runner_preserves_batch_job_and_reports_failure(self):
+        import service
+        worker = service.Service.__new__(service.Service)
+        worker.lock = threading.RLock(); worker.catalog_store = object()
+        worker.config_single_job = {'status':'queued','appId':'7'}
+        worker.config_sync_job = {'status':'partial','results':[{'appId':'8'}]}
+        def run(*args, **kwargs):
+            self.assertEqual(kwargs['app_ids'], ['7'])
+            args[6]({}, {'appId':'7','status':'failed','error':'仓库不可见'})
+        with tempfile.TemporaryDirectory() as d, patch.object(service,'DATA',Path(d)), patch.object(sync,'run',side_effect=run):
+            worker._run_single_config_sync('7','v1',[],[],'cookie')
+            self.assertEqual(worker.config_single_job['status'], 'failed')
+            self.assertEqual(worker.config_single_job['result']['error'], '仓库不可见')
+            self.assertEqual(worker.config_sync_job['results'], [{'appId':'8'}])
+
+    def test_retry_keeps_ready_and_excluded_retries_other_results_and_pending(self):
+        import service
+        worker = service.Service.__new__(service.Service)
+        worker.lock = threading.RLock(); worker.catalog_store = object()
+        worker.catalog_context = lambda: ('v1', b'{"apps":[]}')
+        worker.config_sync_job = {'status':'failed','version':'v1','startedAt':'before',
+            'scopeAppIds':['1','2','3','4','5','6'], 'progress':{'total':6,'completed':5}, 'results':[
+                {'appId':'1','name':'ready','status':'ready','snapshotVersion':'old'},
+                {'appId':'2','name':'partial','status':'partial','warnings':['warning']},
+                {'appId':'3','name':'failed','status':'failed','error':'unavailable'},
+                {'appId':'4','name':'skipped','status':'skipped','reason':'non-java'},
+                {'appId':'5','name':'excluded','status':'failed','error':'仅支持 Codeup HTTPS 仓库'}]}
+        worker.config_single_job = {'status':'idle'}
+        with tempfile.TemporaryDirectory() as d, patch.object(service,'DATA',Path(d)), \
+             patch.object(service,'credentials',return_value={'aliyun':{'value':'cookie'}}), \
+             patch.object(sync,'catalog_app_ids',return_value=['1','2','3','4','5','6']), \
+             patch.object(service.threading,'Thread') as thread:
+            service.write(Path(d)/'versions/v1/repositories.json', {'repos':[]})
+            service.write(Path(d)/'application-config-exclusions.json', {'schemaVersion':1,'applications':[{'appId':'5'}]})
+            job = worker.start_config_sync({'retryFailed':True})['job']
+            self.assertEqual([(r['appId'],r['status']) for r in job['results']], [('1','ready'),('5','skipped')])
+            self.assertEqual(job['results'][0]['snapshotVersion'],'old')
+            self.assertEqual(job['results'][1]['skipReason'],'USER_EXCLUDED')
+            self.assertEqual(job['scopeAppIds'],['1','2','3','4','5','6'])
+            self.assertEqual((job['progress']['total'],job['progress']['completed']), (6,2))
+            self.assertEqual(thread.call_args.kwargs['args'][-1], ['5'])
+
+    def test_batch_skips_excluded_and_retries_partial_failed_skipped_and_pending(self):
+        class Store:
+            source_key='source'
+            def connection(self):
+                class Context:
+                    def __enter__(self): return None
+                    def __exit__(self, *args): pass
+                return Context()
+            def execute(self, conn, sql, params):
+                return [{'native_key_json':'{"appId":"'+str(i)+'"}'} for i in range(1,7)]
+        apps=[{'id':str(i),'name':'app'+str(i),'appType':'app','repository':'https://codeup.aliyun.com/org/repo.git'} for i in range(1,7)]
+        old=[{'appId':'1','name':'app1','status':'ready'}]
+        calls=[]; results=[]
+        def sync_one(app, repo, cookie, output, progress, cache):
+            calls.append(app['id']); return {'appId':app['id'],'name':app['name'],'status':'ready'}
+        with tempfile.TemporaryDirectory() as d, patch.object(sync,'sync_one',side_effect=sync_one):
+            counts=sync.run(Path(d),Store(),'v1',apps,[{'url':apps[0]['repository']}], 'cookie',lambda c,r:results.append(r),
+                            previous_results=old, scope_ids=['1','2','3','4','5','6'], excluded_ids=['5'])
+        self.assertEqual(calls,['2','3','4','6'])
+        self.assertEqual([r['appId'] for r in results if r['status']=='skipped'], ['5'])
+        self.assertEqual((counts['completed'],counts['ready'],counts['skipped']), (6,5,1))
+
+    def test_retry_completed_task_can_use_new_snapshot_without_repeating_ready(self):
+        import service
+        worker = service.Service.__new__(service.Service)
+        worker.lock = threading.RLock(); worker.catalog_store = object(); worker.config_single_job = {'status':'idle'}
+        worker.catalog_context = lambda: ('v2', b'{"apps":[]}')
+        worker.config_sync_job = {'status':'partial','version':'v1','progress':{'total':3,'completed':3},'results':[
+            {'appId':'1','name':'ready','status':'ready','snapshotVersion':'v1'},
+            {'appId':'2','name':'partial','status':'partial'}, {'appId':'3','name':'skipped','status':'skipped'}]}
+        with tempfile.TemporaryDirectory() as d, patch.object(service,'DATA',Path(d)), \
+             patch.object(service,'credentials',return_value={'aliyun':{'value':'cookie'}}), patch.object(service.threading,'Thread'):
+            service.write(Path(d)/'versions/v2/repositories.json',{'repos':[]})
+            job=worker.start_config_sync({'retryFailed':True})['job']
+            self.assertEqual(job['version'],'v2')
+            self.assertEqual([(r['appId'],r['snapshotVersion']) for r in job['results']],[('1','v1')])
+            self.assertEqual(job['scopeAppIds'],['1','2','3'])
+
+    def test_retry_interrupted_task_rejects_unknown_old_scope_after_snapshot_change(self):
+        import service
+        worker = service.Service.__new__(service.Service)
+        worker.lock = threading.RLock(); worker.catalog_store = object(); worker.config_single_job = {'status':'idle'}
+        worker.catalog_context = lambda: ('v2', b'{"apps":[]}')
+        worker.config_sync_job = {'status':'failed','version':'v1','progress':{'total':2,'completed':1},'results':[{'appId':'1','status':'ready'}]}
+        with tempfile.TemporaryDirectory() as d, patch.object(service,'DATA',Path(d)), patch.object(service,'credentials',return_value={'aliyun':{'value':'cookie'}}):
+            service.write(Path(d)/'versions/v2/repositories.json',{'repos':[]})
+            with self.assertRaisesRegex(ValueError,'未记录完整范围'): worker.start_config_sync({'retryFailed':True})
+
+    def test_full_sync_exclusion_skips_before_reading_repository(self):
+        class Store:
+            source_key='source'
+            def connection(self):
+                class Context:
+                    def __enter__(self): return None
+                    def __exit__(self, *args): pass
+                return Context()
+            def execute(self, conn, sql, params): return [{'native_key_json':'{"appId":"7"}'}]
+        results=[]
+        with tempfile.TemporaryDirectory() as d, patch.object(sync,'Codeup',side_effect=AssertionError('unexpected network')):
+            counts=sync.run(Path(d),Store(),'v1',[{'id':'7','name':'app','appType':'app'}],[],'cookie',lambda c,r:results.append(r),excluded_ids=['7'])
+        self.assertEqual(counts['skipped'],1)
+        self.assertEqual(results[0]['skipReason'],'USER_EXCLUDED')
 
 if __name__ == '__main__': unittest.main()

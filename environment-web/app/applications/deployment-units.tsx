@@ -80,11 +80,22 @@ export default function DeploymentUnits() {
   const [importing, setImporting] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [configIds, setConfigIds] = useState<Set<string>>(new Set());
+  const [configError, setConfigError] = useState('');
   const requestKey = JSON.stringify([search, page, includeHistory, category, business, refresh]);
   const categoryListKey = JSON.stringify([business, includeHistory]);
   const categories = categoryList.key === categoryListKey ? categoryList.values : [];
   const loading = completedRequest !== requestKey;
   const reload = () => { setExpanded(null); setRefresh((n) => n + 1); };
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch('/api/catalog/application-config', { cache: 'no-store', signal: controller.signal })
+      .then((response) => readJson<{ appIds: string[] }>(response)).then((body) => {
+        if (!controller.signal.aborted) { setConfigIds(new Set(body.appIds)); setConfigError(''); }
+      }).catch(() => { if (!controller.signal.aborted) { setConfigIds(new Set()); setConfigError('应用配置列表暂不可用，请刷新列表重试。'); } });
+    return () => controller.abort();
+  }, [refresh]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => { setSearch(query.trim()); setPage(1); }, 200);
@@ -144,6 +155,7 @@ export default function DeploymentUnits() {
     </div>
     <div className="list-notice catalog-notice"><span>应用数据来自 DevOps 快照；组件来自进程、配置核查及 DMS 登记。环境待识别不表示任何正式环境。</span></div>
     {error && !loading && <div className="catalog-message catalog-error" role="alert">{error}<Button variant="outline" size="sm" onClick={reload}>重试读取</Button></div>}
+    {configError && <div className="catalog-message catalog-error" role="alert">{configError}</div>}
     {result?.job.error && <div className="catalog-message catalog-error" role="alert">{result.job.error}</div>}
     {result?.source && !result.activeSnapshot.matchesCatalog && <output className="catalog-message">
       {historical ? '当前应用快照较旧或采集时间未知，部署目录保留可确定时间的较新观察及管理信息。' : '当前应用快照尚未完成目录更新，下面仍显示最近成功导入的数据。'}
@@ -157,12 +169,13 @@ export default function DeploymentUnits() {
       <output className="result-line">{loading ? '正在读取部署目录…' : `共 ${result?.pagination.total || 0} 个部署单元`}</output>
       <Table className="app-table catalog-table">
         <TableHeader><TableRow>
-          <TableHead>部署单元</TableHead><TableHead>来源应用 ID</TableHead><TableHead>单元类型</TableHead>
+          <TableHead>部署单元</TableHead><TableHead>应用配置</TableHead><TableHead>来源应用 ID</TableHead><TableHead>单元类型</TableHead>
           <TableHead>业务领域 / 系统</TableHead>{catalogEnvs.map((env) => <TableHead key={env}>{catalogLabels[env]}</TableHead>)}
         </TableRow></TableHeader>
         <TableBody>{!loading && result?.units.map((unit) => <Fragment key={unit.id}>
           <TableRow>
             <TableCell><strong>{unit.name}</strong><small className="catalog-code" title={unit.id}>{unit.code}</small>{unit.groupingState === 'PENDING' && <small className="catalog-warning">编组待确认</small>}</TableCell>
+            <TableCell>{unit.unitType === 'APPLICATION' && unit.appId && configIds.has(unit.appId) && <a className="catalog-config-button" href={`/applications/config/${encodeURIComponent(unit.appId)}`} target="_blank" rel="noopener noreferrer" aria-label={`查看 ${unit.name} 应用配置`}>应用配置 ↗</a>}</TableCell>
             <TableCell>{unit.appId ? <a className="catalog-app-link" href={`/applications?appId=${encodeURIComponent(unit.appId)}`}>{unit.appId}</a> : '无应用关联'}</TableCell>
             <TableCell>{unit.unitType === 'APPLICATION' ? '应用' : unit.unitType}<small>{unit.appType || '来源类型未提供'}</small></TableCell>
             <TableCell>{unit.domainName || '未分类'}<small>{unit.systemName || '未归属系统'}</small></TableCell>
@@ -177,12 +190,12 @@ export default function DeploymentUnits() {
               </TableCell>;
             })}
           </TableRow>
-          {catalogEnvs.filter((env) => !loading && expanded === `${unit.id}:${env}`).map((env) => <TableRow key={env} className="expanded-row"><TableCell colSpan={8}>
+          {catalogEnvs.filter((env) => !loading && expanded === `${unit.id}:${env}`).map((env) => <TableRow key={env} className="expanded-row"><TableCell colSpan={9}>
             <div id={`catalog-${unit.id}:${env}`} className="catalog-instance-heading">{unit.name} / {catalogLabels[env]}<small>未定位目标和冲突记录保留为待解析，不生成占位实例。</small></div>
             <InstanceDetails key={`${result.source?.snapshotSha256}:${includeHistory}`} unitId={unit.id} environment={env} snapshotHash={result.source?.snapshotSha256 || ''} includeHistory={includeHistory} onReload={reload} />
           </TableCell></TableRow>)}
         </Fragment>)}
-        {!loading && !result?.units.length && <TableRow><TableCell colSpan={8}><div className="empty-state"><Layers3 size={28} />
+        {!loading && !result?.units.length && <TableRow><TableCell colSpan={9}><div className="empty-state"><Layers3 size={28} />
           <h2>{result?.source ? '未找到匹配的部署单元' : '尚未建立部署目录'}</h2>
           <p>{result?.source ? '调整搜索或勾选历史单元后重试。' : '使用当前已有应用快照创建部署单元和环境实例，无需重新采集。'}</p>
         </div></TableCell></TableRow>}

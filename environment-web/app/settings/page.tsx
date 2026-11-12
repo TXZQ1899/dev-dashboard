@@ -2,6 +2,8 @@
 import { useEffect, useState } from 'react';
 import { Shell } from '@/app/page';
 import { CollectionProgress } from '@/components/collection-progress';
+import { ApplicationConfigLog } from '@/components/application-config-log';
+import { ApplicationConfigResults, type ConfigExclusion } from '@/components/application-config-results';
 import { AliyunTenantSettings, type AliyunTenant } from '@/components/aliyun-tenant-settings';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -62,7 +64,7 @@ type Job = {
 };
 type SourceState = { busy: boolean; retryable: boolean; reason?: string };
 type ConfigSyncJob = {
-  status: string; version?: string; startedAt?: string; finishedAt?: string; error?: string;
+  status: string; version?: string; startedAt?: string; finishedAt?: string; error?: string; logError?: string; mode?: string;
   current?: { appId: string; name: string; phase: string; completed: number; total: number } | null;
   progress?: { total: number; completed: number; ready: number; partial: number; failed: number; skipped: number };
   results?: { appId: string; name: string; status: string; error?: string; reason?: string; warnings?: string[] }[];
@@ -93,6 +95,9 @@ function date(value?: string) {
 export default function SettingsPage() {
   const [configJob, setConfigJob] = useState<ConfigSyncJob>({ status: 'idle' });
   const [configBusy, setConfigBusy] = useState(false);
+  const [configExclusions, setConfigExclusions] = useState<ConfigExclusion[] | null>(null);
+  const [exclusionBusy, setExclusionBusy] = useState(false);
+  const [exclusionError, setExclusionError] = useState('');
   const [state, setState] = useState<State | null>(null);
   const [cookies, setCookies] = useState({
     devops: '',
@@ -148,15 +153,38 @@ export default function SettingsPage() {
     const timer = setInterval(refreshConfig, 4000);
     return () => { stopped = true; clearInterval(timer); };
   }, []);
-  async function syncApplicationConfigs(resume = false) {
+  useEffect(() => {
+    let stopped = false;
+    async function load() {
+      try {
+        const response = await fetch('/api/settings/application-config-exclusions', { cache:'no-store' });
+        if (!response.ok) throw new Error('无法读取不用同步清单');
+        const data = await response.json() as { applications:ConfigExclusion[] };
+        if (!stopped) { setConfigExclusions(data.applications); setExclusionError(''); }
+      } catch (err) { if (!stopped) setExclusionError(err instanceof Error ? err.message : '无法读取不用同步清单'); }
+    }
+    void load();
+    return () => { stopped = true; };
+  }, []);
+  async function updateConfigExclusions(appIds: string[], excluded: boolean) {
+    setExclusionBusy(true); setExclusionError('');
+    try {
+      const response = await fetch('/api/settings/application-config-exclusions', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({appIds, excluded}) });
+      const data = await response.json() as { applications?:ConfigExclusion[]; error?:string };
+      if (!response.ok || !data.applications) throw new Error(data.error || '更新不用同步清单失败');
+      setConfigExclusions(data.applications);
+    } catch (err) { setExclusionError(err instanceof Error ? err.message : '更新不用同步清单失败'); }
+    finally { setExclusionBusy(false); }
+  }
+  async function syncApplicationConfigs(mode: 'all' | 'resume' | 'retry' = 'all') {
     setConfigBusy(true); setError(''); setMessage('');
     try {
       const response = await fetch('/api/settings/application-config-sync', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ resume }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ resume:mode === 'resume', retryFailed:mode === 'retry' }),
       });
       const data = await response.json() as { job?: ConfigSyncJob; error?: string };
       if (!response.ok || !data.job) throw new Error(data.error || '启动应用配置同步失败');
-      setConfigJob(data.job); setMessage(resume ? '已从中断处继续应用配置同步' : '应用配置同步任务已启动');
+      setConfigJob(data.job); setMessage(mode === 'resume' ? '已从中断处继续应用配置同步' : mode === 'retry' ? '已启动未完成应用重试' : '应用配置同步任务已启动');
     } catch (e) { setError(e instanceof Error ? e.message : '启动应用配置同步失败'); }
     finally { setConfigBusy(false); }
   }
@@ -259,6 +287,8 @@ export default function SettingsPage() {
   const retryableLabels = Object.entries(state?.sourceStates ?? {})
     .filter(([key, s]) => key !== 'local_gitlab' && s.retryable)
     .map(([key]) => sourceLabel[key] ?? key);
+  const excludedConfigIds = new Set(configExclusions?.map((item) => item.appId) || []);
+  const hasConfigRetry = !!configJob.progress && (configJob.progress.completed < configJob.progress.total || !!configJob.results?.some((item) => item.status !== 'ready' && !excludedConfigIds.has(item.appId)));
   return (
     <Shell active="settings">
       <main className="settings-page">
@@ -504,7 +534,10 @@ export default function SettingsPage() {
               <Button disabled={configBusy || ['queued', 'running'].includes(configJob.status)} onClick={() => void syncApplicationConfigs()}>
                 {['queued', 'running'].includes(configJob.status) ? '同步中…' : '一键同步所有应用配置'}
               </Button>
-              {configJob.status === 'failed' && <Button disabled={configBusy} onClick={() => void syncApplicationConfigs(true)}>
+              <Button disabled={configBusy || ['idle','queued','running'].includes(configJob.status) || !hasConfigRetry} onClick={() => void syncApplicationConfigs('retry')}>
+                一键同步失败
+              </Button>
+              {configJob.status === 'failed' && <Button disabled={configBusy} onClick={() => void syncApplicationConfigs('resume')}>
                 从中断处继续
               </Button>}
               {configJob.progress && <p>已处理 {configJob.progress.completed} / {configJob.progress.total}；完成 {configJob.progress.ready}，部分完成 {configJob.progress.partial}，失败 {configJob.progress.failed}，跳过 {configJob.progress.skipped}</p>}
@@ -513,19 +546,13 @@ export default function SettingsPage() {
                 {configJob.current.total > 0 ? ` ${configJob.current.completed} / ${configJob.current.total}` : configJob.current.phase === '下载 Nacos 配置' ? `（已尝试 ${configJob.current.completed} 项）` : ''}
               </p>}
               {configJob.error && <p>{configJob.error}</p>}
+              {configJob.logError && <p role="alert">{configJob.logError}</p>}
+              {exclusionError && <p role="alert">{exclusionError}</p>}
               {configJob.version && <small>应用快照：{configJob.version} · 开始时间：{date(configJob.startedAt)} · 状态：{configJob.status}</small>}
-              {!!configJob.results?.some(r => r.status === 'partial' || r.status === 'failed') && <details>
-                <summary>查看未完成或需核查的应用</summary>
-                <ul>{configJob.results.filter(r => r.status === 'partial' || r.status === 'failed').map(r => <li key={r.appId}>
-                  {r.name || r.appId}（{r.appId}）：{r.error || r.warnings?.join('；') || r.status}
-                </li>)}</ul>
-              </details>}
-              {!!configJob.results?.some(r => r.status === 'skipped') && <details>
-                <summary>查看跳过的应用</summary>
-                <ul>{configJob.results.filter(r => r.status === 'skipped').map(r => <li key={r.appId}>
-                  {r.name || r.appId}（{r.appId}）：{r.reason || '已跳过'}
-                </li>)}</ul>
-              </details>}
+              {configJob.mode === 'retry' && <p className="settings-hint">重试应用使用本次快照；保留的已完成结果沿用各自原快照。</p>}
+              <ApplicationConfigLog />
+              <ApplicationConfigResults results={configJob.results || []} exclusions={configExclusions} busy={exclusionBusy} onUpdate={(ids, excluded) => void updateConfigExclusions(ids, excluded)} />
+              <p className="settings-hint">一键同步失败会重试部分完成、失败、跳过及未处理的应用，保留已完成结果；标记为不用同步的应用不再重试。标记变更从下一次批量任务起生效。</p>
               <p className="settings-hint">读取 master 分支；无法唯一匹配模块、无法访问仓库或无法解析 Nacos 时保留原因。配置原文可能包含敏感信息。</p>
             </section>
             <section className="panel settings-panel" id="topology-settings">

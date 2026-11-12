@@ -28,3 +28,7 @@
 .catalog-tabs button.active { color: #315d43; border-bottom-color: #397458; font-weight: 650; }
 .catalog-tabs button:focus-visible { outline: 2px solid #397458; outline-offset: -2px; }
 .catalog-summary small { flex-basis: 100%; color: #889a8d; }
+
+.catalog-config-button { display: inline-block; padding: 5px 9px; border: 1px solid #cbdad0; border-radius: 6px; color: #246747; font-size: 12px; white-space: nowrap; text-decoration: none; }
+.catalog-config-button:hover { background: #edf6f0; }
+.catalog-config-button:focus-visible { outline: 2px solid #246747; outline-offset: 2px; }

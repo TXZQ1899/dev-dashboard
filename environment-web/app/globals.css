@@ -1976,3 +1976,7 @@ h2 {
 .settings-tenant-card button { justify-self: start; }
 .settings-tenant-editor { margin-top: 16px; max-width: 720px; }
 .settings-tenant-editor label { display: grid; gap: 6px; }
+.config-exclusion-action { margin-left: 8px; padding: 3px 8px; border: 1px solid #cbdad0; border-radius: 5px; color: #246747; background: #fff; font-size: 12px; cursor: pointer; }
+.config-exclusion-action:hover { background: #edf6f0; }
+.config-exclusion-action:disabled { opacity: .5; cursor: not-allowed; }
+.config-exclusion-action:focus-visible { outline: 2px solid #246747; outline-offset: 2px; }

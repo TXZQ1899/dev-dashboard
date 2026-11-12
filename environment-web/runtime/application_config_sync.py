@@ -15,12 +15,31 @@ from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
 from application_config import nacos
+from application_config_mapper import mapper_path, mapper_content, mapper_directory
 from deployment_catalog import decode
 
 LIMIT = 2 * 1024 * 1024
 GROUPS = ('dev', 'test', 'uat', 'prod', 'other')
 MAVEN_TYPES = {'app', 'war', 'war8', 'jar', 'springboot'}
 EXT = re.compile(r'\.(?:properties|ya?ml|xml|conf|ini|json|toml)$', re.I)
+SKIP_RESOURCE_DIRECTORIES = frozenset(('static', 'template', 'templates'))
+
+
+def skip_resource_directory(path):
+    return any(part.lower() in SKIP_RESOURCE_DIRECTORIES for part in PurePosixPath(path).parts)
+
+
+def log_error_kind(exc):
+    """Use fixed labels only; exception text may contain sensitive data."""
+    message = str(exc)
+    match = re.fullmatch(r'Codeup HTTP (\d{3})', message)
+    if match: return 'Codeup HTTP ' + match[1]
+    match = re.fullmatch(r'Nacos 配置读取失败（HTTP (\d{3})）', message)
+    if match: return 'Nacos HTTP ' + match[1]
+    if message == 'Codeup 连接失败或超时': return 'Codeup 连接失败或超时'
+    if message == 'Codeup 文件树响应无效': return 'Codeup 文件树响应无效'
+    if isinstance(exc, CodeupAuthenticationError): return 'Codeup 登录失效'
+    return '请求失败'
 
 
 class RepositoryCache:
@@ -147,15 +166,32 @@ class Codeup:
 
     def raw(self, path):
         path = safe_relative(path)
-        return self.get(self.url+'/raw/master/'+quote(path, safe='/'), cacheable=PurePosixPath(path).name == 'pom.xml')
+        trace = getattr(self, 'trace', lambda *args, **kwargs: None)
+        trace('file_start', path=path)
+        started = time.monotonic()
+        try:
+            data = self.get(self.url+'/raw/master/'+quote(path, safe='/'), cacheable=PurePosixPath(path).name == 'pom.xml')
+        except Exception as exc:
+            trace('file_error', path=path, errorKind=log_error_kind(exc), elapsedMs=int((time.monotonic()-started)*1000))
+            raise
+        trace('file_done', path=path, elapsedMs=int((time.monotonic()-started)*1000))
+        return data
 
     def tree(self, path):
         rows, seen = [], set()
         for page in range(1, 51):
             url = 'https://codeup.aliyun.com/api/v4/projects/'+self.id+'/repository/tree?'+urlencode({'ref':'master','path':path,'per_page':100,'page':page})
-            try: batch = json.loads(self.get(url, cacheable=True))
-            except (json.JSONDecodeError, UnicodeDecodeError): raise ValueError('Codeup 文件树响应无效') from None
-            if not isinstance(batch, list): raise ValueError('Codeup 文件树响应无效')
+            trace = getattr(self, 'trace', lambda *args, **kwargs: None)
+            trace('tree_start', path=path or '.', page=page)
+            started = time.monotonic()
+            try:
+                try: batch = json.loads(self.get(url, cacheable=True))
+                except (json.JSONDecodeError, UnicodeDecodeError): raise ValueError('Codeup 文件树响应无效') from None
+                if not isinstance(batch, list): raise ValueError('Codeup 文件树响应无效')
+            except Exception as exc:
+                trace('tree_error', path=path or '.', page=page, errorKind=log_error_kind(exc), elapsedMs=int((time.monotonic()-started)*1000))
+                raise
+            trace('tree_done', path=path or '.', page=page, count=len(batch), elapsedMs=int((time.monotonic()-started)*1000))
             if (page > 1 and batch and all(isinstance(row, dict) and row.get('type') in ('tree', 'blob') for row in batch)
                     and len(batch) == len(seen) and {row.get('path') for row in batch} == seen):
                 self.warnings.append('Codeup 目录分页返回重复结果，已保留已读文件；列表完整性未确认：'+path)
@@ -171,6 +207,8 @@ class Codeup:
 
 def maven_modules(client, app_name):
     pending, visited, matches = ['pom.xml'], set(), []
+    directory_matches = []
+    directory_name = re.sub(r'(?:（废弃）|\(废弃\)|-废弃)$', '', app_name)
     root_fallback = False
     while pending:
         path = pending.pop()
@@ -229,12 +267,18 @@ def maven_modules(client, app_name):
                      else 'explicit finalName matches application + -exec')
             matches.append((str(PurePosixPath(path).parent), packaging,
                             basis))
+        module_dir = PurePosixPath(path).parent
+        if directory_name and module_dir.name == directory_name:
+            packaging = next((x.text.strip() for x in direct(root,'packaging') if x.text), 'jar')
+            basis = 'module directory matches application name'
+            if directory_name != app_name: basis += ' after removing deprecated suffix'
+            directory_matches.append((str(module_dir), packaging, basis))
         for modules in direct(root,'modules'):
             for module in direct(modules,'module'):
                 if module.text:
                     value = safe_relative(module.text.strip())
                     pending.append(safe_relative(str(PurePosixPath(path).parent / value / 'pom.xml').removeprefix('./')))
-    return matches
+    return matches if matches else directory_matches
 
 
 def group_for(path):
@@ -419,6 +463,7 @@ def shared_dataids(fields, profile):
 def sync_one(app, repo, cookie, output, progress=lambda *args: None, cache=None):
     progress('匹配 Maven 模块', 0, 0)
     client = Codeup(repo, cookie, cache=cache) if cache is not None else Codeup(repo, cookie)
+    client.trace = getattr(progress, 'trace', lambda *args, **kwargs: None)
     result = {'appId':str(app['id']), 'name':app['name'], 'branch':'master', 'status':'partial', 'files':[], 'warnings':[], 'notes':[], 'missingCandidates':[]}
     matches = maven_modules(client, app['name'])
     deployable = [m for m in matches if m[1] in ('war', 'jar')]
@@ -426,12 +471,18 @@ def sync_one(app, repo, cookie, output, progress=lambda *args: None, cache=None)
     if len(matches) > 1 and app.get('appType') in ('war','war8'):
         war = [m for m in matches if m[1] == 'war']
         if len(war) == 1: matches = war
-    if len(matches) != 1: raise ValueError('finalName 匹配模块数量为 '+str(len(matches))+'，无法唯一定位')
+    if len(matches) != 1:
+        method = '模块目录名' if matches and matches[0][2].startswith('module directory') else 'finalName 或模块目录名'
+        raise ValueError(method+' 匹配模块数量为 '+str(len(matches))+'，无法唯一定位')
     module, packaging, match_basis = matches[0]
     if packaging not in ('war', 'jar'): raise ValueError('匹配模块的 Maven packaging 不是 WAR/JAR：'+packaging)
     result['module'], result['packaging'], result['moduleMatchBasis'] = module, packaging, match_basis
     found = {}
     for resources, includes, excludes, filtering in resource_rules(client, module):
+        relative_root = str(PurePosixPath(resources).relative_to(module))
+        if mapper_directory(relative_root) or skip_resource_directory(relative_root):
+            client.trace('mapper_skip' if mapper_directory(relative_root) else 'resource_skip', path=resources)
+            continue
         progress('发现资源文件', 0, 0)
         if filtering:
             result['notes'].append('Maven 资源目录 '+resources+' 声明了 filtering；已保存仓库原文，未执行构建时变量替换')
@@ -439,10 +490,14 @@ def sync_one(app, repo, cookie, output, progress=lambda *args: None, cache=None)
         while queue:
             path = queue.pop()
             for row in client.tree(path):
-                if row['type'] == 'tree': queue.append(row['path'])
+                if row['type'] == 'tree':
+                    relative_dir = str(PurePosixPath(row['path']).relative_to(resources))
+                    if mapper_directory(relative_dir): client.trace('mapper_skip', path=row['path'])
+                    elif skip_resource_directory(relative_dir): client.trace('resource_skip', path=row['path'])
+                    else: queue.append(row['path'])
                 elif EXT.search(row['path']):
                     rel = str(PurePosixPath(row['path']).relative_to(resources))
-                    if any(ant_match(rel, pat) for pat in includes) and not any(ant_match(rel, pat) for pat in excludes):
+                    if not mapper_path(rel) and not skip_resource_directory(str(PurePosixPath(rel).parent)) and any(ant_match(rel, pat) for pat in includes) and not any(ant_match(rel, pat) for pat in excludes):
                         found.setdefault(row['path'], rel)
             if len(queue) + len(found) > 1000: raise ValueError('资源文件超过上限')
     result['warnings'].extend(getattr(client, 'warnings', []))
@@ -453,6 +508,8 @@ def sync_one(app, repo, cookie, output, progress=lambda *args: None, cache=None)
         saved = False
         try:
             data = client.raw(path)
+            if path.lower().endswith('.xml') and mapper_content(data):
+                continue
             dest = group_for(rel)+'/resources/'+rel
             put(output, dest, data)
             saved = True
@@ -518,10 +575,13 @@ def sync_one(app, repo, cookie, output, progress=lambda *args: None, cache=None)
                     continue
                 seen.add(identity)
                 if len(seen) > 100: result['warnings'].append('Nacos 候选超过上限'); break
+                started = time.monotonic()
                 try:
                     progress('下载 Nacos 配置', len(seen)-1, 0)
+                    client.trace('nacos_start')
                     config = nacos.resolve_group(config) if not config['group'] else config
                     data = nacos.fetch(config)
+                    client.trace('nacos_done', elapsedMs=int((time.monotonic()-started)*1000))
                     group = profile if profile in GROUPS[:4] else 'other'
                     key = hashlib.sha256('\0'.join(config[k] for k in ('address','namespace','group','dataId')).encode()).hexdigest()[:16]
                     basename = re.sub(r'[^\w.\-]', '_', config['dataId'])[:120] or 'config'
@@ -531,6 +591,7 @@ def sync_one(app, repo, cookie, output, progress=lambda *args: None, cache=None)
                     downloaded.add(identity)
                     profile_ok += 1
                 except (ValueError, OSError) as e:
+                    client.trace('nacos_error', errorKind=log_error_kind(e), elapsedMs=int((time.monotonic()-started)*1000))
                     if inferred and str(e) == 'Nacos 配置读取失败（HTTP 404）':
                         generated_missing += 1
                         result['missingCandidates'].append({'declaration':path,'profile':profile,'dataId':config['dataId'],'reason':'HTTP 404'})
@@ -543,9 +604,17 @@ def sync_one(app, repo, cookie, output, progress=lambda *args: None, cache=None)
     return result
 
 
-def run(data, store, version, apps, repos, cookie, update, activity=lambda *args: None, previous_results=None):
+def run(data, store, version, apps, repos, cookie, update, activity=lambda *args: None, previous_results=None, app_ids=None, scope_ids=None, excluded_ids=None):
     base = data/'application-config'; base.mkdir(mode=0o700, parents=True, exist_ok=True)
-    ids = catalog_app_ids(store)
+    catalog_ids = set(catalog_app_ids(store))
+    ids = sorted(catalog_ids, key=lambda x: int(x) if x.isdigit() else -1)
+    if scope_ids is not None:
+        if not isinstance(scope_ids, list) or any(not isinstance(x, str) or not re.fullmatch(r'\d+', x) for x in scope_ids) or len(set(scope_ids)) != len(scope_ids):
+            raise ValueError('重试范围无效')
+        ids = scope_ids
+    if app_ids is not None:
+        if len(app_ids) != 1 or app_ids[0] not in ids: raise ValueError('应用不在当前部署目录中')
+        ids = list(app_ids)
     by_id = {str(a.get('id')):a for a in apps}
     by_url = {}
     for repo in repos:
@@ -554,6 +623,7 @@ def run(data, store, version, apps, repos, cookie, update, activity=lambda *args
     counts = {'total':len(ids),'completed':0,'ready':0,'partial':0,'failed':0,'skipped':0}
     cache = RepositoryCache()
     previous_results = previous_results or []
+    excluded = set(excluded_ids or [])
     completed_ids = set()
     for previous in previous_results:
         app_id, status = previous.get('appId'), previous.get('status')
@@ -568,8 +638,20 @@ def run(data, store, version, apps, repos, cookie, update, activity=lambda *args
         def progress(phase, completed=0, total=0):
             activity({'appId':app_id, 'name':app.get('name','') if app else '',
                       'phase':phase, 'completed':completed, 'total':total})
+        def trace(event, **details):
+            callback = getattr(activity, 'trace', None)
+            if callback: callback(event, appId=app_id, name=app.get('name','') if app else '', **details)
+        progress.trace = trace
         progress('准备应用')
         try:
+            if app_id in excluded:
+                counts['skipped'] += 1
+                result = {'appId':app_id, 'name':app.get('name','') if app else '', 'status':'skipped',
+                          'reason':'用户标记为不用同步', 'skipReason':'USER_EXCLUDED', 'snapshotVersion':version}
+                counts['completed'] += 1
+                update(dict(counts), result)
+                continue
+            if app_id not in catalog_ids: raise ValueError('应用不在当前部署目录中，无法同步')
             if not app: raise ValueError('当前快照中没有此应用')
             if not app.get('appType'): raise ValueError('应用类型未知，无法判断是否应跳过')
             if app.get('appType', '').lower() not in MAVEN_TYPES:
