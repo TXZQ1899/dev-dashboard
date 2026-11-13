@@ -21,8 +21,9 @@ function render(assets,options={}) {
  // 之后是 ServerDetails：routeQuery, webappQuery, routeIndex, files, filesBusy, filesError；最后是密码弹窗的 password 输入。
  const state=[options.login||'can_login',options.query||'',options.duration||'all',options.env||'all',options.owner||'all',options.page||1,options.size||25,options.sort||{field:'ip',dir:'asc'},options.expanded||{},options.selected||'',options.procSort||{},options.procQuery||{},options.inspect||{},options.pwTarget||null,options.pwBusy||false,options.pwError||'',options.commandDialog||null,now,
   options.routeQuery||'',options.webappQuery||'',typeof options.routeIndex==='number'?options.routeIndex:-1,options.files||null,false,'',''];
- const ui=evaluate('components/server-inspections.tsx',id=>{
+ const requireModule=id=>{
   if(id==='react')return {...React,useEffect:(fn,deps)=>{if(options.runRequestEffect&&deps?.[0]===options.processRequest)fn();},useMemo:f=>f(),useState:initial=>{const i=index++;return [i<state.length?state[i]:typeof initial==='function'?initial():initial,value=>options.changes?.push([i,value])];}};
+  if(id==='@/components/use-server-inspect')return evaluate('components/use-server-inspect.tsx',requireModule);
   if(id==='react/jsx-runtime')return require(id);
   if(id==='@/lib/jumpserver')return {jumpserver:{assets,collectedAt:'2026-09-17T12:00:00Z'},jumpserverLoginUrl:id=>'http://jump/luna/?login_to='+id};
   if(id==='@/lib/server-processes')return options.processAssetCounts ? {...lib,processRows:(rows,...args)=>{options.processAssetCounts.push(rows.length);return lib.processRows(rows,...args);}} : lib;
@@ -46,7 +47,8 @@ function render(assets,options={}) {
   if(id==='@/components/ip-meta-cell')return {IpMetaCell:(props)=>React.createElement('span',{className:'ip-meta-cell-stub'},'IPMETA ',React.createElement('code',null,props.ip),' ',React.createElement('small',null,props.hostName||props.ip),React.createElement('span',{className:'ip-meta-chips'},props.leadingChip,React.createElement('span',null,'环境标签'),React.createElement('span',null,'机房标签')))};
   if(id==='lucide-react')return {Download:()=>null,ChevronRight:props=>React.createElement('svg',props),X:props=>React.createElement('svg',props)};
   throw new Error(id);
- });
+ };
+ const ui=evaluate('components/server-inspections.tsx',requireModule);
  return renderToStaticMarkup(React.createElement(ui.ServerInspections,{processRequest:options.processRequest}));
 }
 const process={pid:2,ppid:1,user:'app',name:'java',kind:'Java',elapsedSeconds:365*86400,startedAt:'2025-09-17T12:00:00Z',command:'java -jar /srv/app-api.jar --port=8080'};

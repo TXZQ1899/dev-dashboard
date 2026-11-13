@@ -1,4 +1,5 @@
 'use client';
+import { useServerInspect } from '@/components/use-server-inspect';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronRight, Download, X } from 'lucide-react';
 import { jumpserver, jumpserverLoginUrl } from '@/lib/jumpserver';
@@ -97,24 +98,6 @@ function NginxConfigs({asset, inspection, files, busy, error, load}: {asset: Ass
     {!!inspection.configurationCount && !files && <button className="border rounded p-2" disabled={busy} onClick={load}>{busy?'读取中…':'查看原始配置文件'}</button>}
     {error&&<p role="alert">{error}</p>}
     {files?.map((file,i)=><details className="border rounded p-3" key={i}><summary className="cursor-pointer">{file.path} · {file.bytes} 字节 · {file.instance}</summary><button className="border rounded p-2 my-2" onClick={()=>downloadConfigFile(asset,file)}>下载原始文件</button><pre className="overflow-auto max-h-96 bg-muted rounded p-3 text-xs whitespace-pre">{file.content}</pre></details>)}
-  </div>;
-}
-// 提权失败服务器的单独采集弹窗：可填写新的 root 密码（更新密码映射表中这一台服务器的记录）后采集，
-// 或不更新密码、按原有流程直接采集（不提权，仅当前账号可见进程）。
-function RootPasswordDialog({asset, busy, error, onConfirm, onDirect, onClose}: {asset: Asset; busy: boolean; error: string; onConfirm: (password: string)=>void; onDirect: ()=>void; onClose: ()=>void}) {
-  const [password,setPassword]=useState('');
-  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-labelledby="root-password-dialog-title">
-    <div className="w-full max-w-md space-y-4 rounded-lg border bg-background p-6 shadow-lg">
-      <h3 id="root-password-dialog-title" className="font-semibold">{asset.ip} · {asset.hostname}</h3>
-      <p className="text-sm text-muted-foreground">该服务器提权失败（sudo 与 root 密码均验证错误），进程采集不完整。可填写新的 root 密码，确认后更新密码映射表中这台服务器的记录并重新采集；也可以不更新密码，按原有流程直接采集（不提权，仅采集当前账号可见进程）。</p>
-      <Input type="password" aria-label="新的 root 密码" placeholder="新的 root 密码" value={password} onChange={e=>setPassword(e.target.value)}/>
-      {error&&<p role="alert" className="text-sm text-red-700">{error}</p>}
-      <div className="flex flex-wrap justify-end gap-2">
-        <button className="border rounded p-2 text-sm" disabled={busy} onClick={onClose}>取消</button>
-        <button className="border rounded p-2 text-sm" disabled={busy} onClick={onDirect}>直接采集</button>
-        <button className="rounded bg-foreground p-2 text-sm font-medium text-background disabled:opacity-40" disabled={busy||!password.trim()} onClick={()=>onConfirm(password)}>确认并采集</button>
-      </div>
-    </div>
   </div>;
 }
 // 复制到剪贴板：优先 Clipboard API，不可用时回退到临时 textarea。
@@ -277,12 +260,7 @@ export function ServerInspections({processRequest}: {processRequest?: {ip: strin
   const [procSort,setProcSort]=useState<Record<string,{field:'cpu'|'mem';dir:'asc'|'desc'}>>({});
   // 展开详情框内的进程搜索：按 asset.id 隔离，匹配 PID / 进程名 / 监听端口 / 详细命令。
   const [procQuery,setProcQuery]=useState<Record<string,string>>({});
-  // 摘要行单机采集按钮状态（按 asset.id 隔离）。
-  const [inspect,setInspect]=useState<Record<string,{busy:boolean;message:string;error:string}>>({});
-  // 提权失败弹窗：目标资产、提交忙态与错误消息。
-  const [pwTarget,setPwTarget]=useState<Asset|null>(null);
-  const [pwBusy,setPwBusy]=useState(false);
-  const [pwError,setPwError]=useState('');
+  const {inspect,requestInspect,dialog: inspectDialog}=useServerInspect();
   // 长命令弹窗的当前命令；null 表示关闭。
   const [commandDialog,setCommandDialog]=useState<string|null>(null);
   // Stable SSR/hydration; after mount advance to the browser clock once a minute.
@@ -347,27 +325,6 @@ export function ServerInspections({processRequest}: {processRequest?: {ip: strin
   function setAssetView(id: string,type: ProcessType,viewPage: number) {setExpanded(prev=>({...prev,[id]:{type,page:viewPage}}));}
   // 更新某台服务器详情的进程搜索词，并把分页回到第 1 页（保留当前类别）。
   function setProcSearch(id: string,value: string) {setProcQuery(prev=>({...prev,[id]:value}));setAssetView(id,expanded[id]?.type||'全部进程',1);}
-  // 单独采集入口：提权失败的服务器先弹出 root 密码填写框，其余走原有流程。
-  function requestInspect(asset: Asset) {
-    if (asset.inspection?.sudoStatus==='password_error') {setPwError('');setPwTarget(asset);return;}
-    startInspect(asset);
-  }
-  // rootPassword 存在时，后端先更新密码映射表中这台服务器的记录再开始采集；否则按原有流程采集。
-  async function startInspect(asset: Asset, rootPassword?: string) {
-    setPwBusy(true);setPwError('');
-    setInspect(prev=>({...prev,[asset.id]:{busy:true,message:'',error:''}}));
-    try {
-      const response=await fetch('/api/settings/jumpserver-inspect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(rootPassword===undefined?{asset:asset.id}:{asset:asset.id,rootPassword})});
-      const result=await response.json() as {error?:string};
-      if(!response.ok)throw new Error(result.error||'操作失败');
-      setInspect(prev=>({...prev,[asset.id]:{busy:false,message:rootPassword===undefined?'采集任务已启动，完成后刷新页面查看最新结果':'已更新这台服务器的 root 密码，采集任务已启动，完成后刷新页面查看最新结果',error:''}}));
-      setPwTarget(null);
-    } catch(e) {
-      const message=e instanceof Error?e.message:'操作失败';
-      setInspect(prev=>({...prev,[asset.id]:{busy:false,message:'',error:message}}));
-      if(rootPassword===undefined) setPwTarget(null); else setPwError(message);
-    } finally {setPwBusy(false);}
-  }
   const tabClass=(active: boolean)=>`rounded-md px-4 py-2 text-sm border ${active?'bg-foreground text-background font-medium':'bg-background hover:bg-muted'}`;
   // 单条进程行（IP 详情框内复用原进程表的列，去掉 IP 列）。
   function processDetailRow(r: ProcessRow) {
@@ -508,14 +465,14 @@ export function ServerInspections({processRequest}: {processRequest?: {ip: strin
             <Download size={16}/>导出 CSV（{serverRows.length} 台）
           </Button>
         </div>
-        <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr>{['IP','主机名','登录状态','原因','检查时间','账号尝试'].map(h=><th className="p-3" key={h}>{h}</th>)}</tr></thead><tbody>{serverPage.rows.map(a=><tr className="border-t align-top" key={a.id}><td className="p-3"><code>{a.ip}</code></td><td className="p-3">{a.hostname}</td><td className="p-3">{login==='unchecked'?'未检查':'不可登录'}</td><td className="p-3">{a.inspection?.reason||'当前版本未采集'}</td><td className="p-3 whitespace-nowrap">{a.inspection?date(a.inspection.checkedAt):'—'}</td><td className="p-3">{a.inspection?.attempts?.map(t=>`${t.account}：${t.reason}`).join('；')||'—'}</td></tr>)}</tbody></table>{!serverPage.total&&<p className="py-8 text-center">没有符合条件的服务器。</p>}</div>
+        <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr>{['IP','主机名','登录状态','原因','检查时间','账号尝试'].map(h=><th className="p-3" key={h}>{h}</th>)}</tr></thead><tbody>{serverPage.rows.map(a=><tr className="border-t align-top" key={a.id}><td className="p-3"><code>{a.ip}</code>{login==='cannot_login'&&<> <button type="button" className="text-primary underline text-xs ml-1 disabled:opacity-40" disabled={inspect[a.id]?.busy} onClick={()=>requestInspect(a)} aria-label={`重试采集 ${a.ip}`}>{inspect[a.id]?.busy?'采集中…':'重试'}</button>{inspect[a.id]?.message&&<output className="block text-xs text-green-700">{inspect[a.id].message}</output>}{inspect[a.id]?.error&&<p role="alert" className="text-xs text-red-700">{inspect[a.id].error}</p>}</>}</td><td className="p-3">{a.hostname}</td><td className="p-3">{login==='unchecked'?'未检查':'不可登录'}</td><td className="p-3">{a.inspection?.reason||'当前版本未采集'}</td><td className="p-3 whitespace-nowrap">{a.inspection?date(a.inspection.checkedAt):'—'}</td><td className="p-3">{a.inspection?.attempts?.map(t=>`${t.account}：${t.reason}`).join('；')||'—'}</td></tr>)}</tbody></table>{!serverPage.total&&<p className="py-8 text-center">没有符合条件的服务器。</p>}</div>
       </div>}
       <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
         <label>每页 <select aria-label="每页台数" className="border rounded p-2" value={size} onChange={e=>{setSize(Number(e.target.value));setPage(1);}}>{[25,50,100].map(n=><option key={n} value={n}>{n}</option>)}</select> 台 · 共 {current.total} 台</label>
         <div className="flex items-center gap-3"><button className="border rounded px-3 py-2 disabled:opacity-40" disabled={current.page===1} onClick={()=>setPage(current.page-1)}>上一页</button><span aria-live="polite">第 {current.page} / {current.pages} 页</span><button className="border rounded px-3 py-2 disabled:opacity-40" disabled={current.page===current.pages} onClick={()=>setPage(current.page+1)}>下一页</button></div>
       </div>
       {login==='can_login'&&selectedAsset?.inspection&&<div id="selected-server-details" className="space-y-3 scroll-mt-6"><button className="text-sm underline" onClick={()=>setSelected('')}>收起服务器详情</button><ServerDetails key={selectedAsset.id} asset={selectedAsset} inspectState={inspect[selectedAsset.id]} onInspect={requestInspect}/></div>}
-      {pwTarget&&<RootPasswordDialog asset={pwTarget} busy={pwBusy} error={pwError} onConfirm={password=>startInspect(pwTarget,password)} onDirect={()=>startInspect(pwTarget)} onClose={()=>setPwTarget(null)}/>}
+      {inspectDialog}
       {commandDialog!==null&&<CommandDialog command={commandDialog} onClose={()=>setCommandDialog(null)}/>}
       {!assets.some(a=>a.inspection)&&<p>当前历史版本没有服务器采集结果，请在设置中同步 JumpServer。</p>}
     </div>
