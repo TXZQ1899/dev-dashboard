@@ -1,10 +1,12 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Shell } from '@/app/page';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { AlertTriangle, Network, Route, Search } from 'lucide-react';
 import { formatBeijingTime } from '@/lib/datetime';
+import { loadNginxArchive } from '@/lib/nginx-config-cache';
+import { findUpstreamDefinitions, type UpstreamDefinition } from '@/lib/nginx-upstream-config';
 
 type Kind = 'domain' | 'application' | 'host';
 type Mode = 'chain' | 'paths' | 'request' | 'nginx';
@@ -162,6 +164,42 @@ type RequestNode = NodeRef & {
   identity?: Record<string, unknown>;
   attributes?: Record<string, unknown>;
 };
+function nginxRouteFiles(node: RequestNode): string[] {
+  const files = node.attributes?.files;
+  if (Array.isArray(files) && files.length) return files.filter((file): file is string => typeof file === 'string' && !!file.trim());
+  const file = node.attributes?.file;
+  return typeof file === 'string' && file.trim() ? [file] : [];
+}
+function NginxRouteFiles({ node }: { node: RequestNode }) {
+  const files = nginxRouteFiles(node);
+  return <span> · 配置文件：{files.length ? files.map((file, i) => <span key={file}>{i > 0 ? '、' : ''}<code>{file}</code></span>) : '未记录'}</span>;
+}
+function NginxUpstreamConfig({ route, upstream }: { route: RequestNode | undefined; upstream: RequestNode }) {
+  const [state, setState] = useState<{ definitions: UpstreamDefinition[]; message: string }>({ definitions: [], message: '正在读取配置归档' });
+  const version = typeof route?.attributes?.configurationVersion === 'string' ? route.attributes.configurationVersion : '';
+  const asset = typeof route?.identity?.assetId === 'string' ? route.identity.assetId : '';
+  const instance = typeof route?.attributes?.instance === 'string' ? route.attributes.instance : '';
+  const name = typeof upstream.identity?.name === 'string' ? upstream.identity.name : '';
+  useEffect(() => {
+    let cancelled = false;
+    if (!version || !asset || !instance || !name) {
+      setState({ definitions: [], message: '缺少配置版本或实例信息，无法定位 upstream 定义' });
+    } else {
+      setState({ definitions: [], message: '正在读取配置归档' });
+      loadNginxArchive(version, asset).then(archive => {
+        if (cancelled) return;
+        const definitions = findUpstreamDefinitions(archive.files ?? [], instance, name);
+        setState({ definitions, message: definitions.length ? '' : '归档中未找到 upstream 定义（可能是直接代理目标）' });
+      }).catch(() => { if (!cancelled) setState({ definitions: [], message: '配置归档读取失败' }); });
+    }
+    return () => { cancelled = true; };
+  }, [version, asset, instance, name]);
+  return <div className="mt-1">{state.message || state.definitions.map((definition, i) => <div key={`${definition.path}-${i}`}>
+    归档中的候选配置文件：<code>{definition.path}</code>
+    <pre className="whitespace-pre-wrap break-all rounded bg-muted p-2 mt-1">{definition.content}</pre>
+    <span className="text-muted-foreground">配置归档去除了注释；include 未展开，磁盘配置不一定已重新加载。</span>
+  </div>)}</div>;
+}
 type RequestPath = {
   steps: RequestStep[];
   nodes: RequestNode[];
@@ -753,12 +791,13 @@ function RequestView({ request, topology }: { request: RequestPayload['result'];
   const nginxRouteSteps = nginxSteps.filter(s => s.rule.startsWith('nginx:route'));
   const nginxUpstreamStep = nginxSteps.find(s => s.rule === 'nginx:upstream');
   const nginxBackendStep = nginxSteps.find(s => s.rule === 'nginx:backend' || s.rule === 'nginx:backend-derived');
+  const kongStep = steps.find(s => s.resolver === 'KongResolver' && s.rule === 'kong:targets');
   const deploySteps = steps.filter(s => s.resolver === 'DeploymentResolver');
   const repoStep = steps.find(s => s.resolver === 'RepositoryResolver');
 
   // Key warnings (primary path only, skip noise + already-shown)
   const skipPatterns = ['evidence truncated', 'Step evidence truncated', 'No rule on listener', 'falling back to the default', 'No nginx route on host', 'falling back to port-agnostic', 'equally match host', 'Resolver(s)'];
-  const keyWarnings = (primary?.warnings ?? []).filter((w, i, arr) => arr.indexOf(w) === i && !skipPatterns.some(p => w.includes(p)));
+  const keyWarnings = [...(primary?.warnings ?? []), ...request.warnings.filter(w => w.includes('Kong'))].filter((w, i, arr) => arr.indexOf(w) === i && !skipPatterns.some(p => w.includes(p)));
 
   return (
     <>
@@ -786,6 +825,25 @@ function RequestView({ request, topology }: { request: RequestPayload['result'];
           </p>
         )}
       </section>
+
+      {primary && (
+        <section className="panel">
+          <h2>完整转发顺序</h2>
+          <ol className="mt-2 list-decimal pl-5 text-sm space-y-1">
+            {primary.steps.map((step, index) => {
+              const reached = primary.nodes[index];
+              if (!reached) return null;
+              const labels: Record<string, string> = { DNSResolver: 'DNS', NatResolver: 'NAT', ClbResolver: 'CLB', NginxResolver: 'Nginx', KongResolver: 'Kong', DeploymentResolver: '部署 / 应用', RepositoryResolver: '代码仓库' };
+              const description = reached.type === 'NGINX_ROUTE'
+                ? `${((reached.identity?.domains as string[]) ?? []).join(', ')} ${str(reached.identity?.uri, '/')} → ${str(reached.identity?.target, '')}`
+                : reached.label ?? reached.id;
+              const upstreamRoute = reached.type === 'UPSTREAM' && step.resolver === 'NginxResolver'
+                ? primary.nodes.slice(0, index).reverse().find(node => node.type === 'NGINX_ROUTE' && node.identity?.assetId === reached.identity?.assetId) : undefined;
+              return <li key={`${index}-${reached.id}`}><strong>{labels[step.resolver] ?? step.resolver}</strong> · {description}{reached.type === 'NGINX_ROUTE' && <NginxRouteFiles node={reached}/>} {step.resolver === 'KongResolver' && step.warnings[0] ? `· ${step.warnings[0]}` : ''} ({confidenceLabel(step.confidence)}){reached.type === 'UPSTREAM' && step.resolver === 'NginxResolver' && <NginxUpstreamConfig route={upstreamRoute} upstream={reached}/>}</li>;
+            })}
+          </ol>
+        </section>
+      )}
 
       {/* ① DNS 解析 */}
       {(dnsEntry || dnsRecord) && (
@@ -855,7 +913,7 @@ function RequestView({ request, topology }: { request: RequestPayload['result'];
             {nginxHostStep && out0(nginxHostStep) && (
               <p>主机 {hostLabel(out0(nginxHostStep))} ({confidenceLabel(nginxHostStep.confidence)})</p>
             )}
-            {nginxRouteSteps.length > 0 && nginxRouteSteps[0].outputNodeIds.map(routeId => {
+            {nginxRouteSteps.flatMap(step => step.outputNodeIds).map(routeId => {
               const route = nodeById(routeId);
               if (!route) return null;
               const domains = (route.identity?.domains as string[]) ?? [];
@@ -865,6 +923,7 @@ function RequestView({ request, topology }: { request: RequestPayload['result'];
                 <p key={routeId}>
                   server_name {domains.join(', ') || '(默认)'} · location {uri}{' '}
                   {target ? <>→ <code>{target}</code></> : '(无 proxy_pass)'}
+                  <NginxRouteFiles node={route}/>
                 </p>
               );
             })}
@@ -881,6 +940,17 @@ function RequestView({ request, topology }: { request: RequestPayload['result'];
                 ⚠ {nginxRouteSteps.flatMap(s => s.warnings).find(w => w.includes('port-agnostic') || w.includes('falling back to port'))}
               </p>
             )}
+          </div>
+        </section>
+      )}
+
+      {kongStep && (
+        <section className="panel">
+          <h2>Kong 网关转发</h2>
+          <div className="text-sm space-y-1">
+            <p>代理端点 <code>{ipOf(in0(kongStep))}{portOf(in0(kongStep))}</code> · Admin <code>{ipOf(in0(kongStep))}:8001</code></p>
+            {kongStep.warnings.map(w => <p key={w}>{w}</p>)}
+            {kongStep.outputNodeIds.map(id => { const target = nodeById(id); return target ? <p key={id}>→ <code>{ipOf(target)}{portOf(target)}</code></p> : null; })}
           </div>
         </section>
       )}

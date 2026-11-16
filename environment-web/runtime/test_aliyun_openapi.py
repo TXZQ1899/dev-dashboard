@@ -93,6 +93,8 @@ class EcsTests(unittest.TestCase):
         }
         fake = FakeRpc({
             'DescribeInstances': {'TotalCount': 1, 'Instances': {'Instance': [instance]}},
+            'DescribeInstanceAutoRenewAttribute': {'TotalCount': 1, 'InstanceRenewAttributes': {'InstanceRenewAttribute': [
+                {'InstanceId': 'i-1', 'RenewalStatus': 'AutoRenewal'}]}},
             'ListTagResources': {'TagResources': {'TagResource': [
                 {'ResourceId': 'i-1', 'TagKey': 'project', 'TagValue': 'demo'}]}},
         })
@@ -103,6 +105,23 @@ class EcsTests(unittest.TestCase):
         self.assertEqual(len(snapshot['instances']), 1)
         self.assertEqual(snapshot['instances'][0]['privateIps'], ['10.0.0.5'])
         self.assertEqual(snapshot['instances'][0]['tags'], {'project': 'demo'})
+        self.assertEqual(snapshot['instances'][0]['chargeType'], 'PrePaid')
+        self.assertEqual(snapshot['instances'][0]['expiredAt'], '2027-01-01T00:00:00Z')
+        self.assertEqual(snapshot['instances'][0]['renewalStatus'], 'AutoRenewal')
+        self.assertEqual(next(p for a, p in fake.calls if a == 'DescribeInstanceAutoRenewAttribute')['InstanceId'], 'i-1')
+
+    def test_renewal_failure_preserves_unknown_and_postpaid_is_not_queried(self):
+        rows = [{'InstanceId': 'i-pre', 'RegionId': 'cn-shanghai', 'Cpu': 1, 'Memory': 1024, 'InstanceChargeType': 'PrePaid'},
+                {'InstanceId': 'i-post', 'RegionId': 'cn-shanghai', 'Cpu': 1, 'Memory': 1024, 'InstanceChargeType': 'PostPaid'}]
+        fake = FakeRpc({'DescribeInstances': {'TotalCount': 2, 'Instances': {'Instance': rows}},
+                        'DescribeInstanceAutoRenewAttribute': openapi.ExportError('denied'),
+                        'ListTagResources': {'TagResources': {'TagResource': []}}})
+        with patch.object(openapi, 'RpcClient', lambda *args, **kwargs: fake):
+            raw = openapi.collect_ecs_ak('id', 'secret')
+        from aliyun import ecs_snapshot
+        snapshot = ecs_snapshot(raw, [])
+        self.assertEqual([r['renewalStatus'] for r in snapshot['instances']], ['', ''])
+        self.assertEqual(next(p for a, p in fake.calls if a == 'DescribeInstanceAutoRenewAttribute')['InstanceId'], 'i-pre')
 
 
 class NetworkTests(unittest.TestCase):

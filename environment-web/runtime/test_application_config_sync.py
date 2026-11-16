@@ -92,7 +92,41 @@ class ConfigSyncTest(unittest.TestCase):
         self.assertIn(('common-prod.properties','192.0.2.2:8848','DEFAULT_GROUP'),calls)
         self.assertFalse(any(c[0]=='not-declared.properties' for c in calls))
 
-    def test_progress_reports_current_application_and_phase(self):
+    def test_yaml_extension_configs_are_fetched_as_explicit_declarations(self):
+        class ExtensionClient(Client):
+            def raw(self, path):
+                if path.endswith('bootstrap.yml'):
+                    return BOOTSTRAP.replace(b'        file-extension: yaml',
+                        b'        file-extension: yaml\n        extension-configs:\n          - data-id: common-${spring.profiles.active}.yaml\n            refresh: true')
+                return super().raw(path)
+        calls=[]
+        def fetch(config):
+            calls.append((config['dataId'],config['address'],config['group']))
+            if not config['dataId'].startswith('common-'): raise ValueError('Nacos 配置读取失败（HTTP 404）')
+            return b'value: ok'
+        with tempfile.TemporaryDirectory() as d, patch.object(sync,'Codeup',ExtensionClient), patch.object(sync.nacos,'fetch',side_effect=fetch):
+            result=sync.sync_one({'id':'1','name':'orders','appType':'war8'}, {}, 'cookie', Path(d))
+        self.assertIn(('common-test.yaml','192.0.2.1:8848','DEFAULT_GROUP'),calls)
+        self.assertIn(('common-prod.yaml','192.0.2.2:8848','DEFAULT_GROUP'),calls)
+        self.assertNotIn(('common-test.yaml','192.0.2.2:8848','DEFAULT_GROUP'),calls)
+        self.assertEqual(result['status'],'ready')
+        self.assertFalse(any(x['dataId'].startswith('common-') for x in result['missingCandidates']))
+
+    def test_missing_yaml_extension_config_is_reported_as_explicit(self):
+        class MissingClient(Client):
+            def raw(self, path):
+                if path.endswith('bootstrap.yml'):
+                    return BOOTSTRAP.replace(b'        file-extension: yaml',
+                        b'        file-extension: yaml\n        extension-configs:\n          - data-id: common-${spring.profiles.active}.yaml')
+                return super().raw(path)
+        with tempfile.TemporaryDirectory() as d, patch.object(sync,'Codeup',MissingClient), \
+             patch.object(sync.nacos,'fetch',side_effect=ValueError('Nacos 配置读取失败（HTTP 404）')):
+            result=sync.sync_one({'id':'1','name':'orders','appType':'war8'}, {}, 'cookie', Path(d))
+        self.assertEqual(result['status'],'partial')
+        self.assertTrue(any('Nacos test / common-test.yaml' in w for w in result['warnings']))
+        self.assertEqual({x['dataId'] for x in result['missingCandidates']}, {'orders','orders.yaml','orders-test.yaml','orders-prod.yaml'})
+
+
         class Store:
             source_key='source'
             def connection(self):

@@ -217,7 +217,22 @@ test('Nginx access control remains a route and does not create a fabricated upst
   assert.equal(validation.valid, true);
   const route = topology.nodes.find(n=>n.type==='NGINX_ROUTE');
   assert.equal(route.identity.target, 'deny all');
+  assert.deepEqual(route.attributes.files, ['/etc/nginx/conf.d/site.conf']);
   assert.ok(topology.edges.some(e=>e.type==='SERVED_BY' && e.to===route.id));
   assert.ok(!topology.edges.some(e=>e.from===route.id && e.type==='USES_UPSTREAM'));
   assert.ok(!topology.nodes.some(n=>n.type==='UPSTREAM'));
+});
+
+test('Nginx routes preserve every collected file when equivalent routes merge', async () => {
+  const { buildTopology } = await import('../lib/topology/topology-builder.ts');
+  const route = { domains:['example.test'], listen:['80'], uri:'/api/', directive:'proxy_pass',
+    target:'http://backend/', upstream:'backend', backends:[] };
+  const input = { devops:{apps:[]}, repositories:{repos:[]}, dns:{records:[]}, eip:{records:[]},
+    nat:{available:false}, clb:{available:false}, ecs:{instances:[]}, jumpserver:{assets:[{
+      id:'nginx-1', ip:'10.0.0.1', inspection:{nginxRoutes:[
+        {...route, file:'/etc/nginx/a.conf'}, {...route, file:'/etc/nginx/b.conf'}, {...route}
+      ]}
+    }]}};
+  const node = buildTopology(input).nodes.find(n => n.type === 'NGINX_ROUTE');
+  assert.deepEqual(node.attributes.files, ['/etc/nginx/a.conf', '/etc/nginx/b.conf']);
 });

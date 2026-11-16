@@ -41,6 +41,8 @@ import {
   tagValues,
   tagLabel,
   statusName,
+  chargeTypeName,
+  renewalStatusName,
   emptyFilters,
   filterInstances,
   summarize,
@@ -141,6 +143,7 @@ function ResourceTable({ rows }: { rows: Instance[] }) {
             '内网 IP',
             '公网 IP',
             '状态',
+            '付费方式',
             '标签',
           ].map((h) => (
             <TableHead key={h}>{h}</TableHead>
@@ -175,6 +178,11 @@ function ResourceTable({ rows }: { rows: Instance[] }) {
               >
                 {statusName(r.status)}
               </span>
+            </TableCell>
+            <TableCell>
+              {chargeTypeName(r.chargeType)}
+              {r.chargeType !== 'PostPaid' && <small>{renewalStatusName(r.renewalStatus)}</small>}
+              {r.chargeType !== 'PostPaid' && <small>{r.expiredAt ? `${formatBeijingTime(r.expiredAt, r.expiredAt)} 到期` : '到期时间未知'}</small>}
             </TableCell>
             <TableCell>
               <div className="ecs-tags">

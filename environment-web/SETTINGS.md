@@ -22,7 +22,7 @@ Codeup 文件树接口若忽略分页并重复返回同一批条目，保留已�
 
 Nacos 声明中引用的地址类简单变量，仅在同一个 YAML 文档内存在唯一的字面值时解析；不会把不同 profile 文档的变量合并。重复键、复杂值和跨文件引用保持未解析。
 
-支持 properties 中 `nacos.config.ext-config[n].data-id` 的明确扩展声明，并使用同一文件中的连接与命名空间；扩展项未指定 Group 时使用 `DEFAULT_GROUP`。单文件无法解析时仍保留已下载的原文件并明确报告解析问题。
+支持 properties 中 `nacos.config.ext-config[n].data-id` 的明确扩展声明，并使用同一文件中的连接与命名空间；扩展项未指定 Group 时使用 `DEFAULT_GROUP`。同样支持 Spring YAML 中 `spring.cloud.nacos.config.extension-configs` / `shared-configs` 的字面列表声明：按当前 profile 文档的连接与命名空间读取，条目未指定 Group 时使用 `DEFAULT_GROUP`，`data-id` 中只解析 `${spring.profiles.active}` 引用。单文件无法解析时仍保留已下载的原文件并明确报告解析问题。
 
 Spring 的应用名可以来自匹配的 profile 文档；显式声明的 Nacos Data ID 可解析当前 profile 的 `spring.profiles.active` 引用，其他未解析引用保留警告。
 

@@ -220,6 +220,30 @@ def collect_ecs_ak(access_key_id, access_key_secret, out=None, region=DEFAULT_RE
     if any(row.get('RegionId') != region for row in rows):
         raise ExportError('ECS 返回了非预期地域的实例')
 
+    # 自动续费接口只接受包年包月实例，按实例 ID 分批查询。
+    prepaid_ids = [row['InstanceId'] for row in rows if row.get('InstanceChargeType') == 'PrePaid']
+    renewal = {}
+    for start in range(0, len(prepaid_ids), 100):
+        batch = prepaid_ids[start:start + 100]
+        try:
+            page = 1
+            while True:
+                value = client.call('DescribeInstanceAutoRenewAttribute', {
+                    'RegionId': region, 'InstanceId': ','.join(batch), 'PageSize': 100, 'PageNumber': page})
+                items = _items(value, 'InstanceRenewAttributes', 'InstanceRenewAttribute')
+                for item in items:
+                    if item.get('InstanceId') in batch and item.get('RenewalStatus'):
+                        renewal[item['InstanceId']] = item['RenewalStatus']
+                total = value.get('TotalCount')
+                if not isinstance(total, int) or not items or page * 100 >= total:
+                    break
+                page += 1
+        except (ExportError, AuthenticationError, OSError) as exc:
+            print(f'ECS 自动续费状态查询失败，相关实例状态未知: {type(exc).__name__}', flush=True)
+    for row in rows:
+        if row['InstanceId'] in renewal:
+            row['RenewalStatus'] = renewal[row['InstanceId']]
+
     # 控制台快照把标签放在 extraProperties.tags，OpenAPI 需单独调用 ListTagResources。
     tags = {}
     ids = [row['InstanceId'] for row in rows]

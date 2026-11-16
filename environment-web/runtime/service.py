@@ -1277,7 +1277,7 @@ class Service:
         if not query or len(query)>2048: raise ValueError('q 必须是 1-2048 个字符的 URL 或域名')
         environment=(params.get('env') or [''])[0].strip().upper()
         if environment and environment not in REQUEST_ENVIRONMENTS: raise ValueError('env 必须是 PRODUCT、TEST 或 SIMULATION')
-        max_depth=bounded_int(params,'maxDepth',16,1,24)
+        max_depth=bounded_int(params,'maxDepth',48,1,64)
         max_paths=bounded_int(params,'maxPaths',50,1,200)
         command=['node',str(APP/'scripts'/'topology-path.mjs'),'request',query,'--json','--file',str(self.topology_file(status['id'])),
                  '--max-depth',str(max_depth),'--max-paths',str(max_paths)]

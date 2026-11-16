@@ -49,7 +49,7 @@ test('联动视图展示不可登录服务器的 ECS 停止和未匹配明细',(
  const assets=[asset('stopped','203.0.113.1',{loginStatus:'cannot_login',reason:'失败',checkedAt:'2026-10-01T00:00:00Z'}),asset('outside','10.0.0.9',{loginStatus:'cannot_login',reason:'超时'}),asset('ok','10.0.0.2',login('password'))];
  const machines=[{...ecs('one',['10.0.0.1'],'Stopped'),publicIps:['203.0.113.1']},ecs('two',['10.0.0.2'])];
  let index=0; const states=['cannot_login','stopped',false,'all',null];
- const imports={react:{...React,useMemo:f=>f(),useState:initial=>[states[index++]??initial,()=>{}]},'react/jsx-runtime':require('react/jsx-runtime'),
+ const imports={'@/components/use-server-inspect':{useServerInspect:()=>({inspect:{},requestInspect:()=>{},dialog:null})},react:{...React,useMemo:f=>f(),useState:initial=>[states[index++]??initial,()=>{}]},'react/jsx-runtime':require('react/jsx-runtime'),
   '@/lib/jumpserver':{jumpserver:{assets,collectedAt:'2026-10-01T00:00:00Z'},jumpserverLoginUrl:id=>'http://jump/luna/?login_to='+id},'@/lib/ecs':{instances:machines,fetchedAt:'2026-10-01T00:00:00Z'},'@/lib/ecs-snapshot.json':{default:{tenants:[]}},
   '@/lib/datetime':{formatBeijingTime:(t,fallback)=>t||fallback},'@/lib/jumpserver-overview':lib};
  const source=ts.transpileModule(fs.readFileSync('components/jumpserver-overview.tsx','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText;
@@ -57,7 +57,7 @@ test('联动视图展示不可登录服务器的 ECS 停止和未匹配明细',(
  const html=renderToStaticMarkup(React.createElement(context.exports.JumpserverOverview));
  assert.match(html,/当前范围：不可登录/); assert.match(html,/ECS 已停止 1 台/); assert.match(html,/不在 ECS 清单中 1 台/);
  assert.match(html,/203\.0\.113\.1/); assert.doesNotMatch(html,/10\.0\.0\.9<\/td>/); assert.match(html,/JumpServer 明细 · 1 台/);
- assert.match(html,/导出 CSV/); assert.doesNotMatch(html,/登录 \/ 提权|<th[^>]*>登录<\/th>|登录原因|检查时间|账号：|提权：/);
+ assert.match(html,/aria-label="重试采集 203\.0\.113\.1"/); assert.match(html,/导出 CSV/); assert.doesNotMatch(html,/登录 \/ 提权|<th[^>]*>登录<\/th>|登录原因|检查时间|账号：|提权：/);
  const outside=lib.buildJumpserverOverview([assets[1]],machines).jump;
  const csv=context.exports.unreachableOverviewCsv(outside);
  assert.match(csv,/IP,主机名,ECS 状态与关联/); assert.match(csv,/10\.0\.0\.9,outside,不在 ECS 清单中/);
@@ -71,7 +71,7 @@ test('未纳管明细按 ECS 状态筛选且隐藏零值图例',()=>{
  const assets=[asset('a','10.0.0.2',login('password'))];
  const machines=[ecs('managed',['10.0.0.2']),ecs('unmanaged-stopped',['10.0.0.3'],'Stopped'),ecs('unmanaged-running',['10.0.0.4'],'Running')];
  let index=0; const states=[null,null,false,'stopped','unmatched'];
- const changes=[]; const imports={react:{...React,useMemo:f=>f(),useState:initial=>{const i=index++; return [states[i]??initial,value=>changes.push([i,value])];}},'react/jsx-runtime':require('react/jsx-runtime'),
+ const changes=[]; const imports={'@/components/use-server-inspect':{useServerInspect:()=>({inspect:{},requestInspect:()=>{},dialog:null})},react:{...React,useMemo:f=>f(),useState:initial=>{const i=index++; return [states[i]??initial,value=>changes.push([i,value])];}},'react/jsx-runtime':require('react/jsx-runtime'),
   '@/lib/jumpserver':{jumpserver:{assets},jumpserverLoginUrl:id=>'http://jump/luna/?login_to='+id},'@/lib/ecs':{instances:machines},'@/lib/ecs-snapshot.json':{default:{tenants:[]}},
   '@/lib/datetime':{formatBeijingTime:(t,fallback)=>t||fallback},'@/lib/jumpserver-overview':lib};
  const source=ts.transpileModule(fs.readFileSync('components/jumpserver-overview.tsx','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText;
@@ -95,7 +95,7 @@ test('仅普通账号明细精简，导出遵循当前位置与 folidev 筛选',
  const React=require('react'); const {renderToStaticMarkup}=require('react-dom/server');
  const assets=[{...asset('local','10.58.9.1',login('denied')),hostname:''},asset('other','10.58.9.2',login('denied','other')),asset('cloud','10.0.0.1',login('denied'))];
  let index=0; const states=['ordinary','local',true,'all',null];
- const imports={react:{...React,useMemo:f=>f(),useState:initial=>[states[index++]??initial,()=>{}]},'react/jsx-runtime':require('react/jsx-runtime'),
+ const imports={'@/components/use-server-inspect':{useServerInspect:()=>({inspect:{},requestInspect:()=>{},dialog:null})},react:{...React,useMemo:f=>f(),useState:initial=>[states[index++]??initial,()=>{}]},'react/jsx-runtime':require('react/jsx-runtime'),
   '@/lib/jumpserver':{jumpserver:{assets},jumpserverLoginUrl:id=>'http://jump/luna/?login_to='+id},'@/lib/ecs':{instances:[]},'@/lib/ecs-snapshot.json':{default:{tenants:[]}},
   '@/lib/datetime':{formatBeijingTime:(t,fallback)=>t||fallback},'@/lib/jumpserver-overview':lib};
  const source=ts.transpileModule(fs.readFileSync('components/jumpserver-overview.tsx','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText;
@@ -121,7 +121,7 @@ test('可切Root与不在 ECS 清单筛选精简明细，CSV 保持一致',()=>{
  const React=require('react'); const {renderToStaticMarkup}=require('react-dom/server');
  const assets=[asset('root','10.0.0.1',login('root')),asset('failed','10.0.0.2',{loginStatus:'cannot_login',reason:'failure'})];
  const machines=[ecs('vm',['10.0.0.1'])]; let index=0, states=['elevated',null,false,'all',null];
- const imports={react:{...React,useMemo:f=>f(),useState:initial=>[states[index++]??initial,()=>{}]},'react/jsx-runtime':require('react/jsx-runtime'),
+ const imports={'@/components/use-server-inspect':{useServerInspect:()=>({inspect:{},requestInspect:()=>{},dialog:null})},react:{...React,useMemo:f=>f(),useState:initial=>[states[index++]??initial,()=>{}]},'react/jsx-runtime':require('react/jsx-runtime'),
   '@/lib/jumpserver':{jumpserver:{assets},jumpserverLoginUrl:id=>'http://jump/luna/?login_to='+id},'@/lib/ecs':{instances:machines},'@/lib/ecs-snapshot.json':{default:{tenants:[]}},
   '@/lib/datetime':{formatBeijingTime:(t,fallback)=>t||fallback},'@/lib/jumpserver-overview':lib};
  const source=ts.transpileModule(fs.readFileSync('components/jumpserver-overview.tsx','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText;

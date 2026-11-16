@@ -36,6 +36,7 @@ export type ResolutionStep = {
  */
 export type ResolvedPath = {
   steps: ResolutionStep[];
+  effectiveRequest: PathQuery;
   /** Nodes reached in traversal order, including the seed node. */
   nodes: TopologyNode[];
   /** Final node when a resolver marked the branch terminal, otherwise null. */

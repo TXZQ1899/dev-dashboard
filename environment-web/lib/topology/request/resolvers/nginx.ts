@@ -497,6 +497,25 @@ export class NginxResolver implements PathResolver {
     };
   }
 
+  private forwardedQuery(context: ResolverContext, upstream: TopologyNode) {
+    const step = [...context.trail].reverse().find(item => item.rule === 'nginx:upstream' && item.outputNodeIds.includes(upstream.id));
+    const route = step && context.index.nodeById.get(step.inputNodeIds[0]);
+    if (!route || text(route.identity.directive) !== 'proxy_pass') return null;
+    const raw = text(route.identity.target);
+    if (!/^https?:\/\//i.test(raw) || raw.includes('$')) return null;
+    let target: URL;
+    try { target = new URL(raw); } catch { return null; }
+    if (target.search || target.hash) return null;
+    const scheme: 'http' | 'https' = target.protocol === 'https:' ? 'https' : 'http';
+    let path = context.query.path;
+    if (/^https?:\/\/[^/]+\//i.test(raw)) {
+      const location = text(route.identity.uri).replace(/^\^~\s+/, '');
+      if (!location.startsWith('/') || !path.startsWith(location)) return null;
+      path = target.pathname + path.slice(location.length);
+    }
+    return { ...context.query, scheme, port: Number(target.port || (scheme === 'https' ? 443 : 80)), path };
+  }
+
   // Step 5b: UPSTREAM → backend ENDPOINTs (FORWARDS_TO edges, then proxy target parsing).
   private resolveBackends(context: ResolverContext, upstream: TopologyNode): ResolutionResult {
     const warnings: string[] = [];
@@ -515,11 +534,16 @@ export class NginxResolver implements PathResolver {
     }
     if (moves.length > 0) {
       // Multiple backends are legitimate load-balanced candidates, not ambiguous.
+      const forwarded = this.forwardedQuery(context, upstream);
+      if (forwarded && forwarded.path !== context.query.path) {
+        warnings.push('Forwarded URI is inferred from proxy_pass; uncollected rewrite directives may change it.');
+        if (weakest === 'EXACT') weakest = 'INFERRED';
+      }
       return {
         rule: 'nginx:backend',
         confidence: weakest,
         evidence: capEvidence(evidence, warnings),
-        moves,
+        moves: forwarded ? moves.map(move => ({ ...move, query: { ...forwarded, host: context.query.host } })) : moves,
         warnings,
       };
     }
@@ -601,12 +625,14 @@ export class NginxResolver implements PathResolver {
             ],
           };
         }
-        warnings.push(`Backend "${target.host}" of upstream ${upstream.id} is a hostname; continuing through its existing DOMAIN node(s) (no DNS speculation).`);
+        const forwarded = this.forwardedQuery(context, upstream);
+        if (!forwarded) return { rule: 'nginx:backend-domain', moves: [], warnings: [`Cannot safely determine the forwarded request for upstream ${upstream.id}; branch stops.`] };
+        warnings.push(`Backend "${target.host}" of upstream ${upstream.id} is a hostname; continuing through its existing DOMAIN node(s). Forwarded Host and URI are inferred from proxy_pass; uncollected header overrides or rewrites may change routing.`);
         return {
           rule: 'nginx:backend-domain',
           confidence: 'INFERRED',
           evidence: capEvidence([...evidence, ...domains.flatMap(domain => domain.evidence)], warnings),
-          moves: domains.sort((a, b) => a.id.localeCompare(b.id)).map(domain => ({ node: domain })),
+          moves: domains.sort((a, b) => a.id.localeCompare(b.id)).map(domain => ({ node: domain, query: { ...forwarded, host: normalizeDomain(target.host) } })),
           warnings,
         };
       }

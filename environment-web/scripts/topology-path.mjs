@@ -7,6 +7,7 @@ import { NODE_TYPE_BY_KIND, buildGraphIndex, explorePaths } from '../lib/topolog
 import { exploreDomainChain } from '../lib/topology/domain-chain.ts';
 import { findNginxLocations } from '../lib/topology/nginx-location.ts';
 import { createDefaultResolverRegistry, resolveRequestPathWithIndex } from '../lib/topology/request/index.ts';
+import { KONG_GATEWAYS, KongResolver, loadKongData } from '../lib/topology/request/kong.ts';
 
 // stdout is a pipe whenever this script is driven by the runtime service or any
 // other program. console.log is fire-and-forget and process.exit() then drops
@@ -136,12 +137,19 @@ async function main() {
   if (requestMode) {
     let trace;
     try {
-      trace = resolveRequestPathWithIndex(index, query, {
-        registry: createDefaultResolverRegistry(),
+      const resolveOptions = {
         environment: options.env || undefined,
         maxDepth: Number.isFinite(options.maxDepth) ? options.maxDepth : undefined,
         maxPaths: Number.isFinite(options.maxPaths) ? options.maxPaths : undefined,
-      });
+      };
+      trace = resolveRequestPathWithIndex(index, query, { ...resolveOptions, registry: createDefaultResolverRegistry() });
+      const gateway = KONG_GATEWAYS[options.env];
+      const queries = gateway ? trace.paths.filter(p => p.nodes.some(n => n.type === 'ENDPOINT' && String(n.identity.ip) === gateway.ip && Number(n.identity.port) === gateway.proxyPort)).map(p => p.effectiveRequest) : [];
+      const kong = gateway && queries.length ? await loadKongData(options.env, queries) : null;
+      if (kong) {
+        trace = resolveRequestPathWithIndex(index, query, { ...resolveOptions, registry: createDefaultResolverRegistry().register(new KongResolver(kong)) });
+        if (kong.error) trace.warnings.push(`Kong Admin API unavailable or incomplete: ${kong.error}`);
+      }
     } catch (error) {
       throw usage(`Invalid request query "${query}": ${error.message}`);
     }

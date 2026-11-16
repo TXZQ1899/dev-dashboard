@@ -65,6 +65,10 @@ def spring_scalars(document):
         if path not in ('spring.application.name', 'spring.profiles', 'spring.profiles.active',
                         'spring.config.activate.on-profile') and not path.startswith('spring.cloud.nacos.config.'):
             continue
+        # Sequence entries are read separately; their child keys are not independent scalars.
+        if path.startswith(('spring.cloud.nacos.config.extension-configs.',
+                            'spring.cloud.nacos.config.shared-configs.')):
+            continue
         value = re.sub(r'\s+#.*$', '', value).strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
             value = value[1:-1]
@@ -122,6 +126,83 @@ def spring_declarations(content, process):
             'Spring Nacos Data ID 根据声明和 profile '+profile+' 推导，环境变量和其他覆盖未核实']
     except ValueError as error:
         return [], ['Spring Nacos 声明无法解析：'+str(error)]
+
+
+def spring_extension_configs(document, profile, fields):
+    """Read literal extension-configs / shared-configs list items in one profile document."""
+    targets = ('spring.cloud.nacos.config.extension-configs',
+               'spring.cloud.nacos.config.shared-configs')
+    entries, warnings, stack = [], [], []
+    current, keys, saw_target = None, set(), False
+    for line in document.splitlines():
+        if re.match(r'^ *\t', line):
+            return [], ['Spring 扩展 Nacos 声明含制表符缩进']
+        if not line.strip() or line.lstrip().startswith('#'):
+            continue
+        match = re.match(r'^( *)(- )?([\w.-]+):(?:\s+(.*?))?\s*$', line)
+        if not match:
+            if current is not None:
+                warnings.append('Spring 扩展 Nacos 声明包含未支持的 YAML 语法')
+                current = None
+            continue
+        indent, marker, key, value = len(match[1]), match[2], match[3], match[4]
+        level = indent + len(marker or '')
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        parent = '.'.join(item[1] for item in stack)
+        if value is None:
+            if parent in targets:
+                warnings.append('Spring 扩展 Nacos 声明包含空值字段：'+key)
+                current = None
+                continue
+            stack.append((level, key))
+            if parent+'.'+key in targets:
+                saw_target = True
+                current = None
+            continue
+        if parent not in targets:
+            continue
+        if not marker and key not in ('data-id', 'dataId', 'group'):
+            continue
+        value = re.sub(r'\s+#.*$', '', value).strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if marker:
+            current, keys = None, set()
+            if key not in ('data-id', 'dataId', 'group'):
+                warnings.append('Spring 扩展 Nacos 声明包含未支持的字段：'+key)
+                continue
+            current = {'data-id': '', 'group': ''}
+            entries.append(current)
+        if current is None:
+            warnings.append('Spring 扩展 Nacos 声明字段缺少列表项：'+key)
+            continue
+        canonical = 'data-id' if key in ('data-id', 'dataId') else 'group'
+        if canonical in keys:
+            current['invalid'] = True
+        keys.add(canonical)
+        current[canonical] = value
+    if not entries:
+        return [], warnings+(['Spring 扩展 Nacos 声明存在但无法解析'] if saw_target else [])
+    prefix = 'spring.cloud.nacos.config.'
+    address = fields.get(prefix+'server-addr') or fields.get(prefix+'serverAddr') or ''
+    namespace, username, password = (fields.get(prefix+'namespace', ''),
+                                     fields.get(prefix+'username', ''), fields.get(prefix+'password', ''))
+    if (not address or any('${' in x or (x and x[0] in '[{&*!|>')
+                           for x in (address, namespace, username, password))):
+        return [], warnings+['Spring 扩展 Nacos 连接或命名空间无法确定']
+    resolved = []
+    for index, item in enumerate(entries):
+        raw = item.get('data-id', '')
+        group = item.get('group') or 'DEFAULT_GROUP'
+        data_id = re.sub(r'\$\{spring\.profiles\.active(?::[^}]*)?\}', profile or '', raw) if raw else ''
+        if (item.get('invalid') or not data_id or not re.fullmatch(r'[\w.:-]+', data_id) or
+                any('${' in x or (x and x[0] in '[{&*!|>') for x in (group,))):
+            warnings.append('Spring 扩展 Nacos 配置的 Data ID 或 Group 无法确定：索引 '+str(index))
+            continue
+        resolved.append({'address':address, 'namespace':namespace, 'group':group,
+                         'dataId':data_id, 'username':username, 'password':password})
+    return resolved, warnings
 
 
 def business_declarations(content):

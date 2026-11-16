@@ -81,7 +81,46 @@ class NacosTests(unittest.TestCase):
             self.assertEqual(entries, [])
             self.assertTrue(any('Spring Nacos' in warning for warning in warnings))
 
-    def test_spring_bootstrap_catalogue_fetches_selected_profile(self):
+    def test_spring_extension_configs_are_profile_scoped_literal_declarations(self):
+        content = '''spring:\n  application:\n    name: orders\n  profiles:\n    active: test\n---\nspring:\n  profiles: test\n  cloud:\n    nacos:\n      config:\n        server-addr: 192.0.2.10:8083\n        namespace: test-ns\n        file-extension: properties\n        extension-configs:\n          - data-id: common-${spring.profiles.active:test}.properties\n            group: SHARED\n            refresh: true\n          - data-id: other.properties\n---\nspring:\n  profiles: prod\n  cloud:\n    nacos:\n      config:\n        server-addr: 192.0.2.20:8083\n        namespace: prod-ns\n        extension-configs:\n          - data-id: common-${spring.profiles.active}.properties\n            group: PROD\n'''
+        for profile, expected in (('test', [('common-test.properties', 'SHARED', '192.0.2.10:8083', 'test-ns'),
+                                            ('other.properties', 'DEFAULT_GROUP', '192.0.2.10:8083', 'test-ns')]),
+                                  ('prod', [('common-prod.properties', 'PROD', '192.0.2.20:8083', 'prod-ns')])):
+            documents = nacos.documents(content)
+            selected = [d for d in documents if (profile in d and 'extension-configs' in d)]
+            self.assertEqual(len(selected), 1)
+            found, warnings = nacos.spring_extension_configs(selected[0], profile, nacos.spring_scalars(selected[0]))
+            self.assertEqual([(c['dataId'], c['group'], c['address'], c['namespace']) for c in found], expected)
+            self.assertEqual(warnings, [])
+
+    def test_spring_extension_configs_reject_unresolved_or_duplicate_fields(self):
+        document = '''spring:\n  profiles: test\n  cloud:\n    nacos:\n      config:\n        server-addr: 192.0.2.10:8083\n        namespace: test-ns\n        extension-configs:\n          - data-id: ${unknown.id}.properties\n          - data-id: dup.properties\n            group: A\n            group: B\n'''
+        found, warnings = nacos.spring_extension_configs(document, 'test', nacos.spring_scalars(document))
+        self.assertEqual(found, [])
+        self.assertTrue(any('索引 0' in warning for warning in warnings))
+        self.assertTrue(any('索引 1' in warning for warning in warnings))
+
+    def test_spring_extension_configs_require_resolved_connection(self):
+        document = '''spring:\n  profiles: test\n  cloud:\n    nacos:\n      config:\n        server-addr: ${nacos.addr}\n        extension-configs:\n          - data-id: common.properties\n'''
+        found, warnings = nacos.spring_extension_configs(document, 'test', nacos.spring_scalars(document))
+        self.assertEqual(found, [])
+        self.assertTrue(any('连接或命名空间无法确定' in warning for warning in warnings))
+
+    def test_spring_extension_configs_report_unparseable_list(self):
+        document = '''spring:\n  profiles: test\n  cloud:\n    nacos:\n      config:\n        server-addr: 192.0.2.10:8083\n        extension-configs:\n          - {data-id: inline.properties}\n'''
+        found, warnings = nacos.spring_extension_configs(document, 'test', nacos.spring_scalars(document))
+        self.assertEqual(found, [])
+        self.assertTrue(any('无法解析' in warning for warning in warnings))
+
+    def test_spring_extension_configs_ignore_unrelated_lists(self):
+        document = '''spring:\n  profiles: test\n  cloud:\n    nacos:\n      discovery:\n        server-addr: 192.0.2.10:8848\n        metadata:\n          - data-id: ignored.properties\n'''
+        self.assertEqual(nacos.spring_extension_configs(document, 'test', {'spring.profiles':'test'}), ([], []))
+
+    def test_spring_bootstrap_does_not_emit_extension_warnings_for_plain_yaml(self):
+        self.assertEqual(nacos.spring_extension_configs(
+            nacos.documents(SPRING_YAML)[1], 'dev', nacos.spring_scalars(nacos.documents(SPRING_YAML)[1])), ([], []))
+
+
         entry = {'id':'a','kind':'config','path':'/a/b/WEB-INF/classes/config/bootstrap.yml'}
         result = {'files':[entry], 'warnings':[]}
         with tempfile.TemporaryDirectory() as directory, \

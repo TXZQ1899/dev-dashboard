@@ -140,7 +140,7 @@ test('nginx: full chain — DNS → endpoint → host → route (exact server_na
   assert.deepEqual(path.steps.map(s => s.rule), [
     'dns:entry', 'dns:records', 'nginx:host', 'nginx:route:exact:prefix', 'nginx:upstream', 'nginx:backend',
   ]);
-  assert.equal(path.confidence, 'EXACT');
+  assert.equal(path.confidence, 'INFERRED');
   assert.equal(path.steps[3].rule, 'nginx:route:exact:prefix');
   // Terminal stays open for TASK-05 APPLICATION.
   assert.equal(path.terminalNodeId, null);
@@ -341,7 +341,7 @@ test('nginx: named upstream resolves through FORWARDS_TO edges', async () => {
   const [path] = trace.paths;
   assert.equal(path.nodes[4].id, topo.up.id);
   assert.equal(path.steps[5].rule, 'nginx:backend');
-  assert.equal(path.steps[5].confidence, 'EXACT');
+  assert.equal(path.steps[5].confidence, 'INFERRED');
 });
 
 test('nginx: direct proxy_pass to an IP resolves the backend endpoint', async () => {
@@ -364,7 +364,7 @@ test('nginx: multiple upstream backends fan out as load-balanced candidates', as
   const backendIps = trace.paths.map(p => p.nodes[5].identity.ip).sort((a, b) => a.localeCompare(b));
   assert.deepEqual(backendIps, ['10.1.1.10', '10.1.1.11', '10.1.1.9']);
   for (const path of trace.paths) {
-    assert.equal(path.steps[5].confidence, 'EXACT');
+    assert.equal(path.steps[5].confidence, 'INFERRED');
     assert.equal(path.steps[5].rule, 'nginx:backend');
   }
 });
@@ -538,4 +538,21 @@ test('registry: default registry registers DNS → NAT → CLB → NGINX → DEP
     RESERVED_RESOLVER_NAMES.DEPLOYMENT,
     RESERVED_RESOLVER_NAMES.REPOSITORY,
   ]);
+});
+
+test('nginx: hostname proxy re-enters a shared endpoint with the forwarded path', async () => {
+  const { resolveRequestPath } = await framework();
+  const topo = nginxTopology({ uri: '/order/', target: 'http://inner.example.com/new/', upstreamName: 'inner.example.com', backendIps: [] });
+  const inner = domain('inner.example.com');
+  const nextRoute = nginxRoute(topo.assetId, 'inner', { domains: ['inner.example.com'], uri: '/new/', listen: ['80'], target: 'http://final_backend/', upstreamName: 'final_backend' });
+  const nextUp = upstream(topo.assetId, 'final_backend');
+  const backend = endpoint('10.1.1.30', '8080', 'http');
+  const g = graph([...topo.nodes, inner, nextRoute, nextUp, backend], [...topo.edges,
+    edge('inner-dns', inner.id, topo.entryEp.id, 'RESOLVES_TO'),
+    edge('inner-up', nextRoute.id, nextUp.id, 'USES_UPSTREAM'),
+    edge('inner-back', nextUp.id, backend.id, 'FORWARDS_TO'),
+  ]);
+  const trace = resolveRequestPath('https://api.example.com/order/123', g, { registry: await dnsNginxRegistry() });
+  assert.ok(trace.paths.some(p => p.nodes.some(n => n.id === nextRoute.id) && p.nodes.some(n => n.id === backend.id)));
+  assert.ok(trace.warnings.some(w => w.includes('header overrides or rewrites')));
 });

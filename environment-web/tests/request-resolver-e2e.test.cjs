@@ -178,7 +178,7 @@ test('Case A: DNS → ECS → Nginx → Application → Repository resolves end 
   assert.equal(trace.paths.length, 1);
   const [path] = trace.paths;
   assert.equal(path.terminalNodeId, topo.repo.id);
-  assert.equal(path.confidence, 'EXACT');
+  assert.equal(path.confidence, 'INFERRED');
   assert.deepEqual(path.nodes.map(n => n.type), [
     'DOMAIN', 'ENDPOINT', 'HOST', 'NGINX_ROUTE', 'UPSTREAM', 'ENDPOINT', 'DEPLOYMENT', 'APPLICATION', 'REPOSITORY',
   ]);

@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import './globals.css';
 export const metadata: Metadata = {
-  title: 'EnvScope · 应用环境管理',
+  title: 'App Atlas - 应用架构图谱',
   description: '应用环境总览、服务器清单与生产单点分析',
   openGraph: {
     title: 'EnvScope · 应用环境管理',

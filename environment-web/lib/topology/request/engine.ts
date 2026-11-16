@@ -13,10 +13,8 @@ import type { RequestTrace, ResolvedPath, ResolutionStatus, ResolutionStep } fro
 import { normalizeRequestQuery, type PathQuery, type PathQueryInput, type RequestEnvironment } from './query.ts';
 import { ResolverRegistry, type PathResolver, type ResolutionResult } from './resolver.ts';
 
-// The legal end-to-end ingress chain (TASK-06 acceptance criteria) spans ~15
-// resolver hops (DOMAIN → … → REPOSITORY), so the request engine defaults to a
-// depth that can carry the full chain; Path Explorer keeps its own default.
-export const DEFAULT_MAX_DEPTH = 16;
+// Multiple ingress and proxy passes can revisit infrastructure before the backend.
+export const DEFAULT_MAX_DEPTH = 48;
 export const DEFAULT_MAX_PATHS = 50;
 const WARNING_CAP = 50;
 
@@ -46,6 +44,7 @@ type Branch = {
   steps: ResolutionStep[];
   visited: Set<string>;
   depth: number;
+  query: PathQuery;
 };
 
 /** Resolve a request against a topology, building the graph index once. */
@@ -96,7 +95,7 @@ export function resolveRequestPathWithIndex(
     return true;
   };
 
-  const queue: Branch[] = [{ current: null, nodes: [], steps: [], visited: new Set(), depth: 0 }];
+  const queue: Branch[] = [{ current: null, nodes: [], steps: [], visited: new Set(), depth: 0, query }];
 
   while (queue.length > 0) {
     if (truncated) break;
@@ -108,7 +107,7 @@ export function resolveRequestPathWithIndex(
     }
 
     const context = {
-      query,
+      query: branch.query,
       index,
       current: branch.current,
       visited: branch.visited as ReadonlySet<string>,
@@ -124,6 +123,13 @@ export function resolveRequestPathWithIndex(
       invocations.push({ resolver, result: resolver.resolve(context) });
     }
 
+    // A gateway lookup failure must remain visible even when another resolver
+    // can also inspect the same endpoint.
+    for (const item of invocations) {
+      if (item.resolver.name === 'KongResolver' && item.result.moves.length === 0) {
+        for (const message of item.result.warnings ?? []) pushWarning(message);
+      }
+    }
     const producedMoves = invocations.some(item => item.result.moves.length > 0);
     if (!producedMoves) {
       if (invocations.length === 0) {
@@ -175,8 +181,10 @@ export function resolveRequestPathWithIndex(
       };
 
       for (const move of moves) {
-        if (branch.visited.has(move.node.id)) {
-          // Cycle protection: a node may appear at most once per branch.
+        const nextQuery = move.query ?? branch.query;
+        const visitKey = JSON.stringify([move.node.id, nextQuery.scheme, nextQuery.host, nextQuery.port, nextQuery.path]);
+        if (branch.visited.has(visitKey)) {
+          // Re-entering an infrastructure node with a different request is valid.
           cycleSkipped += 1;
           pushWarning(`Cycle guard: ${resolver.name} returned node ${move.node.id} already on this branch; candidate skipped.`);
           continue;
@@ -185,7 +193,8 @@ export function resolveRequestPathWithIndex(
           current: move.node,
           nodes: [...branch.nodes, move.node],
           steps: [...branch.steps, step],
-          visited: new Set(branch.visited).add(move.node.id),
+          visited: new Set(branch.visited).add(visitKey),
+          query: nextQuery,
           depth: branch.depth + 1,
         };
         if (move.terminal) {
@@ -264,6 +273,7 @@ function buildPath(
     const status: ResolutionStatus = confidence === 'AMBIGUOUS' ? 'AMBIGUOUS' : 'RESOLVED';
     return {
       steps: branch.steps,
+      effectiveRequest: branch.query,
       nodes: branch.nodes,
       terminalNodeId,
       confidence,
@@ -278,6 +288,7 @@ function buildPath(
       : 'UNRESOLVED';
   return {
     steps: branch.steps,
+    effectiveRequest: branch.query,
     nodes: branch.nodes,
     terminalNodeId: null,
     confidence,

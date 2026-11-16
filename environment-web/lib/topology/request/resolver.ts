@@ -23,6 +23,8 @@ export const RESERVED_RESOLVER_NAMES = {
 /** A single candidate expansion produced by a resolver. */
 export type ResolutionMove = {
   node: TopologyNode;
+  /** Effective request after this hop, when a proxy changes its destination. */
+  query?: PathQuery;
   /**
    * True when this node is a valid endpoint for the request (e.g. later tasks
    * will mark APPLICATION nodes terminal). Terminal moves stop branching.

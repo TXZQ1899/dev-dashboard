@@ -458,6 +458,9 @@ Local GitLab 采集任务已下线，不再执行独立、全量或定时采集�
 | `region` | `string` | 是 | 区域 |
 | `zone` | `string` | 是 | 可用区 |
 | `instanceType` | `string` | 是 | 规格族 |
+| `chargeType` | `string` | 否 | 来源 `InstanceChargeType`，如 `PrePaid` / `PostPaid`；空值表示未知 |
+| `renewalStatus` | `string` | 否 | 包年包月实例续费状态：`AutoRenewal`、`Normal` 或 `NotRenewal`；空值表示未知。AccessKey 通过 ECS DescribeInstanceAutoRenewAttribute 查询；Cookie 列表未提供时留空 |
+| `expiredAt` | `string` | 否 | 来源 `ExpiredTime`，保留原始时间及其时区；空值表示未知 |
 
 ### 样本
 
@@ -1244,6 +1247,7 @@ Route 建议保留：
 - context
 - Nginx host / asset
 - configurationVersion
+- file（兼容旧拓扑）及 files（同一路由对应的所有已采集配置文件路径；缺失时为空）
 
 ## 10.14 Repository
 
@@ -1705,3 +1709,7 @@ Redis 使用宿主机网络的容器，如果已核对容器进程、启动脚�
 
 - `runtime/mysql_process_catalog.py` 仅处理当前版本中用户明确指定分别建档的 17 个进程；确认绑定资产、进程观察及同机 DevOps 部署范围。经实际版本检查的 16 个 MySQL 使用 `MySQL_cluster_序号`，MariaDB 使用独立技术类型及 `MariaDB_cluster_序号`。环境为 `UNIDENTIFIED`，覆盖 `PARTIAL`，逐进程归组依据为用户指令、置信度 `INFERRED`；复制及应用管理关系保留 `UNKNOWN`，不以用户指定归组推断复制状态。
 - 宿主机监听端点保留直接观察；Podman 的容器监听另存在 `containerObservedEndpoints`，未验证宿主机数据库端口映射时不显示为宿主机端点。提权失败的 MariaDB 保留监听未知，不能把快照的模糊端口当成直接监听。证据及用户确认按内容哈希保存数据卷，来源与 DMS 目录分离，重复导入保持幂等。
+
+### 请求路径中的 Kong 查询时证据
+
+请求链路在 `PRODUCT` / `TEST` 分别识别用户提供的 Kong Admin 地址 `10.179.4.220:8001` / `10.179.2.144:8001`；两台节点通过 Admin 配置核实 HTTP proxy 监听 8000。只有链路实际到达对应环境的 `IP:8000` 才只读查询该节点的 Admin API。查询时从 route、service、upstream 和正权重 IP target 获取证据并附观察时间；结果不写入拓扑快照，健康状态和插件行为未核实。仅唯一可能匹配且无需未知请求条件、正则或其他未支持路由条件的 route 可继续；接口失败、路由不唯一或无法识别时保留未解析。target 按 IP 和端口与部署关联；不得将 Admin 端口当成请求路径的后端端口。Nginx 转发 URI 基于已采集的 `proxy_pass` 推导，未采集的 rewrite 和 Host 覆盖可能改变结果，路径置信度保留推断与警告。未指定环境或 `SIMULATION` 不自动选择 Kong。

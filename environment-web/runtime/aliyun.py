@@ -74,5 +74,7 @@ def ecs_snapshot(raw, projects):
             'privateIps':list(dict.fromkeys(p for p in private if p)) or ([extra['innerIpAddress']] if extra.get('innerIpAddress') else []),
             'publicIps':list(dict.fromkeys(p for p in public if p)),
             'tags':{t['TagKey']:t.get('TagValue','') for t in extra.get('tags',[])+array(i,'Tags','Tag')},
-            'status':i.get('Status','Unknown'),'region':i['RegionId'],'zone':i.get('ZoneId',''),'instanceType':i.get('InstanceType','')})
+            'status':i.get('Status','Unknown'),'region':i['RegionId'],'zone':i.get('ZoneId',''),'instanceType':i.get('InstanceType',''),
+            'chargeType':i.get('InstanceChargeType') or '', 'renewalStatus':i.get('RenewalStatus') or '',
+            'expiredAt':i.get('ExpiredTime') or ''})
     return {'fetchedAt':raw['FetchedAt'],'region':raw['RegionId'],'projects':projects,'instances':rows}

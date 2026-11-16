@@ -17,7 +17,12 @@ export type Instance = TenantResource & {
   region: string;
   zone: string;
   instanceType: string;
+  chargeType?: string;
+  renewalStatus?: string;
+  expiredAt?: string;
 };
+export const chargeTypeName = (value?: string) => ({ PrePaid: '包年包月', PostPaid: '按量付费' } as Record<string, string>)[value || ''] ?? (value || '未知');
+export const renewalStatusName = (value?: string) => ({ AutoRenewal: '自动续费', Normal: '手动续费', NotRenewal: '不再续费' } as Record<string, string>)[value || ''] ?? (value || '未知');
 export const instances: Instance[] = snapshot.instances.map((row) => ({
   ...row,
   tags: row.tags as Record<string, string>,

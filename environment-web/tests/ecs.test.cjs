@@ -18,6 +18,14 @@ const sandbox = {
 };
 vm.runInNewContext(output, sandbox);
 const e = sandbox.exports;
+test('billing labels preserve unknown and distinguish renewal states', () => {
+  assert.equal(e.chargeTypeName('PrePaid'), '包年包月');
+  assert.equal(e.chargeTypeName('PostPaid'), '按量付费');
+  assert.equal(e.renewalStatusName('AutoRenewal'), '自动续费');
+  assert.equal(e.renewalStatusName('Normal'), '手动续费');
+  assert.equal(e.renewalStatusName('NotRenewal'), '不再续费');
+  assert.equal(e.renewalStatusName(), '未知');
+});
 test('tenant filters and resource group keys retain account scope', () => {
   const base = e.instances[0];
   const rows = [{ ...base, tenantId: 'a', tenantName: '账号 A', projectId: 'same' },

@@ -42,7 +42,8 @@ export type EvidenceSource =
   | 'ecs'
   | 'clb'
   | 'jumpserver'
-  | 'repository';
+  | 'repository'
+  | 'kong';
 
 export type Evidence = {
   tenantId?: string;
