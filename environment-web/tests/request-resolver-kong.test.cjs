@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { buildGraphIndex } = require('../lib/topology/path-explorer.ts');
-const { KongResolver, KONG_GATEWAYS, loadKongData } = require('../lib/topology/request/kong.ts');
+const { KongResolver, KONG_GATEWAYS, kongEnvironmentWarnings, loadKongData } = require('../lib/topology/request/kong.ts');
 const graph = { nodes: [], edges: [], stats: {}, generatedAt: '' };
 const index = buildGraphIndex(graph);
 const gateway = KONG_GATEWAYS.PRODUCT;
@@ -10,6 +10,17 @@ const context = { current: { type: 'ENDPOINT', identity: { ip: gateway.ip, port:
 const route = { id: 'r1', name: 'route', paths: ['/prod/'], protocols: ['http'], service: { id: 's1' } };
 const service = { id: 's1', name: 'service', host: 'up', protocol: 'http' };
 const data = () => ({ gateway, observedAt: '2026-11-13T00:00:00Z', routes: [route], services: { s1: service }, targets: { up: [{ id: 't1', target: '10.1.2.3:8001', weight: 100 }, { target: '10.1.2.4:8001', weight: 0 }] } });
+
+test('gateway mapping and environment mismatch diagnostics use the proxy endpoint', () => {
+  assert.deepEqual(KONG_GATEWAYS.TEST, { ip: '10.179.2.144', proxyPort: 8000, adminPort: 8001 });
+  assert.deepEqual(KONG_GATEWAYS.PRODUCT, { ip: '10.179.4.220', proxyPort: 8000, adminPort: 8001 });
+  const paths = [{ nodes: [{ type: 'ENDPOINT', identity: { ip: KONG_GATEWAYS.TEST.ip, port: 8000 } }] }];
+  assert.match(kongEnvironmentWarnings(paths, 'PRODUCT')[0], /TEST/);
+  assert.match(kongEnvironmentWarnings(paths, null)[0], /未指定/);
+  assert.deepEqual(kongEnvironmentWarnings(paths, 'TEST'), []);
+  paths[0].nodes[0].identity.port = 8001;
+  assert.deepEqual(kongEnvironmentWarnings(paths, 'PRODUCT'), []);
+});
 
 test('Kong follows a unique supported route to positive-weight endpoint with evidence', () => {
   const resolver = new KongResolver(data());

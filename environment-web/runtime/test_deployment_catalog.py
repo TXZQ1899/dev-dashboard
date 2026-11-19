@@ -4,7 +4,7 @@ import os
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 try:
     import deployment_catalog as c
@@ -104,6 +104,26 @@ class CategoryCacheTests(unittest.TestCase):
         self.assertEqual(store.categories(None, '', '', [], 'present', 'travel'), [])
         self.assertEqual(store.categories(None, '', '', [], 'present', 'group'), ['APPLICATION'])
         self.assertEqual(store.execute.call_count, 3)
+
+    def test_server_business_evidence_preserves_all_environments_and_unclassified_units(self):
+        store = c.Catalog({'source_key': 'fixture'})
+        store.migrate = Mock()
+        store.connection = MagicMock()
+        store.connection.return_value.__enter__.return_value = object()
+        store.head = Mock(return_value={'snapshot_sha256': 'abc'})
+        store.execute = Mock(return_value=[
+            {'ip': '192.0.2.10', 'environment': 'TEST', 'domain_name': '商旅', 'unit_type': 'APPLICATION', 'object_kind': 'DEVOPS_APPLICATION', 'native_key_json': '{"appId":"42"}'},
+            {'ip': '192.0.2.10', 'environment': 'UNIDENTIFIED', 'domain_name': None, 'unit_type': 'MIDDLEWARE'},
+        ])
+        result = store.server_business_evidence()
+        self.assertEqual(result['snapshotSha256'], 'abc')
+        self.assertEqual([r['environment'] for r in result['evidence']], ['TEST', 'UNIDENTIFIED'])
+        self.assertIsNone(result['evidence'][1]['domainName'])
+        self.assertEqual(result['evidence'][0]['appId'], '42')
+        self.assertIsNone(result['evidence'][1]['appId'])
+        sql = store.execute.call_args.args[1]
+        self.assertIn("i.instance_kind<>'MANAGED_SERVICE'", sql)
+        self.assertIn("i.presence_status='PRESENT'", sql)
 
 
 @unittest.skipUnless(os.environ.get('ENVSCOPE_CATALOG_MYSQL_TEST') == '1', 'requires the isolated MySQL integration test container')

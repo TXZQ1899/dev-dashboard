@@ -497,6 +497,35 @@ class Catalog:
                 {'appId': text(decode(row['native_key_json'], {}).get('appId')), 'domainName': row['domain_name']}
                 for row in rows if decode(row['native_key_json'], {}).get('appId') is not None]}
 
+    def server_business_evidence(self):
+        """Current catalog associations, retaining environment and unclassified units."""
+        self.migrate()
+        suffixes = ('zookeeper', 'nacos', 'nginx', 'kong', 'redis', 'elasticsearch',
+                    'rabbitmq', 'canal', 'kafka', 'mongodb', 'postgresql', 'jenkins',
+                    'mysql', 'mysql-process')
+        sources = [self.source_key, *(self.source_key + ':' + suffix for suffix in suffixes)]
+        with self.connection() as conn:
+            head = self.head(conn)
+            if not head:
+                raise CatalogError('部署单元目录尚未导入')
+            rows = self.execute(conn, """SELECT DISTINCT i.primary_ip AS ip, e.environment,
+                bd.name AS domain_name, u.unit_type, s.native_key_json, s.object_kind
+                FROM deployment_instance i
+                JOIN deployment_unit_environment e ON e.id=i.unit_environment_id
+                JOIN deployment_unit u ON u.id=e.unit_id
+                JOIN deployment_unit_source s ON s.unit_id=u.id
+                LEFT JOIN business_system bs ON bs.id=u.system_id
+                LEFT JOIN business_domain bd ON bd.id=bs.domain_id
+                WHERE i.presence_status='PRESENT' AND s.presence_status='PRESENT'
+                  AND i.instance_kind<>'MANAGED_SERVICE' AND i.primary_ip IS NOT NULL
+                  AND i.primary_ip<>'' AND s.source_instance_key IN (""" +
+                ','.join(['%s'] * len(sources)) + ')', tuple(sources))
+            return {'snapshotSha256': head['snapshot_sha256'],
+                    'evidence': [{'ip': r['ip'], 'environment': r['environment'],
+                                  'domainName': r['domain_name'], 'unitType': r['unit_type'],
+                                  'appId': text(decode(r.get('native_key_json'), {}).get('appId')) if r.get('object_kind') == 'DEVOPS_APPLICATION' else None}
+                                 for r in rows]}
+
     def read(self, *, query='', page=1, page_size=20, presence='present', unit_id=None, environment=None, category=None, business=None):
         self.migrate()
         with self.connection() as conn:

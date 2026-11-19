@@ -69,6 +69,7 @@ const lib = evaluate(
     if (id === '@/lib/ecs') return { instances: ecsInstanceRows };
     if (id === '@/lib/local-servers')
       return {
+        localServers: [{ ip: '192.0.2.4' }],
         nominalMemoryGiB: (memoryMB) => {
           const capacities = [2, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256];
           const gib = memoryMB / 1024;
@@ -80,6 +81,12 @@ const lib = evaluate(
     throw new Error(id);
   },
 );
+
+test('服务器清单缺失仅在 ECS 与本地清单均不包含 IP 时标记', () => {
+  assert.equal(lib.ipMissingFromServerInventories('192.0.2.4'), false);
+  assert.equal(lib.ipMissingFromServerInventories('192.0.2.99'), true);
+  assert.equal(lib.ipMissingFromServerInventories(''), false);
+});
 
 test('extractPortFromCommand captures Spring Boot and generic port flags', () => {
   assert.equal(lib.extractPortFromCommand('java -jar app.jar --server.port=8080'), '8080');

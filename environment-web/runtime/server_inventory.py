@@ -17,6 +17,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from urllib.parse import urlencode, urlsplit
 
+from kubernetes_inventory import collect_kubernetes_inventory
+
 BASE = 'http://10.179.2.146:8080'
 
 _SLOT_NAME = re.compile(r'^(slot:\d+)/')
@@ -1414,6 +1416,10 @@ def inspect_asset(asset, accounts, cookie, folidev_pw, root_alt1, root_alt2, ip_
             if not elevated: result['warnings'].append('sudo 不可用，仅采集当前账号可见进程，完整性未确认')
             if malformed: result['warnings'].append(f'{malformed} 行进程无法解析')
             result['docker'] = collect_docker_inventory(terminal)
+            result['kubernetes'] = collect_kubernetes_inventory(terminal, rows) if rc == 0 else {'status': 'not_collected', 'processes': [], 'warnings': ['进程采集失败']}
+            if not elevated and result['kubernetes']['status'] == 'complete':
+                result['kubernetes']['status'] = 'partial'
+                result['kubernetes']['warnings'].append('进程列表权限不足，覆盖范围不完整')
             usage = collect_usage(terminal)
             if usage: result['serverUsage'] = usage
             # Host listeners remain useful even when ps returns no visible rows.

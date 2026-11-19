@@ -7,7 +7,7 @@ import { NODE_TYPE_BY_KIND, buildGraphIndex, explorePaths } from '../lib/topolog
 import { exploreDomainChain } from '../lib/topology/domain-chain.ts';
 import { findNginxLocations } from '../lib/topology/nginx-location.ts';
 import { createDefaultResolverRegistry, resolveRequestPathWithIndex } from '../lib/topology/request/index.ts';
-import { KONG_GATEWAYS, KongResolver, loadKongData } from '../lib/topology/request/kong.ts';
+import { KONG_GATEWAYS, KongResolver, kongEnvironmentWarnings, loadKongData } from '../lib/topology/request/kong.ts';
 
 // stdout is a pipe whenever this script is driven by the runtime service or any
 // other program. console.log is fire-and-forget and process.exit() then drops
@@ -150,6 +150,7 @@ async function main() {
         trace = resolveRequestPathWithIndex(index, query, { ...resolveOptions, registry: createDefaultResolverRegistry().register(new KongResolver(kong)) });
         if (kong.error) trace.warnings.push(`Kong Admin API unavailable or incomplete: ${kong.error}`);
       }
+      trace.warnings.push(...kongEnvironmentWarnings(trace.paths, options.env || null));
     } catch (error) {
       throw usage(`Invalid request query "${query}": ${error.message}`);
     }

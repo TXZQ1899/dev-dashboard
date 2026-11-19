@@ -3,7 +3,7 @@ import { jarName, type Process, type Asset, type Webapp, type AppPort } from '@/
 import { apps, envs, inventoryDate, type App, type Env } from '@/lib/inventory';
 import { specs as serverSpecs, type ServerSpec } from '@/lib/server-specs';
 import { instances } from '@/lib/ecs';
-import { nominalMemoryGiB } from '@/lib/local-servers';
+import { nominalMemoryGiB, localServers } from '@/lib/local-servers';
 
 export type AppComparison = {
   app: App & { ports: string[] };
@@ -406,6 +406,12 @@ for (const s of serverSpecs) {
 const ecsByIp = new Map<string, (typeof instances)[number]>();
 for (const inst of instances) {
   for (const ip of [...inst.privateIps, ...inst.publicIps]) ecsByIp.set(ip, inst);
+}
+
+// 清单缺失仅说明没有收录，不能证明机器已经下线或不存在。
+const localServerIps = new Set(localServers.map(server => server.ip));
+export function ipMissingFromServerInventories(ip: string): boolean {
+  return !!ip.trim() && !ecsByIp.has(ip.trim()) && !localServerIps.has(ip.trim());
 }
 
 export type IpServerState = 'not_collected' | 'can_login' | 'cannot_login';

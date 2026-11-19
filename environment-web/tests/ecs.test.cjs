@@ -180,3 +180,15 @@ test('sorting does not depend on the SSR or browser default locale', () => {
     JSON.stringify(e.groupInstances(e.instances, ['project', 'tag:env'])),
   );
 });
+test('manual labels participate in filters and preserve a later ECS key collision', () => {
+  const row = { ...e.instances[0], tags: { owner: 'cloud', team: 'platform' }, manualTags: { owner: 'manual', team: 'platform' } };
+  const rows = [row];
+  assert.ok(e.tagValues('owner', rows).includes(JSON.stringify('manual')));
+  assert.ok(e.tagValues('owner', rows).includes(JSON.stringify('cloud')));
+  for (const value of ['manual', 'cloud']) {
+    const filters = { ...e.emptyFilters, tags: [{ key: 'owner', value: JSON.stringify(value) }] };
+    assert.equal(e.filterInstances(rows, filters).length, 1);
+    assert.equal(e.filtersFromQuery(e.filtersQuery(filters), rows).tags[0].value, JSON.stringify(value));
+  }
+  assert.equal(e.groupInstances(rows, ['tag:owner'])[0].label, 'owner · cloud');
+});

@@ -323,6 +323,7 @@ test('classifies common middleware by its process entry point before generic run
   ['java -cp /usr/share/elasticsearch/lib/* org.elasticsearch.bootstrap.Elasticsearch','Elasticsearch'],
   ['/opt/elasticsearch/jdk/bin/java -Des.path.home=/opt/elasticsearch','Elasticsearch'],
   ['java -m org.elasticsearch.server/org.elasticsearch.bootstrap.Elasticsearch','Elasticsearch'],
+  ['java -classpath /sensorsdata/lib/* com.sensorsdata.cloudatlas.server.ScaServerMain','神策数据'],
   ['java -cp /opt/zookeeper/* org.apache.zookeeper.server.quorum.QuorumPeerMain /etc/zoo.cfg','ZooKeeper'],
   ['java -jar /home/nacos/target/nacos-server.jar','Nacos'],
   ['java -cp /opt/canal/lib/* com.alibaba.otter.canal.deployer.CanalLauncher','Canal'],

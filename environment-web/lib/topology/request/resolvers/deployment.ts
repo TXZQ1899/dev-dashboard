@@ -158,15 +158,33 @@ export class DeploymentResolver implements PathResolver {
       pool = envFiltered;
     }
 
-    // Confidence follows the precedence table; multiple candidates stay AMBIGUOUS.
+    // Runtime appPorts can disambiguate overlapping DevOps declarations only
+    // when every recorded listener observation agrees on one Java app name.
+    let runtimeSelected = false;
+    if (usedPortMatch && pool.length > 1 && endpoint.attributes.runtimeKind === 'Java' && Array.isArray(endpoint.attributes.runtimePids) && endpoint.attributes.runtimePids.length > 0) {
+      const observations = endpoint.evidence.filter(e => e.source === 'jumpserver' && e.reference === 'environment-web/lib/jumpserver-snapshot.json inspection.appPorts');
+      const app = typeof endpoint.attributes.runtimeApp === 'string' ? endpoint.attributes.runtimeApp : '';
+      const expected = `Runtime Java ${app} listening on ${ip}:${endpointPort}`;
+      if (app && observations.length > 0 && observations.every(e => e.detail === expected)) {
+        const matched = pool.filter(deployment => context.index.nodeById.get(`application:${text(deployment.identity.appId)}`)?.label === app);
+        if (matched.length === 1) {
+          pool = matched;
+          runtimeSelected = true;
+        }
+      }
+    }
+
+    // Runtime-name correlation is inferred even when the observation is direct.
     const confidence: Confidence =
-      pool.length > 1 ? 'AMBIGUOUS' : usedPortMatch ? 'EXACT' : 'INFERRED';
+      pool.length > 1 ? 'AMBIGUOUS' : runtimeSelected ? 'INFERRED' : usedPortMatch ? 'EXACT' : 'INFERRED';
 
     const warnings: string[] = [];
     const evidence: Evidence[] = [...endpoint.evidence];
     for (const deployment of pool) evidence.push(...deployment.evidence);
 
-    if (pool.length > 1) {
+    if (runtimeSelected) {
+      warnings.push(`Runtime Java listener ${endpoint.attributes.runtimeApp} on ${ip}:${endpointPort} uniquely matches the application name; deployment ownership is inferred from the observed process name.`);
+    } else if (pool.length > 1) {
       const detail = usedPortMatch
         ? `${pool.length} deployments on ${ip}:${endpointPort}`
         : `${pool.length} deployments on host ${ip} (port ${endpointPort} is unknown or unmatched)`;

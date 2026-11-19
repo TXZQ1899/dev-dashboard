@@ -48,7 +48,7 @@ import {
   type Env,
   type App,
 } from '@/lib/inventory';
-import { appHasProcessOnIp, appProcessStatusSummary, appMatchesDeploymentPeriod, appOverYearUndeployed, appMatchOnIp, envServerVerdicts, ipServerState, ipSpecSummary, latestAppDeploymentTime, type ServerVerdicts } from '@/lib/process-comparison';
+import { appHasProcessOnIp, appProcessStatusSummary, appMatchesDeploymentPeriod, appOverYearUndeployed, appMatchOnIp, envServerVerdicts, ipServerState, ipMissingFromServerInventories, ipSpecSummary, latestAppDeploymentTime, type ServerVerdicts } from '@/lib/process-comparison';
 import { formatBeijingTime } from '@/lib/datetime';
 import { appRepositoryNameMatches } from '@/lib/repositories';
 import { businessTab, type BusinessTab } from '@/lib/application-business';
@@ -837,6 +837,7 @@ function AppList() {
                                         <TableCell>
                                           <code>{r.ip || '未返回 IP'}</code>
                                           {r.ip && <ServerStateMark ip={r.ip} />}
+                                          {r.ip && ipMissingFromServerInventories(r.ip) && <span className="server-state not-collected" title="该 IP 不在当前 ECS 或本地机房服务器清单中，不代表已确认下线">未在服务器清单中</span>}
                                           {r.ip && !appHasProcessOnIp(a.name, r.ip) && (
                                             <Tooltip>
                                               <TooltipTrigger

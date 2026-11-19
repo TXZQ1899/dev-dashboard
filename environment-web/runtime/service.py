@@ -595,6 +595,14 @@ class Service:
         result['matchesCatalog'] = result.pop('snapshotSha256') == hashlib.sha256(raw).hexdigest()
         return result
 
+    def catalog_server_business(self):
+        result = self.catalog_store.server_business_evidence()
+        identifier, raw = self.catalog_context()
+        result['matchesCatalog'] = result.pop('snapshotSha256') == hashlib.sha256(raw).hexdigest()
+        result['snapshotVersion'] = identifier
+        result['ecsFetchedAt'] = read(DATA/'versions'/identifier/'ecs-snapshot.json', {}).get('fetchedAt')
+        return result
+
     def version(self, identifier):
         if not isinstance(identifier, str) or not re.fullmatch(r'[A-Za-z0-9-]{1,80}', identifier):
             raise ValueError('无效版本')
@@ -2050,6 +2058,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(200, self.server.service.catalog_application_domains())
             except CatalogError as exc: return self.json(503, {'error': str(exc)})
             except Exception: return self.json(503, {'error': '业务领域暂不可用，请稍后重试'})
+        if urlsplit(self.path).path == '/api/catalog/server-tags':
+            try:
+                with self.server.service.lock: return self.json(200, read(DATA/'server-tags.json', {}))
+            except (ValueError, OSError): return self.json(503, {'error':'人工标签读取失败，请检查数据卷'})
+        if urlsplit(self.path).path == '/api/catalog/server-business':
+            try:
+                return self.json(200, self.server.service.catalog_server_business())
+            except CatalogError as exc: return self.json(503, {'error': str(exc)})
+            except Exception: return self.json(503, {'error': '服务器业务关联暂不可用，请稍后重试'})
         if urlsplit(self.path).path == '/api/catalog/deployment-units':
             try:
                 return self.json(200, self.server.service.catalog_query(parse_qs(urlsplit(self.path).query)))
@@ -2123,6 +2140,18 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError: return self.json(503, {'error':'不用同步清单保存失败，请检查数据卷'})
             elif self.path=='/api/catalog/application-config/refresh':
                 return self.json(202, service.start_single_config_sync(payload))
+            elif self.path=='/api/catalog/server-tags':
+                try:
+                    try: from server_tags import update
+                    except ModuleNotFoundError: from runtime.server_tags import update
+                    with service.lock:
+                        current = read(DATA/'current.json', {}).get('id')
+                        if not current: raise ValueError('缺少当前数据版本')
+                        snapshot = read(service.version(current)/'ecs-snapshot.json', {})
+                        result = update(read(DATA/'server-tags.json', {}), snapshot, payload)
+                        write(DATA/'server-tags.json', result)
+                    return self.json(200, result)
+                except OSError: return self.json(503, {'error':'人工标签保存失败，请检查数据卷'})
             elif self.path=='/api/catalog/deployment-units/import':
                 return self.json(202, service.start_catalog_sync())
             elif self.path=='/api/settings/config':service.save_settings(payload)

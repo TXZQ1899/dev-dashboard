@@ -36,6 +36,8 @@
 | JumpServer 资产 / Nginx | `environment-web/lib/jumpserver-snapshot.json`；版本目录 `nginx-configs/<sha256(assetId)>.json` | `assets[].id`；分组 `groups[].id` | 421 asset / 20 group | 资产 IP 进入宽表 `sources.jumpserver` |
 | 宽表 | 运行时由 `environment-web/lib/resource-comparison.ts` 生成，不单独落盘 | `ip` | 610 | 按 IP 汇总以上来源 |
 
+服务器资源页的 App Atlas 人工标签独立保存于数据卷 `server-tags.json`，以 `[tenantId（旧数据为 legacy-aliyun）, region, ECS 实例 ID]` 的紧凑 JSON 字符串为键，值为标签键值字典。该数据不写回 ECS 或采集快照，采集和版本切换不覆盖它；新增时验证当前 ECS 快照中实例唯一且标签键未存在。页面将人工标签与 ECS 标签分别展示并标注来源，筛选和导出包含两者；若之后 ECS 采集出现同键标签，两种来源仍分别保留，分组使用 ECS 值。
+
 ## 1. DevOps 应用环境
 
 应用列表的按需 Git 地址检查独立于采集快照，结果写入数据卷 `checks/git-address/latest.json`，包含来源版本、DevOps 快照时间、检查时间及各应用的原始地址、状态与原因；不修改原始快照。检查覆盖应用及各环境声明的地址，按规范化地址去重；当前仅检查 Codeup，其他平台保留待核实。`missing` 表示接口返回未找到（可能受账号权限限制），`denied` 表示明确无权，`unknown` 包含网络及不支持的地址。检测到登录或安全验证中断时，任务报错并保留此前结果，不将未检查地址写成新的结果。应用列表只对匹配当前快照时间和原始地址的结果显示标签，并忽略旧结果中的登录中断类标签；检查不验证 Git clone 凭据。
@@ -1555,6 +1557,9 @@ properties 文件中的 `nacos.config.ext-config[n].data-id` 等索引扩展项�
 ### 查询与触发 API
 
 - `GET /api/catalog/application-domains`：返回 DevOps 应用 ID 与当前目录业务领域的关联，以及目录与当前快照是否一致。应用列表依据该关联展示地中海度假集团、商旅和其它三个分类；没有部署单元关联的应用保持未确定，不视为未分类。
+- `GET /api/catalog/server-business`：返回当前可见部署实例的 IP、环境、业务领域和单元类型及目录快照一致性；覆盖全部环境，排除无主机 IP 的托管服务。服务器资源页仅在 IP 唯一映射到 ECS 时关联，无法唯一匹配的证据保留待确认；ECS 实例名包含“商旅”时也关联商旅。未识别的实例若有可解析的项目名称，以该名称作为业务分类；“未指定项目”和“默认资源组”除外。其余分类为集团、商旅、其它（无领域或未分类的应用和组件）和未识别；一台关联多个分类时，按集团 → 商旅 → 其它顺序统计一次并展示全部分类。ECS 台数、CPU、内存及有公网 IP 的实例数均使用同一分配规则；这不证明业务所有权或服务器独占。
+- 该接口的 DevOps 应用证据另含 `appId`。ECS 关联应用仅统计目录中当前实例的 IP 可唯一映射至 ECS，且同 IP 的 JumpServer 已采集进程按应用名规则唯一匹配到该应用的结果；同一服务器同一应用去重，多候选保留待确认。结果仅代表已观察部署，进程不可采集或未匹配不证明没有部署；目录或 ECS 快照不一致时显示待核实。应用列表的“未在服务器清单中”仅表示 IP 不在 ECS 或本地机房清单，不能证明服务器不存在。本地清单包含位于确认网段的 DevOps 候选 IP，因此清单收录也不独立证明服务器存在。
+- 服务器详细资源页在汇总指标下展示业务资源分布；清单默认仅按业务分类分组，可选继续按标签细分。项目名称按实例所属租户及资源组在明细中显示，不作为默认分组层级。
 - `GET /api/catalog/deployment-units`：`q` 搜索名称/编码/应用 ID，`page`、`pageSize`（1–100），`presence=present|all`，`category`（应用为 `APPLICATION`，组件为技术类型），可选 `business=group|travel|other` 按业务领域分类：商旅归 travel，未分类或无领域归 other，其余归 group。返回 `source`、`units`、`summary`、`categories`、`categorySummary`、`pagination`、`activeSnapshot`、`job`。`categories` 按业务分类及来源状态分别缓存最多 30 秒，不受搜索和类型筛选影响；目录导入发生变更时立即清除本进程缓存。`categorySummary` 跨分页按当前筛选统计单元和各环境当前观察实例，服务器按各环境内非空 IP 去重；历史筛选仅扩展单元范围，不将未再观察到的实例计入。
 - 同接口传 `unitId`、可选 `environment`，返回 `source`、`instances`、`activeSnapshot`、`job`；实例当前属性、最近时间和来源可见性分开返回。
 - `source` 含原始快照版本、哈希、采集/导入时间；`activeSnapshot.matchesCatalog` 表示当前页面快照是否与该目录来源相同。
@@ -1713,3 +1718,11 @@ Redis 使用宿主机网络的容器，如果已核对容器进程、启动脚�
 ### 请求路径中的 Kong 查询时证据
 
 请求链路在 `PRODUCT` / `TEST` 分别识别用户提供的 Kong Admin 地址 `10.179.4.220:8001` / `10.179.2.144:8001`；两台节点通过 Admin 配置核实 HTTP proxy 监听 8000。只有链路实际到达对应环境的 `IP:8000` 才只读查询该节点的 Admin API。查询时从 route、service、upstream 和正权重 IP target 获取证据并附观察时间；结果不写入拓扑快照，健康状态和插件行为未核实。仅唯一可能匹配且无需未知请求条件、正则或其他未支持路由条件的 route 可继续；接口失败、路由不唯一或无法识别时保留未解析。target 按 IP 和端口与部署关联；不得将 Admin 端口当成请求路径的后端端口。Nginx 转发 URI 基于已采集的 `proxy_pass` 推导，未采集的 rewrite 和 Host 覆盖可能改变结果，路径置信度保留推断与警告。未指定环境或 `SIMULATION` 不自动选择 Kong。
+
+同一环境中多个 DevOps 部署声明了相同 IP 和端口时，请求解析可使用该端点的 JumpServer `appPorts` Java 进程观察收窄候选：必须有 PID、所有端口观察一致且运行时应用名精确匹配唯一候选应用。应用名与部署的关联为 `INFERRED`，保留观察时间和原始证据；观察缺失、冲突或无法唯一匹配时仍保留全部歧义候选，不修改原始部署声明。
+
+### Kubernetes 进程采集
+
+服务器巡检的 `inspection.kubernetes` 是独立的只读采集结果：`status` 为 `complete`、`partial`、`failed` 或 `not_collected`，旧快照缺失不代表没有 Kubernetes；`warnings` 保留不完整原因。最多检查 512 个非系统进程、其中最多对 64 个 Pod 进程检查 TCP 监听。`processes[]` 保留宿主机 PID、启动时钟 tick、Pod UID、容器 ID（可能为空）和网络命名空间，关系来自 `/proc/PID/cgroup`，并对照原进程启动时间及采集前后启动 tick；身份不一致时丢弃。可用时从 CRI 运行中容器和 Pod 清单取名称、命名空间、容器名及镜像，仅在容器 ID 和 Pod UID 同时匹配时补充，不读取环境变量或完整 inspect。缺少 CRI、Python、权限或工具时保留已有 cgroup 证据，名称等字段留空。
+
+Pod 监听保存在 `processes[].listeners[]`，包含地址、端口、TCP 和直接 PID 所有权证据；通过 `nsenter` 查询该进程的网络命名空间并在前后复核 PID 与网络空间。`listenerStatus` 为 `observed`、`unknown` 或 `not_collected`，空记录不能证明无监听。它独立于宿主机 `processes[].ports`，不证明宿主机端口发布、网络可达、业务归属或应用部署关系。该采集不使用 kubeconfig，也不会推断未验证的集群、Service 或部署单元。

@@ -248,6 +248,26 @@ test('deployment: same host multiple applications on the SAME port are AMBIGUOUS
   for (const p of trace.paths) assert.equal(p.confidence, 'AMBIGUOUS');
 });
 
+test('deployment: unique runtime Java name distinguishes overlapping declared ports', async () => {
+  const { resolveRequestPath } = await framework();
+  const base = appTopology({ appId: 'app-a', appName: 'service', port: '8080', env: 'TEST', hostName: 'runtime.example.com' });
+  const otherApp = application('app-b', 'service-job');
+  const otherDep = deployment('app-b', 'TEST', 'd1', '10.179.1.10', '8080');
+  const observation = { source: 'jumpserver', sourceId: 'asset:service:8080', reference: 'environment-web/lib/jumpserver-snapshot.json inspection.appPorts', detail: 'Runtime Java service listening on 10.179.1.10:8080', observedAt: OBSERVED_AT };
+  base.ep.attributes = { runtimeApp: 'service', runtimeKind: 'Java', runtimePids: [123] };
+  base.ep.evidence.push(observation);
+  const nodes = [...base.nodes, otherApp, otherDep];
+  const edges = [...base.edges, edge('hd-b', otherApp.id, otherDep.id, 'HAS_DEPLOYMENT', { environment: 'TEST' })];
+  const run = () => resolveRequestPath({ host: 'runtime.example.com', port: 8080, environment: 'TEST' }, graph(nodes, edges), { registry });
+  const registry = await fullRegistry();
+  const trace = run();
+  assert.equal(trace.paths.length, 1);
+  assert.equal(trace.paths[0].nodes[2].identity.appId, 'app-a');
+  assert.equal(trace.paths[0].confidence, 'INFERRED');
+  base.ep.evidence.push({ ...observation, sourceId: 'asset:service-job:8080', detail: 'Runtime Java service-job listening on 10.179.1.10:8080' });
+  assert.equal(run().paths.length, 2);
+});
+
 // ---------------------------------------------------------------------------
 // 5. environment filtering
 // ---------------------------------------------------------------------------

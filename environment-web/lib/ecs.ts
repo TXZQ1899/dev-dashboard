@@ -13,6 +13,8 @@ export type Instance = TenantResource & {
   privateIps: string[];
   publicIps: string[];
   tags: Record<string, string>;
+  manualTags?: Record<string, string>;
+  ecsTags?: Record<string, string>;
   status: string;
   region: string;
   zone: string;
@@ -88,8 +90,8 @@ export const tagLabel = (token: string) => {
   const value = JSON.parse(token);
   return value === null ? '未设置' : value === '' ? '空值' : String(value);
 };
-export const tagValues = (key: string) =>
-  [...new Set(instances.map((r) => tagToken(r, key)))].sort();
+export const tagValues = (key: string, rows: Instance[] = instances) =>
+  [...new Set(rows.flatMap((r) => [tagToken(r, key), ...(Object.hasOwn(r.manualTags ?? {}, key) ? [JSON.stringify(r.manualTags![key])] : [])]))].sort();
 export function filterInstances(rows: Instance[], filters: Filters) {
   const q = filters.query.trim().toLocaleLowerCase();
   return rows.filter(
@@ -100,7 +102,7 @@ export function filterInstances(rows: Instance[], filters: Filters) {
       (!filters.publicIp ||
         r.publicIps.length > 0 === (filters.publicIp === 'yes')) &&
       filters.tags.every(
-        (t) => !t.key || !t.value || tagToken(r, t.key) === t.value,
+        (t) => !t.key || !t.value || tagToken(r, t.key) === t.value || (Object.hasOwn(r.manualTags ?? {}, t.key) && JSON.stringify(r.manualTags![t.key]) === t.value),
       ) &&
       (!q ||
         [
@@ -170,13 +172,13 @@ export function filtersQuery(filters: Filters) {
     if (t.key && t.value) p.append('tag', JSON.stringify(t));
   return p.toString();
 }
-export function filtersFromQuery(search: string): Filters {
+export function filtersFromQuery(search: string, rows: Instance[] = instances): Filters {
   const p = new URLSearchParams(search);
   const tags: TagFilter[] = [];
   for (const raw of p.getAll('tag')) {
     try {
       const t = JSON.parse(raw);
-      if (tagKeys.includes(t.key) && tagValues(t.key).includes(t.value))
+      if (rows.some(row => Object.hasOwn(row.tags, t.key) || Object.hasOwn(row.manualTags ?? {}, t.key)) && tagValues(t.key, rows).includes(t.value))
         tags.push(t);
     } catch {
       /* Ignore malformed links. */

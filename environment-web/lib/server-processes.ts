@@ -6,7 +6,9 @@ export type Webapp = { name: string; mtime: string | null };
 export type Webapps = { status: string; apps: Webapp[] };
 export type ServerUsage = { cpuPercent: number; memPercent: number; memTotalMB: number; memUsedMB: number };
 export type DockerInventory = { status: 'complete' | 'partial' | 'failed' | 'not_available'; containers: {id: string; name: string; image: string; initPid: number; command: string; ports: {containerPort: string; hostIp: string; hostPort: string}[]}[] };
-export type Inspection = { sudoStatus?: string; configurationCount?: number; configurationVersion?: string; checkedAt: string; loginStatus: string; reason: string; account?: string; processStatus: string; processes: Process[]; appPorts?: AppPort[]; portStatus?: 'complete' | 'failed' | 'not_collected'; docker?: DockerInventory; webapps?: Webapps; nginxStatus: string; nginxRoutes: Route[]; warnings: string[]; serverUsage?: ServerUsage; attempts?: {account: string; reason: string}[] };
+export type KubernetesProcess = {pid: number; startTicks: string; podUid: string; containerId: string | null; networkNamespace: string; confidence: 'EXACT'; basis: string; podName?: string; namespace?: string; containerName?: string; image?: string; listeners: {address: string; port: number; protocol: 'tcp'; confidence: 'EXACT'}[]; listenerStatus: 'observed' | 'unknown' | 'not_collected'};
+export type KubernetesInventory = {status: 'complete' | 'partial' | 'failed' | 'not_collected'; processes: KubernetesProcess[]; warnings: string[]};
+export type Inspection = { sudoStatus?: string; configurationCount?: number; configurationVersion?: string; checkedAt: string; loginStatus: string; reason: string; account?: string; processStatus: string; processes: Process[]; appPorts?: AppPort[]; portStatus?: 'complete' | 'failed' | 'not_collected'; docker?: DockerInventory; kubernetes?: KubernetesInventory; webapps?: Webapps; nginxStatus: string; nginxRoutes: Route[]; warnings: string[]; serverUsage?: ServerUsage; attempts?: {account: string; reason: string}[] };
 export type Asset = { id: string; ip: string; hostname: string; inspection?: Inspection };
 // 把 location 修饰符翻译成给非 Nginx 读者看的匹配说明；无法识别时返回空串。
 export function locationHint(uri: string): string {
@@ -45,7 +47,7 @@ export function findLocationBlock(content: string, uri: string): {start: number;
   }
   return null;
 }
-export const processTypes = ['全部进程','Tomcat','Java Jar','其他 Java','Nginx','Kong','Elasticsearch','Kibana','ZooKeeper','Nacos','Canal','Kafka','RabbitMQ','RocketMQ','ActiveMQ','MongoDB','Redis','MySQL','PostgreSQL','Node','Python','其他进程','系统进程'] as const;
+export const processTypes = ['全部进程','Tomcat','Java Jar','其他 Java','Nginx','Kong','Elasticsearch','Kibana','ZooKeeper','神策数据','Nacos','Canal','Kafka','RabbitMQ','RocketMQ','ActiveMQ','MongoDB','Redis','MySQL','PostgreSQL','Node','Python','其他进程','系统进程'] as const;
 export type ProcessType = typeof processTypes[number];
 export const durations = [
   ['all','全部运行时间'],['week','未超过1星期（≤7天）'],['fortnight','未超过2星期（≤14天）'],
@@ -68,6 +70,7 @@ export function processType(process: Process): ProcessType {
     const jar=jarName(process)||'';
     if(entry(/^(?:org\.elasticsearch\.server\/)?org\.elasticsearch\.bootstrap\.Elasticsearch$/i)||
       (!jar&&entry(/^-Des\.path\.home=\S+$/i)))return 'Elasticsearch';
+    if(entry(/^com\.sensorsdata\.cloudatlas\.server\.ScaServerMain$/i))return '神策数据';
     if(entry(/^org\.apache\.zookeeper\.server\.(?:quorum\.QuorumPeerMain|ZooKeeperServerMain)$/i))return 'ZooKeeper';
     if(entry(/^com\.alibaba\.nacos\.Nacos$/i)||/^nacos-server(?:[-.][\w.-]+)?\.jar$/i.test(jar))return 'Nacos';
     if(entry(/^com\.alibaba\.otter\.canal\.(?:deployer\.CanalLauncher|admin\.CanalAdminApplication)$/i)||/^canal\.(?:deployer|admin)(?:[-.][\w.-]+)?\.jar$/i.test(jar))return 'Canal';
@@ -95,7 +98,7 @@ export function processType(process: Process): ProcessType {
 // 应用，但同样处于业务链路中，需要与业务应用一样提供“检测上下游”入口。
 // 已单独归类的中间件按类型判断；MongoDB/Elasticsearch/原生 RabbitMQ 等未归类的
 // 中间件按可执行文件名或命令行关键字识别。
-const middlewareTypes=new Set<ProcessType>(['MySQL','PostgreSQL','Redis','Kafka','Elasticsearch','Kibana','ZooKeeper','Nacos','Kong','Canal','RabbitMQ','RocketMQ','ActiveMQ','MongoDB']);
+const middlewareTypes=new Set<ProcessType>(['MySQL','PostgreSQL','Redis','Kafka','Elasticsearch','Kibana','ZooKeeper','神策数据','Nacos','Kong','Canal','RabbitMQ','RocketMQ','ActiveMQ','MongoDB']);
 export function isMiddlewareProcess(process: Process): boolean {
   if(process.system)return false;
   if(middlewareTypes.has(processType(process)))return true;
@@ -146,7 +149,7 @@ export function formatCommand(command: string): string {
   return lines.join('\n');
 }
 export type DockerAssociation = { container: DockerInventory['containers'][number]; basis: 'init' | 'descendant' | 'proxy' };
-export type ProcessRow = { asset: Asset; process: Process; type: ProcessType; name: string; seconds: number; workerCount?: number; docker?: DockerAssociation; typeBasis?: 'container-command' | 'container-image' };
+export type ProcessRow = { asset: Asset; process: Process; type: ProcessType; name: string; seconds: number; workerCount?: number; docker?: DockerAssociation; kubernetes?: KubernetesProcess; typeBasis?: 'container-command' | 'container-image' };
 function containerProcessType(process: Process, docker?: DockerAssociation): {type: ProcessType; typeBasis?: ProcessRow['typeBasis']} {
   const type=processType(process);
   if(!docker||(docker.basis!=='init'&&docker.basis!=='proxy')||(type!=='其他进程'&&type!=='其他 Java'))return {type};
@@ -197,8 +200,9 @@ export function processRows(assets: Asset[], now: number): ProcessRow[] {
   return assets.filter(a=>a.inspection?.loginStatus==='can_login').flatMap(asset=>{
     const processes=asset.inspection!.processes;
     const docker=dockerAssociations(asset.inspection!);
-    const workers=processes.filter(p=>isNginxWorker(p)&&!docker.has(p.pid));
-    const rows: ProcessRow[]=processes.filter(p=>!isNginxWorker(p)||docker.has(p.pid)).map(process=>{const association=docker.get(process.pid);return {asset,process,...containerProcessType(process,association),name:jarName(process)||process.name,seconds:runningSeconds(process,asset.inspection!.checkedAt,now),docker:association};});
+    const kubernetes=new Map((asset.inspection!.kubernetes?.processes||[]).map(p=>[p.pid,p]));
+    const workers=processes.filter(p=>isNginxWorker(p)&&!docker.has(p.pid)&&!kubernetes.has(p.pid));
+    const rows: ProcessRow[]=processes.filter(p=>!isNginxWorker(p)||docker.has(p.pid)||kubernetes.has(p.pid)).map(process=>{const association=docker.get(process.pid);return {asset,process,...containerProcessType(process,association),name:jarName(process)||process.name,seconds:runningSeconds(process,asset.inspection!.checkedAt,now),docker:association,kubernetes:kubernetes.get(process.pid)};});
     if(workers.length) {
       // 同一台服务器的所有 Nginx worker 进程合并为一条记录，提示 worker 数量；
       // 用 PID 最小的 worker 作为代表（通常最早启动），合并各 worker 的监听端口。
@@ -224,7 +228,7 @@ export function matchesServerQuery(asset: Asset, query: string): boolean {
 export function filterProcesses(rows: ProcessRow[], query: string, duration: Duration, type: ProcessType='全部进程') {
   const words=query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const ip=isSingleIpv4(query)?query.trim():null;
-  return rows.filter(r=> (type==='全部进程'||r.type===type) && matchesDuration(r.seconds,duration) && (ip?assetHasIp(r.asset,ip):words.every(word=>`${r.asset.ip} ${r.asset.hostname} ${r.process.pid} ${r.name} ${r.process.command} ${r.docker?.container.name||''} ${r.docker?.container.image||''}`.toLowerCase().includes(word))))
+  return rows.filter(r=> (type==='全部进程'||r.type===type) && matchesDuration(r.seconds,duration) && (ip?assetHasIp(r.asset,ip):words.every(word=>`${r.asset.ip} ${r.asset.hostname} ${r.process.pid} ${r.name} ${r.process.command} ${r.docker?.container.name||''} ${r.docker?.container.image||''} ${r.kubernetes?.podName||''} ${r.kubernetes?.namespace||''} ${r.kubernetes?.containerName||''}`.toLowerCase().includes(word))))
     .sort((a,b)=>b.seconds-a.seconds||a.asset.ip.localeCompare(b.asset.ip)||a.process.pid-b.process.pid||a.asset.id.localeCompare(b.asset.id));
 }
 // 服务器详情框内的进程搜索：按 PID、进程名（含业务名）、监听端口与详细命令匹配；

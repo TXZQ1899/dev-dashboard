@@ -11,6 +11,16 @@ export const KONG_GATEWAYS: Partial<Record<RequestEnvironment, { ip: string; pro
 type Row = Record<string, any>; // Admin API fields are validated before use.
 export type KongData = { gateway: NonNullable<(typeof KONG_GATEWAYS)[RequestEnvironment]>; observedAt: string; routes: Row[]; services: Record<string, Row>; targets: Record<string, Row[]>; error?: string };
 
+/** Report gateways reached under a different (or unspecified) environment. */
+export function kongEnvironmentWarnings(paths: { nodes: { type: string; identity: Record<string, unknown> }[] }[], environment?: RequestEnvironment | null): string[] {
+  return Object.entries(KONG_GATEWAYS).flatMap(([gatewayEnvironment, gateway]) => {
+    if (!gateway || gatewayEnvironment === environment) return [];
+    const reached = paths.some(path => path.nodes.some(node => node.type === 'ENDPOINT' && String(node.identity.ip) === gateway.ip && Number(node.identity.port) === gateway.proxyPort));
+    if (!reached) return [];
+    return [`Kong 网关 ${gateway.ip}:${gateway.proxyPort} 属于 ${gatewayEnvironment} 环境；当前查询环境为 ${environment || '未指定'}。请切换到 ${gatewayEnvironment} 后重新查询，当前环境不会访问该网关的 Admin API。`];
+  });
+}
+
 function possible(route: Row, query: PathQuery): boolean {
   const paths = route.paths;
   if (!Array.isArray(paths) || paths.length === 0) return true;

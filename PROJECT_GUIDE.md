@@ -518,3 +518,43 @@ PROJECT_GUIDE.md
 for AI development rules and stable engineering constraints.
 
 Tool-specific instruction files should remain thin and point back to this guide.
+
+## 21. 服务器登录与远程命令（仅限 JumpServer）
+
+需要登录服务器查看日志、进程或配置时，必须通过 Docker context `lenovo` 的 `envscope-local` 容器，经 JumpServer 建立终端，禁止从宿主机直接 SSH 目标机器，也不要使用仓库内的明文密码自行拼装登录命令。
+
+原因：
+
+- 目标机器的 SSH 登录由 JumpServer 统一授权，宿主机直连通常会被拒绝或无权限；
+- 登录账号、密码、提权方式和登录态都已在容器内维护，直接 SSH 会绕过同一套授权与提权逻辑；
+- 采集与运维证据必须来自同一条访问路径，便于复现和审计。
+
+### 标准做法
+
+1. 资产记录取当前快照 `jumpserver-snapshot.json`（版本见 `/data/current.json`），按 `ip` 精确匹配。
+2. 登录态与凭据位于数据卷：
+   - `/data/secrets/cookies.json`（`jumpserver` Cookie、`folidev` / `rootAlt1` / `rootAlt2` 密码）；
+   - `/data/secrets/ip-password-map.json`（每台机器的提权方式与已验证密码）。
+3. 使用 `application_check.open_terminal(asset, saved, ip_map)`：
+   - 通过 JumpServer API 读取该资产的授权系统账号；
+   - 经 koko WebSocket 建立终端并完成登录校验；
+   - 按 `ip-password-map` 依次尝试 `sudo -i` / `su` 完成提权。
+4. 命令通过 `Terminal.run()` 执行，一次只支持**单行**命令；多行脚本必须包成 `bash -c`。
+5. 任务结束关闭终端（`terminal.close()`）。
+
+可直接复用 Skill `jumpserver-server-access` 的脚本：
+
+```bash
+docker --context lenovo exec -i envscope-local python3 - \
+  --ip 10.58.9.86 \
+  --cmd "hostname; id -u; ps -eo pid,args | grep -i tomcat | grep -v grep" \
+  < .trae/skills/jumpserver-server-access/scripts/remote_exec.py
+```
+
+### 约束
+
+- 只读排查：不改配置、不重启服务、不清理文件；确需变更时先向用户确认。
+- Cookie 失效时 `open_terminal` 会报“无法通过 JumpServer 登录资产”，此时应更新 JumpServer Cookie，而不是改用宿主机 SSH。
+- 快照中 `loginStatus=cannot_login` 只代表上次采集失败，不阻止本次实时登录；登录失败要以本次报错为准。
+- 不得在输出、提交内容或文档中回显密码、Cookie、Token。
+- 大日志只做定向检索和有限行尾读取，不整份拉取。
