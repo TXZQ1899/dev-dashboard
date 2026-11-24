@@ -636,8 +636,8 @@ AccessKey 采集按 LB 隔离故障。列表或详情明确为 `inactive` / `loc
 | `account` | `string?` | 条件 | 成功登录账号 |
 | `sudoStatus` | `string?` | 条件 | root、passwordless、password、denied 等 |
 | `processStatus` | `string` | 是 | complete / partial / failed / not_collected |
-| `processes` | `Process[]` | 是 | 非系统进程 |
-| `excludedSystemProcesses` | `number?` | 条件 | 排除的系统进程行数 |
+| `processes` | `Process[]` | 是 | 成功解析的进程，包含使用 `system` 标记的系统进程 |
+| `excludedSystemProcesses` | `number?` | 条件 | 被识别并标记为系统进程的行数；原始 `processes` 中仍保留这些记录 |
 | `appPorts` | `AppPort[]` | 是 | 应用监听端口，按 (应用名, 端口) 归并；未采集或无应用端口为空数组 |
 | `portStatus` | `string?` | 条件 | TCP 监听端口查询状态：complete / failed / not_collected；与 PID 是否可见独立。failed 的空列表不能解释为没有监听；旧快照缺失时不补采集结论 |
 | `docker` | `DockerInventory?` | 条件 | 运行中 Docker 容器清单；旧快照或登录失败时不存在 |
@@ -674,6 +674,14 @@ AccessKey 采集按 LB 隔离故障。列表或详情明确为 `inactive` / `loc
 | `command` | `string` | 是 | 完整命令；敏感参数已脱敏 |
 | `ports` | `number[]?` | 条件 | 当前版本仅保存 `ss` 直接观察到此 PID 持有的 TCP 监听端口，不包含推断候选；旧快照沿用原采集口径 |
 | `inferredPorts` | `{port, address, protocol: "tcp", confidence: "INFERRED", basis}[]?` | 条件 | 实测监听 Endpoint 的唯一进程候选，未直接核验 FD/inode 所有权；与 `ports` 分开保存、显示及搜索，不用作直接 PID 证据 |
+
+服务器进程页面对指定的运维、监控和系统辅助进程做展示过滤（包括 tuned、salt-minion、AliYunDunMonitor、AliYunDun、AliYunDunUpdate、systemd-journald、cloudmonitor wrapper、指定的 cloudmonitor Java 应用、aliyun-service、rsync daemon、lvmetad、haveged、snmpd、Postfix master/qmgr/pickup、process-exporter 和 node_exporter）。过滤依据可执行文件及必要的命令参数，不改变原始采集、其他查询或端口证据；整机 CPU 差异判断仍计入隐藏的非系统进程。系统进程标记基于有限规则，未标记不证明一定是业务进程。
+
+服务器进程详情从 Java 启动命令的 JVM 参数中提取 `-Xms` 和 `-Xmx`，显示采集时 RSS（MiB）及 RSS / Xmx 百分比。只使用命令中明确给出的有效 Xmx，不推测 JVM 默认值；未识别、缺少 RSS 或非 Java 进程的比值显示为未知。RSS 包含堆外内存，因此比值可以超过 100%；Nginx worker 合并行不代表单一进程，不展示其 RSS。
+
+“服务器与进程”的可登录列表支持导出 Excel：服务器清单和进程明细覆盖当前全局筛选后的全部分页，不受单台进程详情的展开状态、分类标签、搜索或分页影响。明细采用默认可见的非系统进程及相同展示过滤，Nginx worker 沿用页面合并口径；监听端口的推断标记、容器分类推断标记和采集状态保留。系统进程告警可出现在服务器分类中，但不纳入默认进程明细。
+
+导出的 ECS 名称、实例 ID、租户和到期时间仅取 JumpServer 与 ECS 地址双向唯一匹配的实例；未确认时实例名称为“—”。进程应用 ID/名称由当前资产地址及唯一匹配实例的内公网地址，与 DevOps 各环境部署声明和进程名称规则关联；若直接观察到进程监听端口且部署端口已知，则要求端口吻合。多个候选无法唯一确认时保留未知，容器或 Pod 进程不据此强行关联。服务器部署应用按整台服务器的非系统、非过滤进程匹配结果按应用 ID 去重，不受页面全局进程搜索或运行时间筛选影响；这是可识别的观察数量，不表示全部实际部署。部分采集时已匹配数仍是不完整的下限，无匹配时数量为未知。
 
 ### `AppPort`
 

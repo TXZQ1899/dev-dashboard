@@ -56,6 +56,50 @@ export const durations = [
 ] as const;
 export type Duration = typeof durations[number][0];
 function args(command: string) { return command.match(/"(?:\\.|[^"\\])*"|'[^']*'|[^\s]+/g)?.map(s=>s.replace(/^(['"])(.*)\1$/,'$2')) || []; }
+// Extract only JVM launch options, never application arguments after the entry point.
+export function jvmMemory(process: Process): {config: string; rssToXmxPercent: number | null} {
+  const tokens=args(process.command);
+  const executable=(tokens[0]||'').split('/').pop()||'';
+  if(!/^(?:java|jsvc)$/i.test(executable))return {config:'',rssToXmxPercent:null};
+  const options: string[]=[];
+  let xmxBytes: number | null=null;
+  const optionsWithValue=new Set(['-cp','-classpath','--class-path','-p','--module-path','--upgrade-module-path','--add-modules','--limit-modules','--add-exports','--add-opens','--add-reads','--patch-module']);
+  for(let i=1;i<tokens.length;i++) {
+    const token=tokens[i];
+    if(token==='-jar'||token==='-m'||token==='--module'||token==='--'||!token.startsWith('-'))break;
+    if(optionsWithValue.has(token)){i++;continue;}
+    const match=token.match(/^-Xm([sx])(\d+)([kKmMgG]?)$/);
+    if(!match)continue;
+    options.push(token);
+    if(match[1]==='x') {
+      const multiplier: Record<string,number>={'':1,k:1024,m:1024**2,g:1024**3};
+      const bytes=Number(match[2])*multiplier[match[3].toLowerCase()];
+      xmxBytes=Number.isFinite(bytes)&&bytes>0?bytes:null;
+    }
+  }
+  const rss=process.rssKB;
+  const percent=xmxBytes!==null&&rss!=null&&Number.isFinite(rss)&&rss>=0?rss*1024/xmxBytes*100:null;
+  return {config:options.join(' '),rssToXmxPercent:percent!==null&&Number.isFinite(percent)?percent:null};
+}
+// Display-only exclusions. Use executable identity, not arbitrary arguments or
+// substring matches, so similarly named business processes remain visible.
+export function hideOperationalProcess(process: Process): boolean {
+  const tokens=args(process.command);
+  const executable=tokens[0]||'';
+  const base=executable.split('/').pop()||'';
+  const named=new Set(['salt-minion','AliYunDunMonitor','systemd-journald',
+    'lvmetad','haveged','snmpd','qmgr','pickup','process-exporter','node_exporter']);
+  if(named.has(base))return true;
+  if(executable==='/usr/local/cloudmonitor/jre/bin/java'&&tokens.includes('com.aliyun.tianji.cloudmonitor.Application'))return true;
+  if(executable==='/usr/local/aegis/aegis_update/AliYunDunUpdate'||/^\/usr\/local\/aegis\/aegis_client\/aegis_[^/]+\/AliYunDun$/.test(executable))return true;
+  if(executable==='/usr/sbin/tuned'||(/^(?:platform-)?python(?:\d+(?:\.\d+)*)?$/.test(base)&&tokens.slice(1).find(token=>!token.startsWith('-'))==='/usr/sbin/tuned'))return true;
+  if(/^python(?:\d+(?:\.\d+)*)?$/.test(base)&&tokens[1]?.split('/').pop()==='salt-minion')return true;
+  if(executable==='/usr/sbin/aliyun-service'||executable==='/usr/local/share/aliyun-assist/aliyun-service.symlink')return true;
+  if(/^\/usr\/local\/cloudmonitor\/wrapper\//.test(executable)&&base==='wrapper')return true;
+  if(base==='rsync'&&tokens.slice(1).includes('--daemon'))return true;
+  if(base==='master'&&/^\/usr\/lib(?:exec)?\/postfix\/master$/.test(executable))return true;
+  return false;
+}
 export function jarName(process: Process) {
   const tokens=args(process.command);const i=tokens.indexOf('-jar');
   return i>=0 && tokens[i+1] ? tokens[i+1].split('/').pop() : undefined;

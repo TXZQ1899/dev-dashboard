@@ -8,12 +8,15 @@ import { Button } from '@/components/ui/button';
 import { ApplicationCheckLink } from '@/components/application-check-link';
 import { IpMetaCell } from '@/components/ip-meta-cell';
 import { loginClass } from '@/lib/jumpserver-overview';
+import { instances } from '@/lib/ecs';
 
-import { processType, processTypes, durations, processRows, filterProcesses, matchesProcessQuery, matchesServerQuery, formatDuration, paginate, locationHint, findLocationBlock, isMiddlewareProcess, formatCommand, COMMAND_COLLAPSE_THRESHOLD, type Asset, type Inspection, type ProcessRow, type ProcessType, type Duration } from '@/lib/server-processes';
+import { processType, processTypes, durations, processRows, filterProcesses, hideOperationalProcess, jvmMemory, matchesProcessQuery, matchesServerQuery, formatDuration, paginate, locationHint, findLocationBlock, isMiddlewareProcess, formatCommand, COMMAND_COLLAPSE_THRESHOLD, type Asset, type Inspection, type ProcessRow, type ProcessType, type Duration } from '@/lib/server-processes';
 import { ipSpecSummary, tomcatInstanceName, tomcatProcessApp, jarBusinessName, jarProcessApp, ipDeployEnvironments, appDeployEnvironments } from '@/lib/process-comparison';
-import { envs, shortLabels, labels, type Env } from '@/lib/inventory';
+import { apps, envs, shortLabels, labels, type Env } from '@/lib/inventory';
 import { isLocalDatacenterIp } from '@/lib/datacenter-networks';
 import { formatBeijingTime } from '@/lib/datetime';
+import { createServerProcessWorkbook, serverProcessExportRows } from '@/lib/server-process-export';
+import { buildExportAssociations } from '@/lib/server-process-export-associations';
 type ConfigFile = { path: string; instance: string; content: string; base64: string; bytes: number };
 const statuses: Record<string,string> = {complete:'采集完整',partial:'采集不完整',failed:'采集失败',not_collected:'未采集',not_running:'未发现运行中的 Nginx',unknown:'无法确认',sudo_password_error:'sudo 密码错误，Nginx 未采集',sudo_unavailable:'sudo 不可用，Nginx 未采集'};
 const webappStatuses: Record<string,string> = {complete:'采集完整',partial:'采集不完整',failed:'采集失败',not_collected:'未采集',absent:'目录不存在'};
@@ -236,6 +239,20 @@ function listeningPorts(asset: Asset): number[]|null {
   for(const p of inspection.processes)if(p.ports){collected=true;for(const port of p.ports)ports.add(port);}
   return collected?[...ports].sort((a,b)=>a-b):null;
 }
+function exportProcessName(r: ProcessRow): string {
+  if(r.workerCount)return 'Nginx worker';
+  const business=!r.docker&&!r.kubernetes&&r.type==='Tomcat'?tomcatInstanceName(r.process.command)
+    :!r.docker&&!r.kubernetes&&r.type==='Java Jar'?jarBusinessName(r.process.command):undefined;
+  return r.docker?r.docker.container.name:business||r.name;
+}
+function exportProcessWorkbook(groups: {asset: Asset; rows: ProcessRow[]}[], assets: Asset[], allRows: ProcessRow[]) {
+  const associations=buildExportAssociations(assets,instances,apps);
+  const rows=serverProcessExportRows(groups,{spec:ipSpecSummary,ports:listeningPorts,categories:categoryCounts,name:exportProcessName,date,instance:associations.instance,application:associations.match,canAssociate:associations.canAssociate,allRows});
+  const bytes=createServerProcessWorkbook(rows);
+  const url=URL.createObjectURL(new Blob([new Uint8Array(bytes).buffer],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));
+  const link=document.createElement('a');link.href=url;link.download='JumpServer服务器与进程.xlsx';link.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
 // 将规格文本（如 "2C 4G"）解析为可比较的数值，CPU 权重高于内存；无数据返回 -1。
 function specScore(ip: string): number {
   const s=ipSpecSummary(ip);
@@ -330,6 +347,9 @@ export function ServerInspections({processRequest}: {processRequest?: {ip: strin
   function processDetailRow(r: ProcessRow) {
     // 有监听端口的进程均可检测；保留原有 Java/中间件入口。
     const checkProcess = r.process;
+    const jvm = r.workerCount ? {config:'',rssToXmxPercent:null} : jvmMemory(r.process);
+    const rss = !r.workerCount && r.process.rssKB != null && Number.isFinite(r.process.rssKB) && r.process.rssKB >= 0
+      ? `${(r.process.rssKB/1024).toFixed(1)} MiB` : '—';
     const isNginxMaster = r.type === 'Nginx' && /^nginx:\s+master process(?:\s|$)/i.test(checkProcess.command);
     const checkButton = !r.workerCount && (isNginxMaster || (r.type !== 'Nginx' && (checkProcess.ports?.length || ['Tomcat','Java Jar','其他 Java'].includes(r.type) || isMiddlewareProcess(checkProcess))))
       ? <ApplicationCheckLink asset={r.asset.id} pid={checkProcess.pid} disabled={inspect[r.asset.id]?.busy} /> : null;
@@ -357,7 +377,7 @@ export function ServerInspections({processRequest}: {processRequest?: {ip: strin
     const processNameNode=envLabel
       ? <>{namePart}<span className="inline-block rounded bg-muted px-1 text-xs text-muted-foreground">{envLabel}</span></>
       : <>{namePart}</>;
-    return <tr className="border-t align-top" key={r.asset.id+':'+(r.workerCount?'workers':r.process.pid)}><td className="p-3">{r.workerCount?<span title={`${r.workerCount} 个 Nginx worker 进程`}>×{r.workerCount}</span>:r.process.pid}</td><td className="p-3 break-all">{r.workerCount?<span>Nginx worker<small className="block text-muted-foreground">{r.type} · {r.process.user} · 共 {r.workerCount} 个进程</small></span>:<>{processNameNode}<small className="block text-muted-foreground">{r.docker?.basis==='proxy'?'Docker 端口代理 · 容器 ':''}{r.type}{r.typeBasis&&<span title={r.typeBasis==='container-image'?'根据容器镜像推断，未确认进程角色':'根据容器启动命令推断，未确认进程角色'}>（容器推断）</span>} · {r.process.user}</small>{r.docker&&<span className="inline-block rounded bg-muted px-1 text-xs text-muted-foreground" title={r.docker.container.image}>Docker</span>}{r.kubernetes&&<span className="block text-xs text-muted-foreground" title={`Pod UID: ${r.kubernetes.podUid} · 容器 ID: ${r.kubernetes.containerId||'未知'}`}>Kubernetes · {r.kubernetes.namespace||'命名空间未知'} / {r.kubernetes.podName||'Pod 名称未知'} / {r.kubernetes.containerName||'容器名称未知'}</span>}</>}</td><td className="p-3 whitespace-nowrap text-right" title={r.process.cpuPercent!=null?`CPU ${r.process.cpuPercent}%`:'旧快照无 CPU 数据'}>{r.process.cpuPercent!=null?<span className={r.process.cpuPercent>=80?'text-red-600 font-medium':r.process.cpuPercent>=50?'text-amber-600':''}>{r.process.cpuPercent}%</span>:'—'}</td><td className="p-3 whitespace-nowrap text-right" title={r.process.memPercent!=null?`内存 ${r.process.memPercent}%${r.process.rssKB!=null?` · RSS ${(r.process.rssKB/1024).toFixed(0)}M`:''}`:'旧快照无内存数据'}>{r.process.memPercent!=null?<span className={r.process.memPercent>=80?'text-red-600 font-medium':r.process.memPercent>=50?'text-amber-600':''}>{r.process.memPercent}%</span>:'—'}</td><td className="p-3"><ProcessListeningPorts process={r.process}/>{r.kubernetes&&<div className="text-xs text-muted-foreground" title="此端口位于 Pod 网络空间，不代表宿主机监听或对外可达">Pod TCP：{r.kubernetes.listeners.length?r.kubernetes.listeners.map(p=>`${p.address}:${p.port}`).join(', '):r.kubernetes.listenerStatus==='observed'?'未观察到 PID 监听':'未能采集'}</div>}</td><td className="p-3 whitespace-nowrap">{r.workerCount?'—':date(r.process.startedAt)}</td><td className="p-3 whitespace-nowrap" title={r.workerCount?'worker 进程启动时间各异，已合并展示':`采集时：${formatDuration(r.process.elapsedSeconds)}；采集时间：${date(r.asset.inspection!.checkedAt)}`}>{r.workerCount?'—':formatDuration(r.seconds)}</td><td className="p-3 min-w-80 max-w-2xl">{r.workerCount?<pre className="text-xs whitespace-pre-wrap break-all font-mono">{`nginx: worker process（共 ${r.workerCount} 个）`}</pre>:<><ProcessCommand command={r.process.command} onExpand={setCommandDialog}/>{r.docker&&<div className="mt-2 text-xs"><span className="text-muted-foreground">容器启动命令：</span><ProcessCommand command={r.docker.container.command} onExpand={setCommandDialog}/></div>}</>}</td><td className="p-3">{r.type==='Nginx'&&!r.typeBasis&&<button className="border rounded p-2 whitespace-nowrap" title="查看该服务器的 Nginx 转发与原始配置" onClick={()=>setSelected(selected===r.asset.id?'':r.asset.id)}>Nginx</button>}{checkButton}{r.docker&&!r.workerCount&&<a className="inline-block border rounded p-2 whitespace-nowrap text-sm" href={`/jumpserver/container/${encodeURIComponent(r.asset.id)}/${r.process.pid}/${encodeURIComponent(r.docker.container.id)}`} target="_blank" rel="noopener noreferrer">容器信息</a>}</td></tr>;
+    return <tr className="border-t align-top" key={r.asset.id+':'+(r.workerCount?'workers':r.process.pid)}><td className="p-3">{r.workerCount?<span title={`${r.workerCount} 个 Nginx worker 进程`}>×{r.workerCount}</span>:r.process.pid}</td><td className="p-3 break-all">{r.workerCount?<span>Nginx worker<small className="block text-muted-foreground">{r.type} · {r.process.user} · 共 {r.workerCount} 个进程</small></span>:<>{processNameNode}<small className="block text-muted-foreground">{r.docker?.basis==='proxy'?'Docker 端口代理 · 容器 ':''}{r.type}{r.typeBasis&&<span title={r.typeBasis==='container-image'?'根据容器镜像推断，未确认进程角色':'根据容器启动命令推断，未确认进程角色'}>（容器推断）</span>} · {r.process.user}</small>{r.docker&&<span className="inline-block rounded bg-muted px-1 text-xs text-muted-foreground" title={r.docker.container.image}>Docker</span>}{r.kubernetes&&<span className="block text-xs text-muted-foreground" title={`Pod UID: ${r.kubernetes.podUid} · 容器 ID: ${r.kubernetes.containerId||'未知'}`}>Kubernetes · {r.kubernetes.namespace||'命名空间未知'} / {r.kubernetes.podName||'Pod 名称未知'} / {r.kubernetes.containerName||'容器名称未知'}</span>}</>}</td><td className="p-3 whitespace-nowrap text-right" title={r.process.cpuPercent!=null?`CPU ${r.process.cpuPercent}%`:'旧快照无 CPU 数据'}>{r.process.cpuPercent!=null?<span className={r.process.cpuPercent>=80?'text-red-600 font-medium':r.process.cpuPercent>=50?'text-amber-600':''}>{r.process.cpuPercent}%</span>:'—'}</td><td className="p-3 whitespace-nowrap text-right" title={r.process.memPercent!=null?`内存 ${r.process.memPercent}%${r.process.rssKB!=null?` · RSS ${(r.process.rssKB/1024).toFixed(0)}M`:''}`:'旧快照无内存数据'}>{r.process.memPercent!=null?<span className={r.process.memPercent>=80?'text-red-600 font-medium':r.process.memPercent>=50?'text-amber-600':''}>{r.process.memPercent}%</span>:'—'}</td><td className="p-3 whitespace-nowrap">{jvm.config||'—'}</td><td className="p-3 whitespace-nowrap text-right">{rss}</td><td className="p-3 whitespace-nowrap text-right" title="RSS 包含堆外内存，可能超过 Xmx">{jvm.rssToXmxPercent!==null?`${jvm.rssToXmxPercent.toFixed(1)}%`:'—'}</td><td className="p-3"><ProcessListeningPorts process={r.process}/>{r.kubernetes&&<div className="text-xs text-muted-foreground" title="此端口位于 Pod 网络空间，不代表宿主机监听或对外可达">Pod TCP：{r.kubernetes.listeners.length?r.kubernetes.listeners.map(p=>`${p.address}:${p.port}`).join(', '):r.kubernetes.listenerStatus==='observed'?'未观察到 PID 监听':'未能采集'}</div>}</td><td className="p-3 whitespace-nowrap">{r.workerCount?'—':date(r.process.startedAt)}</td><td className="p-3 whitespace-nowrap" title={r.workerCount?'worker 进程启动时间各异，已合并展示':`采集时：${formatDuration(r.process.elapsedSeconds)}；采集时间：${date(r.asset.inspection!.checkedAt)}`}>{r.workerCount?'—':formatDuration(r.seconds)}</td><td className="p-3 min-w-80 max-w-2xl">{r.workerCount?<pre className="text-xs whitespace-pre-wrap break-all font-mono">{`nginx: worker process（共 ${r.workerCount} 个）`}</pre>:<><ProcessCommand command={r.process.command} onExpand={setCommandDialog}/>{r.docker&&<div className="mt-2 text-xs"><span className="text-muted-foreground">容器启动命令：</span><ProcessCommand command={r.docker.container.command} onExpand={setCommandDialog}/></div>}</>}</td><td className="p-3">{r.type==='Nginx'&&!r.typeBasis&&<button className="border rounded p-2 whitespace-nowrap" title="查看该服务器的 Nginx 转发与原始配置" onClick={()=>setSelected(selected===r.asset.id?'':r.asset.id)}>Nginx</button>}{checkButton}{r.docker&&!r.workerCount&&<a className="inline-block border rounded p-2 whitespace-nowrap text-sm" href={`/jumpserver/container/${encodeURIComponent(r.asset.id)}/${r.process.pid}/${encodeURIComponent(r.docker.container.id)}`} target="_blank" rel="noopener noreferrer">容器信息</a>}</td></tr>;
   }
   return <section className="panel p-6 space-y-5">
     <h2 className="text-lg font-semibold">服务器与进程</h2>
@@ -375,6 +395,7 @@ export function ServerInspections({processRequest}: {processRequest?: {ip: strin
           <label htmlFor="process-duration">运行时间</label><select id="process-duration" className="border rounded p-2" value={duration} onChange={e=>{setDuration(e.target.value as Duration);reset();}}>{durations.map(([key,label])=><option key={key} value={key}>{label}</option>)}</select>
           <label htmlFor="process-env">环境</label><select id="process-env" className="border rounded p-2" value={env} onChange={e=>{setEnv(e.target.value as Env|'all'|'unknown');reset();}}><option value="all">全部环境</option>{envs.map(e=><option key={e} value={e}>{shortLabels[e]}</option>)}<option value="unknown">待识别</option></select>
           <button className="border rounded p-2 text-sm" onClick={()=>{setQuery('');setDuration('all');setEnv('all');setOwner('all');reset();}}>清空筛选</button>
+          <Button variant="default" size="sm" className="export-button" disabled={!ipGroups.length} onClick={()=>exportProcessWorkbook(ipGroups,assets,rows)} aria-label="导出筛选结果 Excel"><Download size={16}/>导出 Excel（{ipGroups.length} 台）</Button>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm"><thead><tr>
@@ -392,9 +413,10 @@ export function ServerInspections({processRequest}: {processRequest?: {ip: strin
             const open=!!expanded[asset.id];
             const requested=expanded[asset.id]||{type:'全部进程' as ProcessType,page:1};
             // 系统进程默认隐藏；当非系统进程 CPU 合计与整机 CPU 偏差 >5% 时展示系统进程。
-            const nonSystemRows=group.rows.filter(r=>r.type!=='系统进程');
-            const systemRows=group.rows.filter(r=>r.type==='系统进程');
-            const sumNonSystemCPU=nonSystemRows.reduce((s,r)=>s+(r.process.cpuPercent??0),0);
+            const allNonSystemRows=group.rows.filter(r=>r.type!=='系统进程');
+            const nonSystemRows=allNonSystemRows.filter(r=>!hideOperationalProcess(r.process));
+            const systemRows=group.rows.filter(r=>r.type==='系统进程'&&!hideOperationalProcess(r.process));
+            const sumNonSystemCPU=allNonSystemRows.reduce((s,r)=>s+(r.process.cpuPercent??0),0);
             const serverCPU=asset.inspection!.serverUsage?.cpuPercent??0;
             const showSystem=systemRows.length>0&&serverCPU-sumNonSystemCPU>5;
             const categories=categoryCounts(nonSystemRows);
@@ -441,7 +463,7 @@ export function ServerInspections({processRequest}: {processRequest?: {ip: strin
                     {search.trim()&&<span className="text-sm text-muted-foreground">匹配 {viewRows.length} 条进程</span>}
                     {search.trim()&&!viewRows.length&&<span className="text-sm text-muted-foreground">没有匹配“{search.trim()}”的进程，可清空搜索后重试。</span>}
                   </div>
-                  <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr>{(['进程ID','进程名','CPU%','内存%','监听端口','进程启动时间（北京时间）','运行时间（推算至当前）','详细命令','服务器详情'] as const).map(h=>{
+                  <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr>{(['进程ID','进程名','CPU%','内存%','JVM 配置','实际 RSS','RSS/XMX 百分比','监听端口','进程启动时间（北京时间）','运行时间（推算至当前）','详细命令','服务器详情'] as const).map(h=>{
                     const sortable=h==='CPU%'||h==='内存%';
                     const sf=h==='CPU%'?'cpu':'mem';
                     return <th key={h} className={'p-3 whitespace-nowrap'+(sortable?' cursor-pointer hover:bg-muted/50':'')} onClick={sortable?()=>cycleProcSort(asset.id,sf as 'cpu'|'mem'):undefined}>{h}{sortable&&(ps.field===sf?(ps.dir==='asc'?'\u2191':'\u2193'):'')}</th>;

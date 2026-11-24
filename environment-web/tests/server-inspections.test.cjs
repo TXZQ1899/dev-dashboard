@@ -11,6 +11,7 @@ function evaluate(file,requireModule=()=>{}) {
  return sandbox.exports;
 }
 const lib=evaluate('lib/server-processes.ts');
+const processExport=evaluate('lib/server-process-export.ts',id=>id==='fflate'?require('fflate'):id==='./server-processes'?lib:undefined);
 const overviewLib=evaluate('lib/jumpserver-overview.ts',()=>({isLocalDatacenterIp:()=>false}));
 // 组件的时间展示已统一委托给 lib/datetime.ts。
 const datetimeLib=evaluate('lib/datetime.ts');
@@ -27,6 +28,9 @@ function render(assets,options={}) {
   if(id==='react/jsx-runtime')return require(id);
   if(id==='@/lib/jumpserver')return {jumpserver:{assets,collectedAt:'2026-09-17T12:00:00Z'},jumpserverLoginUrl:id=>'http://jump/luna/?login_to='+id};
   if(id==='@/lib/server-processes')return options.processAssetCounts ? {...lib,processRows:(rows,...args)=>{options.processAssetCounts.push(rows.length);return lib.processRows(rows,...args);}} : lib;
+  if(id==='@/lib/server-process-export')return processExport;
+  if(id==='@/lib/server-process-export-associations')return {buildExportAssociations:()=>({instance:()=>undefined,match:()=>undefined})};
+  if(id==='@/lib/ecs')return {instances:[]};
   if(id==='@/lib/jumpserver-overview')return overviewLib;
   if(id==='@/lib/process-comparison')return {
     ipSpecSummary:ip=>ip==='10.0.0.2'?'2C 4G':'',
@@ -38,7 +42,7 @@ function render(assets,options={}) {
     jarBusinessName:options.jarBusinessName||(cmd=>{const t=(cmd.match(/"(?:\\.|[^"\\])*"|'[^']*'|[^\s]+/g)||[]).map(s=>s.replace(/^(['"])(.*)\1$/,'$2'));const i=t.indexOf('-jar');return i>=0&&t[i+1]?t[i+1].split('/').pop().replace(/\.(jar|war)$/i,''):undefined;}),
     jarProcessApp:options.jarProcessApp||(()=>undefined),
   };
-  if(id==='@/lib/inventory')return {envs:['TEST','SIMULATION','PRODUCT'],shortLabels:{TEST:'测试',SIMULATION:'仿真',PRODUCT:'生产'},labels:{TEST:'测试环境',SIMULATION:'仿真环境',PRODUCT:'生产环境'}};
+  if(id==='@/lib/inventory')return {apps:[],envs:['TEST','SIMULATION','PRODUCT'],shortLabels:{TEST:'测试',SIMULATION:'仿真',PRODUCT:'生产'},labels:{TEST:'测试环境',SIMULATION:'仿真环境',PRODUCT:'生产环境'}};
   if(id==='@/lib/datetime')return datetimeLib;
   if(id==='@/lib/datacenter-networks')return {isLocalDatacenterIp:ip=>/^10\.58\.(1|9|10|140)\./.test(String(ip).trim())};
   if(id==='@/components/ui/input')return {Input:()=>null};
@@ -54,6 +58,127 @@ function render(assets,options={}) {
 const process={pid:2,ppid:1,user:'app',name:'java',kind:'Java',elapsedSeconds:365*86400,startedAt:'2025-09-17T12:00:00Z',command:'java -jar /srv/app-api.jar --port=8080'};
 const inspection={checkedAt:'2026-09-17T12:00:00Z',loginStatus:'can_login',reason:'',processStatus:'partial',nginxStatus:'partial',warnings:['权限不足'],processes:[process],nginxRoutes:[{domains:['example.com'],listen:['443 ssl'],uri:'/api',directive:'proxy_pass',target:'http://up',upstream:'up',backends:[{host:'10.0.0.1',port:'8080',resolution:'ip'}]}]};
 const asset={id:'a',ip:'10.0.0.2',hostname:'server',inspection};
+test('Excel export includes filtered servers and visible process details with safe spreadsheet values',()=>{
+ const {unzipSync,strFromU8}=require('fflate');
+ const java={...process,pid:11,command:'java -Xms512m -Xmx2g -jar app.jar',rssKB:1048576,ports:[8080],inferredPorts:[{port:9090,address:'*',protocol:'tcp',basis:'test',confidence:'INFERRED'}]};
+ const hidden={...process,pid:12,name:'tuned',command:'/usr/bin/python -Es /usr/sbin/tuned'};
+ const dangerous={...process,pid:13,name:'other',command:'=1+1',kind:'未分类'};
+ const host={...asset,hostname:'server & <host>',inspection:{...inspection,processes:[java,hidden,dangerous],serverUsage:{cpuPercent:20,memPercent:30}}};
+ const rows=lib.processRows([host],now);
+ const result=processExport.serverProcessExportRows([{asset:host,rows}],{spec:()=> '2C 4G',ports:()=>[8080,9090],categories:rs=>[['Java Jar',rs.filter(r=>r.type==='Java Jar').length]],name:r=>r.name,date:()=> '2026-09-18 20:00:00',instance:()=>({name:'server & <host>'})});
+ assert.equal(result.summary.length,2);assert.equal(result.summary[1][7],2);assert.equal(result.detail.length,3);
+ const javaRow=result.detail.find(r=>r[2]===11);assert.equal(javaRow[10],'-Xms512m -Xmx2g');assert.equal(javaRow[11],1024);assert.equal(javaRow[12],50);assert.equal(javaRow[13],'8080；9090（推断）');
+ const zip=unzipSync(processExport.createServerProcessWorkbook(result));
+ const workbook=strFromU8(zip['xl/workbook.xml']);const detail=strFromU8(zip['xl/worksheets/sheet2.xml']);
+ assert.match(workbook,/服务器清单/);assert.match(workbook,/进程明细/);assert.match(detail,/server &amp; &lt;host&gt;/);
+ assert.match(detail,/t="inlineStr"[^>]*><is><t xml:space="preserve">=1\+1<\/t>/);assert.doesNotMatch(detail,/<f>/);
+ assert.ok(!detail.includes('/usr/sbin/tuned'));assert.match(detail,/9090（推断）/);
+ assert.match(render([host]),/导出 Excel（1 台）/);
+ const allPages=Array.from({length:26},(_,i)=>({asset:{...host,id:`server-${i}`,ip:`10.0.0.${i+1}`},rows}));
+ const allResults=processExport.serverProcessExportRows(allPages,{spec:()=>'',ports:()=>null,categories:()=>[],name:r=>r.name,date:()=>''});
+ assert.equal(allResults.summary.length,27);assert.equal(allResults.detail.length,53);
+});
+test('export puts instance identity before IP and uses instance name in process details',()=>{
+ const host={...asset,ip:'10.179.4.76',hostname:'10.179.4.76_FAliPRDAbtest01',inspection:{...inspection,processStatus:'complete'}};
+ const first={asset:host,type:'Java Jar',name:'booking.jar',seconds:10,process:{...process,pid:31,command:'java -jar booking.jar'}};
+ const second={...first,process:{...first.process,pid:32}};
+ const other={...first,process:{...first.process,pid:33,command:'java -jar unknown.jar'}};
+ const options={spec:()=>'',ports:()=>null,categories:()=>[],name:r=>r.name,date:()=> '2026-12-07 00:00:00',allRows:[first,second,other],
+  instance:()=>({name:'ECS 名称',id:'i-123',tenantName:'租户甲',expiredAt:'2026-12-06T16:00Z'}),
+  application:(_asset,r)=>r.process.pid===33?undefined:{id:'42',name:'booking'}};
+ const result=processExport.serverProcessExportRows([{asset:host,rows:[first,other]}],options);
+ assert.deepEqual(Array.from(result.summary[0]),['实例名称','实例 ID','租户','IP','规格','CPU%','内存%','监听端口数','进程分类','部署应用数','部署应用名称','服务器到期时间','进程采集状态']);
+ assert.deepEqual(Array.from(result.summary[1].slice(0,4)),['ECS 名称','i-123','租户甲','10.179.4.76']);
+ assert.deepEqual(Array.from(result.summary[1].slice(9)),[1,'booking（42）','2026-12-07 00:00:00','complete']);
+ assert.deepEqual(Array.from(result.detail[1].slice(1,6)),['ECS 名称',31,'booking.jar','42','booking']);
+ assert.deepEqual(Array.from(result.detail[2].slice(4,6)),['—','—']);
+ assert.ok(!Array.from(result.summary[0]).includes('服务器名称'));
+ assert.ok(!Array.from(result.detail[0]).includes('服务器名称'));
+ assert.ok(!Array.from(result.detail[0]).includes('分类依据'));
+ const unknown=processExport.serverProcessExportRows([{asset:host,rows:[first]}],{...options,canAssociate:()=>false,application:()=>undefined});
+ assert.equal(unknown.summary[1][9],'—');
+ const missing=processExport.serverProcessExportRows([{asset:host,rows:[first]}],{...options,instance:()=>undefined});
+ assert.equal(missing.summary[1][0],'—');assert.equal(missing.detail[1][1],'—');
+ const inferred=processExport.serverProcessExportRows([{asset:host,rows:[{...first,typeBasis:'container-image'}]}],options);
+ assert.equal(inferred.detail[1][6],'Java Jar（容器推断）');
+});
+test('JVM memory parses launch flags and computes RSS against Xmx',()=>{
+ const jvm=(command,rssKB)=>lib.jvmMemory({...process,command,rssKB});
+ const result=jvm('/usr/bin/java -Xms512m -Xmx2G -jar /srv/app.jar',1048576);
+ assert.equal(result.config,'-Xms512m -Xmx2G');assert.equal(result.rssToXmxPercent,50);
+ assert.equal(jvm('java -cp /srv/app.jar -Xmx1048576 example.Main',2048).rssToXmxPercent,200);
+ assert.equal(jvm('java -Xmx1g -Xmx512m example.Main',0).rssToXmxPercent,0);
+ assert.equal(jvm('java -Xms1g -Xmx0 -jar app.jar',1024).rssToXmxPercent,null);
+ assert.equal(jvm('java -Xmx1g -jar app.jar',undefined).rssToXmxPercent,null);
+ assert.equal(jvm('java -jar app.jar -Xmx4g',1048576).config,'');
+ assert.equal(jvm('java example.Main -Xmx4g',1048576).config,'');
+ assert.equal(jvm('node app.js -Xmx1g',1048576).config,'');
+ assert.equal(jvm('node app.js -Xmx1g',1048576).rssToXmxPercent,null);
+});
+test('process details show JVM configuration, RSS, and RSS to Xmx independently',()=>{
+ const java={...process,pid:123,command:'java -Xms512m -Xmx2g -jar app.jar',rssKB:1048576};
+ const node={...process,pid:124,name:'node',kind:'Node.js',command:'node app.js -Xmx1g',rssKB:2048};
+ const html=render([{...asset,inspection:{...inspection,processes:[java,node]}}],{expanded:{a:{type:'全部进程',page:1}}});
+ for(const text of ['JVM 配置','实际 RSS','RSS/XMX 百分比','-Xms512m -Xmx2g','1024.0 MiB','50.0%','2.0 MiB'])assert.ok(html.includes(text),text);
+ const row=html.match(/<tr[^>]*><td[^>]*>124<\/td>.*?<\/tr>/)?.[0];
+ assert.ok(row);assert.match(row,/>—<\/td><td[^>]*>2\.0 MiB<\/td><td[^>]*>—<\/td>/);
+});
+test('operational process exclusions match executable identity without hiding business lookalikes',()=>{
+ const hidden=[
+  ['/usr/bin/python3 /usr/bin/salt-minion','salt-minion'],
+  ['/usr/bin/python -Es /usr/sbin/tuned -l -P','tuned'],
+  ['/usr/bin/python2 -Es /usr/sbin/tuned -l','tuned'],
+  ['/usr/libexec/platform-python -Es /usr/sbin/tuned -l','tuned'],
+  ['/usr/sbin/tuned -l','tuned'],
+  ['/usr/local/cloudmonitor/jre/bin/java -Xmx1g -cp /opt/cloudmonitor/lib com.aliyun.tianji.cloudmonitor.Application','java'],
+  ['/usr/local/aegis/aegis_update/AliYunDunUpdate','AliYunDunUpdat'],
+  ['/usr/local/aegis/aegis_client/aegis_13_03/AliYunDun','AliYunDun'],
+  ['/usr/local/aegis/aegis_client/aegis_13_07/AliYunDun','AliYunDun'],
+  ['/usr/local/aegis/aegis_client/aegis_13_07/AliYunDunMonitor','AliYunDunMonito'],
+  ['/usr/lib/systemd/systemd-journald','systemd-journal'],
+  ['/usr/local/cloudmonitor/wrapper/bin/./wrapper /tmp/config','wrapper'],
+  ['/usr/sbin/aliyun-service -d','aliyun-service'],
+  ['/usr/local/share/aliyun-assist/aliyun-service.symlink','aliyun-service.'],
+  ['/usr/bin/rsync --daemon --no-detach','rsync'],
+  ['/usr/sbin/lvmetad -f','lvmetad'],['/usr/sbin/haveged -w 1024','haveged'],
+  ['/usr/sbin/snmpd -f','snmpd'],['/usr/libexec/postfix/master -w','master'],
+  ['qmgr -l -t fifo','qmgr'],['pickup -l -t fifo','pickup'],
+  ['/usr/local/process-exporter/process-exporter -config.path=x','process-exporte'],
+  ['/usr/local/node_exporter/node_exporter','node_exporter'],
+ ];
+ for(const [command,name] of hidden)assert.equal(lib.hideOperationalProcess({...process,command,name}),true,command);
+ for(const command of ['/opt/app/master -w','/usr/bin/rsync /data /backup','/opt/app/wrapper /usr/local/cloudmonitor/wrapper',
+  'java -jar salt-minion.jar','/opt/app/node_exporter_helper','/usr/local/aegis/AliYunDun',
+  '/usr/local/cloudmonitor/jre/bin/java -jar business.jar',
+  '/usr/bin/java com.aliyun.tianji.cloudmonitor.Application',
+  '/usr/local/cloudmonitor/jre/bin/java com.aliyun.tianji.cloudmonitor.ApplicationBackup',
+  '/opt/app/AliYunDunUpdate','/usr/bin/python -Es /opt/app/tuned -l',
+  '/usr/bin/python /opt/app.py /usr/sbin/tuned'])
+  assert.equal(lib.hideOperationalProcess({...process,command}),false,command);
+});
+test('Aliyun monitoring and security agents are hidden even when classified as Java',()=>{
+ const agents=[
+  {...process,pid:101,command:'/usr/local/cloudmonitor/jre/bin/java -cp /opt/monitor com.aliyun.tianji.cloudmonitor.Application'},
+  {...process,pid:102,name:'AliYunDunUpdate',command:'/usr/local/aegis/aegis_update/AliYunDunUpdate'},
+  {...process,pid:103,name:'AliYunDun',command:'/usr/local/aegis/aegis_client/aegis_13_03/AliYunDun'},
+  {...process,pid:104,name:'tuned',command:'/usr/bin/python -Es /usr/sbin/tuned -l -P'},
+ ];
+ const a={...asset,inspection:{...inspection,processes:[process,...agents]}};
+ const html=render([a],{expanded:{a:{type:'全部进程',page:1}}});
+ assert.match(html,/全部进程（1）/);
+ assert.match(html,/app-api\.jar/);
+ for(const agent of agents)assert.ok(!html.includes(agent.command),agent.command);
+ assert.equal(lib.processRows([a],now).length,5,'original process rows remain available');
+});
+test('operational processes are hidden from display counts while CPU comparison uses all non-system rows',()=>{
+ const monitor={...process,pid:10,name:'node_exporter',command:'/bin/node_exporter',cpuPercent:20};
+ const system={...process,pid:11,name:'kworker',command:'[kworker]',system:true,cpuPercent:1};
+ const a={...asset,inspection:{...inspection,processes:[{...process,cpuPercent:5},monitor,system],serverUsage:{cpuPercent:26,memPercent:0,memTotalMB:1,memUsedMB:0}}};
+ const html=render([a],{expanded:{a:{type:'全部进程',page:1}}});
+ assert.match(html,/全部进程（1）/);assert.ok(!html.includes('node_exporter'));
+ assert.ok(!html.includes('系统进程（1）'),'filtered monitor CPU must not create a false system CPU warning');
+ assert.equal(lib.processRows([a],now).length,3,'raw process rows remain available');
+});
 test('总览跳转按 IP 搜索并重置筛选、展开匹配资产',()=>{
  const changes=[]; const request={ip:'10.0.0.2'};
  render([asset],{processRequest:request,runRequestEffect:true,changes});

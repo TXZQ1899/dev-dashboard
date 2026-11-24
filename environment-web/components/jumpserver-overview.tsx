@@ -2,10 +2,10 @@
 import { useServerInspect } from '@/components/use-server-inspect';
 import { useMemo, useState } from 'react';
 import { jumpserver, jumpserverLoginUrl } from '@/lib/jumpserver';
-import { instances } from '@/lib/ecs';
+import { instances, projectName } from '@/lib/ecs';
 import ecsSnapshot from '@/lib/ecs-snapshot.json';
 import { formatBeijingTime } from '@/lib/datetime';
-import { buildJumpserverOverview, type JumpOverviewRow, type LoginClass, type LocationClass, type CoverageClass, type EcsStatus } from '@/lib/jumpserver-overview';
+import { buildJumpserverOverview, loginClass, type JumpOverviewRow, type EcsOverviewRow, type LoginClass, type LocationClass, type CoverageClass, type EcsStatus } from '@/lib/jumpserver-overview';
 import type { Asset } from '@/lib/server-processes';
 
 type Item<T extends string> = {key:T; label:string; color:string};
@@ -56,6 +56,27 @@ function downloadOverviewCsv(rows: JumpOverviewRow[], ordinary: boolean, notInEc
   const blob = new Blob(['\uFEFF' + (ordinary ? ordinaryOverviewCsv(rows,notInEcs) : unreachableOverviewCsv(rows))], {type:'text/csv;charset=utf-8;'});
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a'); link.href=url; link.download=ordinary?'jumpserver-ordinary-overview.csv':'jumpserver-unreachable-overview.csv'; link.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+export function ecsCoverageCsv(rows: EcsOverviewRow[]) {
+  const values = [['实例名称','实例 ID','租户','资源组','内网 IP','公网 IP','ECS 状态','可用区','CPU','内存 GiB','纳管状态','JumpServer 资产 IP','JumpServer 主机名','登录 / 提权'], ...rows.map(row=>{
+    const asset = row.asset;
+    return [
+      row.instance.name || '', row.instance.id || '',
+      row.instance.tenantName || row.instance.tenantId || '历史租户',
+      projectName(row.instance.projectId, row.instance.tenantId),
+      (row.instance.privateIps || []).join('、'), (row.instance.publicIps || []).join('、'),
+      statusLabels[row.status], row.instance.zone || '',
+      row.instance.cpu ? String(row.instance.cpu) : '', row.instance.memoryGiB ? String(row.instance.memoryGiB) : '',
+      nameOf(coverageItems,row.coverage), asset?.ip || '', asset?.hostname || '', asset ? nameOf(loginItems,loginClass(asset)) : '',
+    ];
+  })];
+  return overviewCsv(values);
+}
+function downloadEcsCoverageCsv(rows: EcsOverviewRow[]) {
+  const blob = new Blob(['\uFEFF' + ecsCoverageCsv(rows)], {type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a'); link.href=url; link.download='jumpserver-ecs-coverage.csv'; link.click();
   setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 
@@ -117,6 +138,7 @@ export function JumpserverOverview({onShowProcesses}: {onShowProcesses?: (ip: st
     </div>}
     <div className="border-t pt-5 space-y-3"><div className="flex flex-wrap items-center justify-between gap-3"><h3 className="font-semibold">阿里云 ECS 纳管覆盖</h3><label className="text-sm">实例状态 <select className="border rounded p-2" value={status} onChange={e=>setStatus(e.target.value as EcsStatus|'all')}><option value="all">全部</option>{Object.entries(statusLabels).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label></div>
       <Donut title="ECS 纳管覆盖" description={status==='all'?undefined:`当前范围：${statusLabels[status]}`} items={coverageItems} counts={counts(coverageItems,ecsScope.map(r=>r.coverage))} selected={coverage} onSelect={key=>setCoverage(coverage===key?null:key)} />
+      <div className="flex justify-end"><button type="button" className="text-sm underline" disabled={!ecsRows.length} onClick={()=>downloadEcsCoverageCsv(ecsRows)}>导出 CSV（{ecsRows.length} 台）</button></div>
       {(coverage||status!=='all')&&<div className="space-y-2"><div className="flex flex-wrap items-center justify-between gap-3"><h4 className="font-medium">ECS 明细 · {ecsRows.length} 台</h4><label className="text-sm">ECS 状态 <select className="border rounded p-2" value={status} onChange={e=>setStatus(e.target.value as EcsStatus|'all')}><option value="all">全部</option>{Object.entries(statusLabels).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label><button type="button" className="text-sm underline" onClick={()=>{setCoverage(null);setStatus('all');}}>清除筛选</button></div><div className="overflow-auto max-h-96"><table className="w-full min-w-[760px] table-fixed text-sm text-left break-words"><colgroup>{[30,25,17,28].map((width,i)=><col key={i} style={{width:`${width}%`}} />)}</colgroup><thead><tr>{['实例 / 租户','IP','ECS 状态','纳管 / 登录'].map(h=><th className="p-2" key={h}>{h}</th>)}</tr></thead><tbody>{ecsRows.map((row,i)=><tr key={row.instance.resourceKey||`${row.instance.tenantId||'legacy'}:${row.instance.region}:${row.instance.id}:${i}`} className="border-t align-top"><td className="p-2">{row.instance.name}<br/><span className="text-muted-foreground">{row.instance.tenantName||row.instance.tenantId||'历史租户'} · {row.instance.id}</span></td><td className="p-2">{[...row.instance.privateIps,...row.instance.publicIps].join('、')||'—'}</td><td className="p-2">{statusLabels[row.status]}{row.instance.status&&row.status==='status_unknown'?`（${row.instance.status}）`:''}</td><td className="p-2">{nameOf(coverageItems,row.coverage)}{row.asset&&<> · {nameOf(loginItems,jump.find(j=>j.asset.id===row.asset?.id)?.login||'unchecked')}<br/><span className="text-muted-foreground">{row.asset.ip} · {row.asset.hostname}</span></>}</td></tr>)}</tbody></table>{!ecsRows.length&&<p className="p-3">当前筛选没有 ECS 实例。</p>}</div></div>}
     </div>
   </section>;

@@ -550,7 +550,7 @@ export default function SettingsPage() {
               {exclusionError && <p role="alert">{exclusionError}</p>}
               {configJob.version && <small>应用快照：{configJob.version} · 开始时间：{date(configJob.startedAt)} · 状态：{configJob.status}</small>}
               {configJob.mode === 'retry' && <p className="settings-hint">重试应用使用本次快照；保留的已完成结果沿用各自原快照。</p>}
-              <ApplicationConfigLog />
+              {['queued', 'running'].includes(configJob.status) && <ApplicationConfigLog />}
               <ApplicationConfigResults results={configJob.results || []} exclusions={configExclusions} busy={exclusionBusy} onUpdate={(ids, excluded) => void updateConfigExclusions(ids, excluded)} />
               <p className="settings-hint">一键同步失败会重试部分完成、失败、跳过及未处理的应用，保留已完成结果；标记为不用同步的应用不再重试。标记变更从下一次批量任务起生效。</p>
               <p className="settings-hint">读取 master 分支；无法唯一匹配模块、无法访问仓库或无法解析 Nacos 时保留原因。配置原文可能包含敏感信息。</p>
