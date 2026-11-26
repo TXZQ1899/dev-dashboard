@@ -36,6 +36,8 @@ export type ResolveOptions = {
   maxPaths?: number;
   /** Overrides the environment carried by the query itself. */
   environment?: RequestEnvironment;
+  /** Start from an already observed topology node, bypassing request ingress. */
+  start?: TopologyNode;
 };
 
 type Branch = {
@@ -95,7 +97,13 @@ export function resolveRequestPathWithIndex(
     return true;
   };
 
-  const queue: Branch[] = [{ current: null, nodes: [], steps: [], visited: new Set(), depth: 0, query }];
+  const start = options?.start;
+  const visitKey = (node: TopologyNode, request: PathQuery) =>
+    JSON.stringify([node.id, request.scheme, request.host, request.port, request.path]);
+  const queue: Branch[] = [{
+    current: start ?? null, nodes: start ? [start] : [], steps: [],
+    visited: new Set(start ? [visitKey(start, query)] : []), depth: 0, query,
+  }];
 
   while (queue.length > 0) {
     if (truncated) break;
@@ -150,10 +158,12 @@ export function resolveRequestPathWithIndex(
           emit,
           pushWarning,
           branch,
-          STOP_REASON.NO_CANDIDATE,
+          (invocations.length === 1 ? invocations[0].result.stopReason : undefined) ?? STOP_REASON.NO_CANDIDATE,
           branch.current
             ? `Resolver(s) [${invocations.map(item => item.resolver.name).join(', ')}] produced no candidate from node ${branch.current.id}.`
             : `Resolver(s) [${invocations.map(item => item.resolver.name).join(', ')}] produced no entry candidate for host ${query.host}.`,
+          invocations.flatMap(item => item.result.warnings ?? []),
+          start ? invocations.map(item => item.result.confidence ?? 'UNKNOWN') : [],
         );
       }
       continue;
@@ -182,8 +192,12 @@ export function resolveRequestPathWithIndex(
 
       for (const move of moves) {
         const nextQuery = move.query ?? branch.query;
-        const visitKey = JSON.stringify([move.node.id, nextQuery.scheme, nextQuery.host, nextQuery.port, nextQuery.path]);
-        if (branch.visited.has(visitKey)) {
+        if (move.terminal && branch.current?.id === move.node.id) {
+          if (emit(buildPath({ ...branch, steps: [...branch.steps, step], query: nextQuery }, move.node.id, null, null))) branchesAdded += 1;
+          continue;
+        }
+        const key = visitKey(move.node, nextQuery);
+        if (branch.visited.has(key)) {
           // Re-entering an infrastructure node with a different request is valid.
           cycleSkipped += 1;
           pushWarning(`Cycle guard: ${resolver.name} returned node ${move.node.id} already on this branch; candidate skipped.`);
@@ -193,7 +207,7 @@ export function resolveRequestPathWithIndex(
           current: move.node,
           nodes: [...branch.nodes, move.node],
           steps: [...branch.steps, step],
-          visited: new Set(branch.visited).add(visitKey),
+          visited: new Set(branch.visited).add(key),
           query: nextQuery,
           depth: branch.depth + 1,
         };
@@ -243,9 +257,15 @@ function emitUnresolved(
   branch: Branch,
   reason: string,
   message: string,
+  warnings: string[] = [],
+  stopConfidences: Confidence[] = [],
 ): void {
   pushWarning(message);
-  emit(buildPath(branch, null, branch.current?.id ?? null, { reason, message }));
+  const path = buildPath(branch, null, branch.current?.id ?? null, { reason, message });
+  const confidence = stopConfidences.reduce((weakest, candidate) =>
+    CONFIDENCE_RANK[candidate] < CONFIDENCE_RANK[weakest] ? candidate : weakest, path.confidence);
+  const status = stopConfidences.includes('AMBIGUOUS') ? 'AMBIGUOUS' : path.status;
+  emit({ ...path, status, confidence, warnings: [...new Set([...path.warnings, ...warnings])] });
 }
 
 /**

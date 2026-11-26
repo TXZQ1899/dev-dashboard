@@ -1,9 +1,8 @@
-import { strToU8, zipSync } from 'fflate';
+import { createTwoSheetWorkbook, type Cell } from './xlsx';
 import { hideOperationalProcess, jvmMemory, formatDuration, type Asset, type ProcessRow } from './server-processes';
 import type { Instance } from './ecs';
 import type { ExportApp } from './server-process-export-associations';
 
-type Cell = string | number | null;
 type Group = {asset: Asset; rows: ProcessRow[]};
 type Options = {
   spec: (ip: string) => string;
@@ -58,31 +57,9 @@ export function serverProcessExportRows(groups: Group[], options: Options): {sum
   return {summary,detail};
 }
 
-function xml(value: string): string {
-  // Excel cells are limited to 32,767 UTF-16 units; retain a visible marker if shortened.
-  const clean=value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g,'');
-  const text=clean.length>32767?clean.slice(0,32755)+'…（已截断）':clean;
-  return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;');
-}
-function col(i: number): string { let result=''; for(let n=i+1;n>0;n=Math.floor((n-1)/26))result=String.fromCharCode(65+(n-1)%26)+result; return result; }
-function sheet(rows: Cell[][], widths: number[]): string {
-  const body=rows.map((row,i)=>`<row r="${i+1}">${row.map((v,j)=>{
-    if(v===null||v===undefined)return '';
-    const ref=`${col(j)}${i+1}`, style=i===0?' s="1"':'';
-    return typeof v==='number'&&Number.isFinite(v)?`<c r="${ref}"${style}><v>${v}</v></c>`:`<c r="${ref}" t="inlineStr"${style}><is><t xml:space="preserve">${xml(String(v))}</t></is></c>`;
-  }).join('')}</row>`).join('');
-  const columns=widths.map((w,i)=>`<col min="${i+1}" max="${i+1}" width="${w}" customWidth="1"/>`).join('');
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>${columns}</cols><sheetData>${body}</sheetData><autoFilter ref="A1:${col(widths.length-1)}${rows.length}"/></worksheet>`;
-}
 export function createServerProcessWorkbook(data: {summary: Cell[][]; detail: Cell[][]}): Uint8Array {
-  const files: Record<string,string>={
-    '[Content_Types].xml':'<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>',
-    '_rels/.rels':'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
-    'xl/workbook.xml':'<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="服务器清单" sheetId="1" r:id="rId1"/><sheet name="进程明细" sheetId="2" r:id="rId2"/></sheets></workbook>',
-    'xl/_rels/workbook.xml.rels':'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>',
-    'xl/styles.xml':'<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Arial"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Arial"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF244769"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="2"><xf xfId="0"/><xf fontId="1" fillId="2" xfId="0" applyFont="1" applyFill="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>',
-    'xl/worksheets/sheet1.xml':sheet(data.summary,[32,28,22,20,18,14,14,16,45,16,70,25,18]),
-    'xl/worksheets/sheet2.xml':sheet(data.detail,[20,32,14,32,18,32,18,18,14,14,28,18,20,28,25,26,85,18,25,30,40,85,50,38]),
-  };
-  return zipSync(Object.fromEntries(Object.entries(files).map(([name,text])=>[name,strToU8(text)])),{level:6});
+  return createTwoSheetWorkbook(
+    { name: '服务器清单', rows: data.summary, widths: [32,28,22,20,18,14,14,16,45,16,70,25,18] },
+    { name: '进程明细', rows: data.detail, widths: [20,32,14,32,18,32,18,18,14,14,28,18,20,28,25,26,85,18,25,30,40,85,50,38] },
+  );
 }

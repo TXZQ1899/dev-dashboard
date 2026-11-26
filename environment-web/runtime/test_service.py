@@ -43,12 +43,68 @@ class SettingsTests(unittest.TestCase):
         password = ' 密码 with spaces '
         self.service.save_settings({'folidevPassword':password})
         self.assertEqual(s.credentials()['folidev']['value'], password)
+
         self.assertTrue(self.service.status()['folidev']['configured'])
         self.assertNotIn(password, json.dumps(self.service.status(),ensure_ascii=False))
         self.service.save_settings({'folidevPassword':''})
         self.assertEqual(s.credentials()['folidev']['value'], password)
         self.assertEqual((self.data/'secrets/cookies.json').stat().st_mode & 0o777, 0o600)
         with self.assertRaises(ValueError): self.service.save_settings({'folidevPassword':'bad\npassword'})
+
+    def test_jvm_live_dump_requires_explicit_confirmation(self):
+        for value in (None, False, 'true', 1):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, '请确认 live'):
+                self.service.start_jvm_analysis({'dumpMode': 'live', 'confirmFullGc': value})
+        with self.assertRaisesRegex(ValueError, '无效堆转储模式'):
+            self.service.start_jvm_analysis({'dumpMode': 'invalid'})
+
+    def test_jvm_process_history_restores_persisted_recommendation_after_restart(self):
+        start = '2026-11-20T10:00:00+08:00'
+        selected = {'pid': 1423, 'startedAt': start}
+        mib = 1024 ** 2
+        archived = '20261125-204912-473016'
+        recent_failure = '20261125-210000-000001'
+        other_process = '20261125-220000-000001'
+        previous_pid_owner = '20261125-203000-000001'
+        report = {'status': 'complete', 'finishedAt': '2026-11-25T20:51:21+08:00', 'runtime': {
+            'flags': {'InitialHeapSize': 2048 * mib, 'MaxHeapSize': 3072 * mib},
+            'dumpGc': {'status': 'single_full_gc', 'before': {'heapUsedBytes': 734 * mib},
+                       'after': {'heapUsedBytes': 158 * mib}},
+        }}
+
+        def save(identifier, asset, process_start, result):
+            folder = self.data/'jvm'/identifier
+            job = {'id': identifier, 'assetId': asset, 'pid': 1423, 'status': result['status'],
+                   'sourceVersion': 'old' if identifier == archived else 'current'}
+            if process_start:
+                job['processStartedAt'] = process_start
+            s.write(folder/'job.json', job)
+            s.write(folder/'report.json', result)
+            return job
+
+        s.write(self.data/'versions'/'old'/'jumpserver-snapshot.json', {'assets': [
+            {'id': 'server', 'inspection': {'processes': [selected]}},
+        ]})
+        save(archived, 'server', None, report)
+        save(previous_pid_owner, 'server', '2026-11-19T10:00:00+08:00', report)
+        save(recent_failure, 'server', start, {'status': 'failed'})
+        s.write(self.data/'jvm'/'latest.json', save(other_process, 'other', start, report))
+
+        for service in (self.service, s.Service()):
+            with patch.object(service, 'application_process_target', return_value=('current', None, None, None, selected)):
+                state = service.jvm_process_history('server', 1423)
+            self.assertEqual(state['job']['id'], recent_failure)
+            self.assertEqual(state['recommendation']['taskId'], archived)
+            self.assertEqual(state['recommendation']['xmsBytes'], 1024 * mib)
+            self.assertEqual(state['recommendation']['xmxBytes'], 2048 * mib)
+            self.assertEqual(s.read(self.data/'jvm'/archived/'report.json')['heapSizing'], state['recommendation'])
+        with patch.object(self.service, 'application_process_target', return_value=(
+                'current', None, None, None, {**selected, 'startedAt': '2026-11-25T23:00:00+08:00'})):
+            self.assertIsNone(self.service.jvm_process_history('server', 1423)['recommendation'])
+        with patch.object(self.service, 'application_process_target', side_effect=ValueError('所选进程不在当前快照中')):
+            state = self.service.jvm_process_history('server', 1423)
+            self.assertTrue(state['historical'])
+            self.assertEqual(state['recommendation']['taskId'], archived)
 
     def test_cookie_alert_persists_until_corresponding_cookie_updated(self):
         self.service.save_settings({'cookies':{'aliyun':'secret=old','devops':'secret=other'}})
@@ -664,6 +720,41 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(self.service.status()['topology']['id'],second['id'])
         with self.assertRaises(ValueError):self.service.topology_file('../escape')
 
+    def test_nginx_export_pins_source_and_keeps_previous_files_on_retry_failure(self):
+        version=s.read(self.data/'current.json')['id']
+        self.assertIsNone(self.service.nginx_export_status()['result'])
+        with self.assertRaisesRegex(ValueError, '激活数据版本已变化'):
+            self.service.start_nginx_export('stale')
+        with patch.object(s.threading, 'Thread') as thread:
+            self.service.start_nginx_export(version)
+            args=thread.call_args.kwargs['args']
+            with self.assertRaisesRegex(ValueError, '正在生成'):
+                self.service.start_nginx_export(version)
+
+        def generate(command, **kwargs):
+            self.assertEqual(Path(command[2]), self.data/'versions'/version)
+            self.assertEqual(Path(command[6]), self.data/'nginx-exports'/version)
+            for name in s.NGINX_EXPORT_FILES:
+                (Path(command[4])/name).write_bytes(b'example')
+            return s.subprocess.CompletedProcess(command,0,stdout='{"routeRows":1}')
+
+        with patch.object(s.subprocess,'run',side_effect=generate):
+            self.service.run_nginx_export(*args)
+        first=self.service.nginx_export_status()['result']
+        self.assertEqual(first['sourceVersion'], version)
+        for filename in s.NGINX_EXPORT_FILES:
+            self.assertEqual(self.service.nginx_export_file(version,first['id'],filename).read_bytes(), b'example')
+        with self.assertRaises(ValueError):
+            self.service.nginx_export_file(version,first['id'],'../current.json')
+        with patch.object(s.threading, 'Thread') as thread:
+            self.service.start_nginx_export(version)
+            args=thread.call_args.kwargs['args']
+        with patch.object(s.subprocess,'run',side_effect=s.subprocess.TimeoutExpired('node',300)):
+            self.service.run_nginx_export(*args)
+        state=self.service.nginx_export_status()
+        self.assertEqual(state['job']['status'],'failed')
+        self.assertEqual(state['result'],first)
+
     def topology_ready(self):
         topology={'generatedAt':'2026-09-20T12:00:00+08:00','nodes':[{'id':'n'}],'edges':[{'id':'e'}],
                   'stats':{'nodeCount':1,'edgeCount':1,'ambiguousEdges':0,'unresolvedNodes':0}}
@@ -948,7 +1039,7 @@ class SettingsTests(unittest.TestCase):
         info=self.service.ip_login_info('10.58.9.7')
         self.assertEqual(info['elevation']['status'],'password_error')
         self.assertIsNone(info['elevation']['password'])  # never surface a stale password alongside an error marker
-        self.assertIn('密码错误',info['note'])
+        self.assertIn('提权失败，仅普通用户',info['note'])
 
     def test_ip_login_info_reports_default_probe_chain_when_ip_not_in_map(self):
         self._seed_ip_login_asset(ip='10.58.9.8',inspection={'loginStatus':'cannot_login','reason':'连接超时','sudoStatus':None,'checkedAt':'2026-10-12T10:00:00+08:00'})

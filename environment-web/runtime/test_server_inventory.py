@@ -36,6 +36,7 @@ class InventoryTests(unittest.TestCase):
 
     def test_specs_independent_fields_and_failure_reasons(self):
         class Terminal:
+            def elevate_sudo_su(self): return "denied", "not available"
             def __init__(self, body): self.body = body
             def run(self, command, timeout): return 0, self.body
         complete = inv.collect_specs(Terminal('SPECS\t4\t8388608\tLinux'))
@@ -53,6 +54,7 @@ class InventoryTests(unittest.TestCase):
     def test_specs_run_before_elevation_and_survive_later_failure(self):
         events = []
         class Terminal:
+            def elevate_sudo_su(self): return "denied", "not available"
             def __init__(self, *args): pass
             def login(self): events.append('login')
             def run(self, command, timeout=60):
@@ -71,6 +73,7 @@ class InventoryTests(unittest.TestCase):
     def test_specs_timeout_reconnects_once_before_retry(self):
         events = []
         class Terminal:
+            def elevate_sudo_su(self): return "denied", "not available"
             count = 0
             def __init__(self, *args):
                 Terminal.count += 1
@@ -91,6 +94,7 @@ class InventoryTests(unittest.TestCase):
 
     def test_docker_inventory_parses_ports_and_redacts_arguments(self):
         class Terminal:
+            def elevate_sudo_su(self): return "denied", "not available"
             def run(self, command, timeout):
                 self.command = command
                 fields = ['a'*64, '/orders', 'example/orders:1', 123, '/start',
@@ -111,6 +115,7 @@ class InventoryTests(unittest.TestCase):
 
     def test_docker_inventory_keeps_failures_and_malformed_rows_distinct(self):
         class Terminal:
+            def elevate_sudo_su(self): return "denied", "not available"
             def __init__(self, body): self.body=body
             def run(self, command, timeout): return 0, self.body
         self.assertEqual(inv.collect_docker_inventory(Terminal('DOCKER_INVENTORY_STATUS\tfailed'))['status'], 'failed')
@@ -243,6 +248,7 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
 
     def test_login_success_separate_from_collection_failure(self):
         class Terminal:
+            def elevate_sudo_su(self): return "denied", "not available"
             def __init__(self,*a):pass
             def login(self):pass
             def elevate(self, password=None):return 'passwordless',''
@@ -255,6 +261,7 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
 
     def test_fallback_account_and_partial_visibility(self):
         class Terminal:
+            def elevate_sudo_su(self): return "denied", "not available"
             def __init__(self,a,u,*rest): self.user=u['username']
             def login(self):
                 if self.user=='folidev':raise RuntimeError('secret')
@@ -351,11 +358,39 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
             self.assertEqual(sent.count('private-password\r'),0 if mode=='passwordless' else 1)
             if mode=='password_error':self.assertTrue(sent[-1].startswith('\x03') and '\r' in sent[-1])
 
+    def test_sudo_su_is_noninteractive_and_verifies_root(self):
+        for identity, expected in [('0', 'passwordless'), ('1000', 'denied')]:
+            with self.subTest(identity=identity):
+                terminal=object.__new__(inv.Terminal)
+                sent=[]; terminal.send=sent.append
+                responses=iter([(0,'1000'),(0,identity)])
+                terminal.run=lambda *a,**k:next(responses)
+                chunks=iter(['SUDOabc_BEGIN\n', 'root@host:~# '])
+                terminal.recv=lambda:next(chunks)
+                with patch.object(inv.uuid,'uuid4') as uid, patch.object(inv.time,'sleep'):
+                    uid.return_value.hex='abc'
+                    status,_=terminal.elevate_sudo_su()
+                self.assertEqual(status,expected)
+                self.assertEqual(len(sent),1)
+                self.assertIn('sudo -n su;',sent[0])
+
+    def test_sudo_su_recovers_a_previous_failure_marker(self):
+        class T:
+            def elevate_sudo_su(self): return 'passwordless', ''
+            def elevate(self, password=None): raise AssertionError('unexpected password attempt')
+            def elevate_su(self, password): raise AssertionError('unexpected password attempt')
+        entry={'10.0.0.1':{'status':'password_error'}}
+        self.assertEqual(inv.resolve_elevation(T(),'10.0.0.1','pw','root1','root2',entry),
+                         ('passwordless', '', 'sudo-su', None, True))
+        entry['10.0.0.1']={'status':'normal','method':'sudo-su','password':None}
+        self.assertFalse(inv.resolve_elevation(T(),'10.0.0.1','pw','root1','root2',entry)[4])
+
     def test_wrong_sudo_password_falls_back_to_user_configs(self):
         main_conf = b'http { include /etc/nginx/conf.d/*.conf; }'
         app_conf = b'server { listen 80; server_name app.test; location / { proxy_pass http://10.0.0.1:8080; } }'
         contents={'/etc/nginx/nginx.conf':main_conf,'/etc/nginx/conf.d/app.conf':app_conf}
         class Terminal:
+            def elevate_sudo_su(self): return "denied", "not available"
             def __init__(self,*a):pass
             def login(self):pass
             def elevate(self, password=None):return 'password_error','sudo 密码错误'
@@ -375,8 +410,15 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
             def close(self):pass
         with patch.object(inv.uuid,'uuid4') as uid:
             uid.return_value.hex='abc'
-            row=inv.inspect_asset({'id':'a'},[{'protocol':'ssh','username':'folidev'}],'cookie','password','','',{},Terminal)
+            row=inv.inspect_asset({'id':'a','ip':'10.0.0.1'},[{'protocol':'ssh','username':'folidev'}],'cookie','password','','',{},Terminal)
         self.assertEqual(row['loginStatus'],'can_login')
+        self.assertEqual(row['elevationInfo']['status'], 'password_error')
+        self.assertEqual(row['elevationInfo']['note'], '提权失败，仅普通用户')
+        self.assertIsNone(row['elevationInfo']['password'])
+        with patch.object(inv, 'inspect_asset', return_value=row):
+            _, updates = inv.collect_servers([{'id':'a','ip':'10.0.0.1'}], lambda _: [], 'cookie', '', '', '', {})
+        self.assertEqual(updates['10.0.0.1']['status'], 'password_error')
+        self.assertEqual(updates['10.0.0.1']['note'], '提权失败，仅普通用户')
         self.assertEqual(row['nginxStatus'],'partial')
         self.assertEqual(len(row['nginxConfigurations']),2)
         self.assertEqual({f['path'] for f in row['nginxConfigurations']},{'/etc/nginx/nginx.conf','/etc/nginx/conf.d/app.conf'})
@@ -417,6 +459,7 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
 
     def test_wrong_sudo_password_no_nginx_process_stays_not_running(self):
         class Terminal:
+            def elevate_sudo_su(self): return "denied", "not available"
             def __init__(self,*a):pass
             def login(self):pass
             def elevate(self, password=None):return 'password_error','sudo 密码错误'
@@ -434,6 +477,7 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
         # 回归测试：glob 必须裸露发给 shell；被 shlex.quote 包进引号后永不展开（导致 conf.d 采集为空）。
         sent=[]
         class Terminal:
+            def elevate_sudo_su(self): return "denied", "not available"
             def run(self, command, timeout=60):
                 sent.append(command)
                 return 2, ''
@@ -450,6 +494,7 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
                   '/etc/nginx/conf.d/a.conf':b'server { server_name a.test; }',
                   '/etc/nginx/conf.d/b.conf':b'server { server_name b.test; }'}
         class Terminal:
+            def elevate_sudo_su(self): return "denied", "not available"
             def __init__(self,*a):pass
             def login(self):pass
             def elevate(self, password=None):return 'password_error','sudo 密码错误'
@@ -482,6 +527,7 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
         contents={'/etc/nginx/nginx.conf':b'http { server { server_name main.test; } }',
                   '/etc/nginx/conf.d/orphan.conf':b'server { server_name orphan.test; }'}
         class Terminal:
+            def elevate_sudo_su(self): return "denied", "not available"
             def __init__(self,*a):pass
             def login(self):pass
             def elevate(self, password=None):return 'passwordless',''
@@ -513,6 +559,7 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
                   '/etc/nginx/conf.d/a.conf':b'server { listen 80; server_name a.test; }',
                   '/etc/nginx/conf.d/b.conf':b'server { listen 81; server_name b.test; }'}
         class Terminal:
+            def elevate_sudo_su(self): return "denied", "not available"
             def __init__(self,*a):pass
             def login(self):pass
             def elevate(self, password=None):return 'passwordless',''
@@ -547,6 +594,7 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
         root='/proc/326384/root'
         physical={root+p: v for p,v in contents.items()}
         class Terminal:
+            def elevate_sudo_su(self): return "denied", "not available"
             def __init__(self,*a):pass
             def login(self):pass
             def elevate(self, password=None):return 'password',''
@@ -578,6 +626,7 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
         raw=b'# original\r\nserver { }\n\xff'
         encoded=base64.b64encode(raw).decode()
         class Terminal:
+            def elevate_sudo_su(self): return "denied", "not available"
             def run(self,*a,**kw):return 0,'CONFIGabc_FILE_0\n'+encoded+'\nCONFIGabc_DONE_0:0'
         with patch.object(inv.uuid,'uuid4') as uid:
             uid.return_value.hex='abc'
@@ -595,6 +644,7 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
         index={p:i for i,p in enumerate(paths)}
         sent=[]
         class Terminal:
+            def elevate_sudo_su(self): return "denied", "not available"
             def run(self, command, timeout=60):
                 sent.append(command)
                 lines=[]
@@ -718,6 +768,7 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
 
     def test_port_collection_failure_is_distinct_from_no_listeners(self):
         class Terminal:
+            def elevate_sudo_su(self): return "denied", "not available"
             def run(self,*args,**kwargs):return 127,''
         self.assertIsNone(inv.collect_listening_ports(Terminal()))
 
@@ -863,6 +914,7 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
 
     def test_inspect_asset_collects_app_listening_ports(self):
         class Terminal:
+            def elevate_sudo_su(self): return "denied", "not available"
             def __init__(self,*a):pass
             def login(self):pass
             def elevate(self, password=None):return 'passwordless',''
@@ -889,6 +941,7 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
 
     def test_inspect_asset_warns_when_not_elevated(self):
         class Terminal:
+            def elevate_sudo_su(self): return "denied", "not available"
             def __init__(self,*a):pass
             def login(self):pass
             def elevate(self, password=None):return 'denied','sudo 无权限'
@@ -910,6 +963,7 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
         # Simulates the 10.58.1.221 scenario: sudo denied, ps sees all
         # processes, but ss -ltnp hides PIDs for other users' sockets.
         class Terminal:
+            def elevate_sudo_su(self): return "denied", "not available"
             def __init__(self,*a):pass
             def login(self):pass
             def elevate(self, password=None):return 'denied','sudo 无权限'
@@ -947,6 +1001,7 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
         for port_rc in (0,127):
             with self.subTest(port_rc=port_rc):
                 class Terminal:
+                    def elevate_sudo_su(self): return "denied", "not available"
                     def __init__(self,*args):pass
                     def login(self):pass
                     def run(self,command,timeout=60):
@@ -967,6 +1022,7 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
 
     def test_resolve_elevation_mapped_sudo_i_uses_saved_method(self):
         class T:
+            def elevate_sudo_su(self): return "denied", "not available"
             def __init__(self): self.calls=[]
             def elevate(self, password=None): self.calls.append(('elevate',password)); return 'password',''
             def elevate_su(self, pw): self.calls.append(('su',pw)); return 'denied',''
@@ -979,6 +1035,7 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
 
     def test_resolve_elevation_mapped_su_uses_saved_method(self):
         class T:
+            def elevate_sudo_su(self): return "denied", "not available"
             def __init__(self): self.calls=[]
             def elevate(self, password=None): self.calls.append(('elevate',password)); return 'denied',''
             def elevate_su(self, pw): self.calls.append(('su',pw)); return 'password',''
@@ -991,6 +1048,7 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
 
     def test_resolve_elevation_password_error_skips_probing(self):
         class T:
+            def elevate_sudo_su(self): return "denied", "not available"
             def elevate(self, password=None): raise AssertionError('should not be called')
             def elevate_su(self, pw): raise AssertionError('should not be called')
         ip_map={'10.0.0.3':{'method':None,'password':None,'status':'password_error'}}
@@ -1000,6 +1058,7 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
 
     def test_resolve_elevation_unmapped_probes_all_three(self):
         class T:
+            def elevate_sudo_su(self): return "denied", "not available"
             def __init__(self): self.calls=[]
             def elevate(self, password=None): self.calls.append(('elevate',password)); return 'denied',''
             def elevate_su(self, pw): self.calls.append(('su',pw)); return 'denied',''
@@ -1012,6 +1071,7 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
 
     def test_resolve_elevation_unmapped_succeeds_on_su_alt2(self):
         class T:
+            def elevate_sudo_su(self): return "denied", "not available"
             def __init__(self): self.calls=[]
             def elevate(self, password=None): self.calls.append(('elevate',password)); return 'password_error','sudo wrong'
             def elevate_su(self, pw):
@@ -1025,6 +1085,7 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
 
     def test_resolve_elevation_mapped_fails_then_probes(self):
         class T:
+            def elevate_sudo_su(self): return "denied", "not available"
             def __init__(self): self.calls=[]
             def elevate(self, password=None): self.calls.append(('elevate',password)); return 'password_error','sudo wrong'
             def elevate_su(self, pw): self.calls.append(('su',pw)); return 'password',''
@@ -1038,6 +1099,7 @@ server { server_name kong.test; location / { proxy_pass http://kong; } }
 
     def test_resolve_elevation_no_alt_passwords_skips_su(self):
         class T:
+            def elevate_sudo_su(self): return "denied", "not available"
             def __init__(self): self.calls=[]
             def elevate(self, password=None): self.calls.append(('elevate',password)); return 'password_error',''
             def elevate_su(self, pw): raise AssertionError('should not be called')

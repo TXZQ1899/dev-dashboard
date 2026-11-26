@@ -45,23 +45,50 @@ const legacy = { id: 'legacy-aliyun', name: '绑定租户', accountId: '1001', e
 const other = { ...legacy, id: 'tenant-b', name: '其他租户', credentialVersion: 'revision-b',
   codeup: false, codeupOrganizationId: undefined };
 
-test('bound tenant saves Cookie mode and retains Codeup settings', async () => {
+test('bound tenant retains AccessKey mode and can update credentials', async () => {
   const view = editor([legacy]);
   view.button('管理租户').props.onClick();
-  for (const id of ['tenant-mode', 'tenant-key', 'tenant-secret']) assert.equal(view.field(id), undefined);
-  assert.equal(view.field('tenant-cookie').props.type, 'password');
+  assert.equal(view.field('tenant-mode').props.value, 'accesskey');
+  assert.equal(view.field('tenant-secret').props.type, 'password');
+  assert.equal(view.field('tenant-key').props.value, '');
   assert.equal(view.button('保存并验证账号'), undefined);
-  view.field('tenant-cookie').props.onChange({ target: { value: 'session=new' } });
+  view.field('tenant-key').props.onChange({ target: { value: 'new-key' } });
+  view.field('tenant-secret').props.onChange({ target: { value: 'new-secret' } });
   view.field('tenant-codeup-organization').props.onChange({ target: { value: 'updated-org' } });
+  view.button('保存租户').props.onClick();
+  await new Promise(resolve => setImmediate(resolve));
+  const patch = view.saved[0].aliyunTenants[0];
+  assert.equal(patch.mode, 'accesskey');
+  assert.equal(patch.accessKeyId, 'new-key');
+  assert.equal(patch.accessKeySecret, 'new-secret');
+  assert.equal(patch.codeupOrganizationId, 'updated-org');
+  assert.equal(patch.credentialVersion, 'revision-a');
+});
+
+test('bound tenant can switch to Cookie and leaves saved keys unchanged', async () => {
+  const view = editor([legacy]);
+  view.button('管理租户').props.onClick();
+  view.field('tenant-mode').props.onChange({ target: { value: 'cookie' } });
+  assert.equal(view.field('tenant-cookie').props.type, 'password');
+  view.field('tenant-cookie').props.onChange({ target: { value: 'session=new' } });
   view.button('保存租户').props.onClick();
   await new Promise(resolve => setImmediate(resolve));
   const patch = view.saved[0].aliyunTenants[0];
   assert.equal(patch.mode, 'cookie');
   assert.equal(patch.cookie, 'session=new');
-  assert.equal(patch.codeupOrganizationId, 'updated-org');
-  assert.equal(patch.credentialVersion, 'revision-a');
-  assert.equal('accessKeyId' in patch, false);
-  assert.equal('accessKeySecret' in patch, false);
+  assert.equal(patch.accessKeyId, '');
+  assert.equal(patch.accessKeySecret, '');
+});
+
+test('saving the bound tenant without new credentials keeps AccessKey mode', async () => {
+  const view = editor([legacy]);
+  view.button('管理租户').props.onClick();
+  view.button('保存租户').props.onClick();
+  await new Promise(resolve => setImmediate(resolve));
+  const patch = view.saved[0].aliyunTenants[0];
+  assert.equal(patch.mode, 'accesskey');
+  assert.equal(patch.accessKeyId, '');
+  assert.equal(patch.accessKeySecret, '');
 });
 
 test('other tenants save their own Cookie without Codeup or AccessKey fields', async () => {

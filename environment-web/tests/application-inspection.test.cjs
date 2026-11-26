@@ -21,6 +21,10 @@ function render(tab, visited) {
       effects.push({ type: 'files', ...props });
       return React.createElement('p', null, props.kind + ' capability');
     } };
+    if (id === '@/components/application-jvm') return { ApplicationJvm: props => {
+      effects.push({ type: 'jvm', ...props });
+      return React.createElement('p', null, 'JVM report');
+    } };
     if (id === '@/components/ui/tabs') return {
       Tabs: props => React.createElement(Primitive.Root, { ...props, defaultValue: tab }),
       TabsList: ({ variant: _variant, ...props }) => React.createElement(Primitive.List, props),
@@ -35,19 +39,20 @@ function render(tab, visited) {
   return { html: renderToStaticMarkup(tree), effects, changes, tabs: React.Children.toArray(tree.props.children)[1] };
 }
 
-test('inspection opens on TCP with three independent tabs and lazy file capabilities', () => {
+test('inspection opens on TCP with four independent tabs and lazy capabilities', () => {
   const { html, effects, tabs } = render('tcp', ['tcp']);
-  for (const label of ['TCP 连接检测', '配置文件', '日志文件', '10.0.0.1', 'PID 123', 'orders']) assert.ok(html.includes(label), label);
+  for (const label of ['TCP 连接检测', '配置文件', '日志文件', 'JVM 分析', '10.0.0.1', 'PID 123', 'orders']) assert.ok(html.includes(label), label);
   assert.deepEqual(effects, [{ type: 'tcp', asset: 'server', pid: 123 }]);
   assert.equal(tabs.props.defaultValue, 'tcp');
 });
 
-test('file tabs bind directly to the process and keep visited capabilities mounted', () => {
-  const { effects, tabs, changes } = render('log', ['tcp', 'config', 'log']);
+test('file and JVM tabs bind directly to the process and keep visited capabilities mounted', () => {
+  const { effects, tabs, changes } = render('jvm', ['tcp', 'config', 'log', 'jvm']);
   assert.deepEqual(effects, [
     { type: 'tcp', asset: 'server', pid: 123 },
     { type: 'files', asset: 'server', pid: 123, kind: 'config' },
     { type: 'files', asset: 'server', pid: 123, kind: 'log' },
+    { type: 'jvm', asset: 'server', pid: 123 },
   ]);
   tabs.props.onValueChange('config');
   assert.deepEqual(Array.from(changes[0](['tcp'])), ['tcp', 'config']);

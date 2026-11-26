@@ -32,3 +32,45 @@
 .catalog-config-button { display: inline-block; padding: 5px 9px; border: 1px solid #cbdad0; border-radius: 6px; color: #246747; font-size: 12px; white-space: nowrap; text-decoration: none; }
 .catalog-config-button:hover { background: #edf6f0; }
 .catalog-config-button:focus-visible { outline: 2px solid #246747; outline-offset: 2px; }
+
+/* JVM 调整弹窗：强制白色背景，去掉半透明叠层 */
+.jvm-adjust-dialog[data-slot="dialog-content"] {
+  background: #ffffff !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+.jvm-adjust-dialog[data-slot="dialog-content"] [data-slot="dialog-footer"] {
+  background: #f7f9f7 !important;
+}
+
+.catalog-instance-heading .jvm-panel-inline { display: inline-flex; align-items: center; gap: 8px; margin-left: 14px; font-size: 12px; font-weight: 500; color: #4a6b59; }
+.jvm-panel-label { color: #6b8375; font-weight: 500; }
+.jvm-panel-inline .jvm-flags { font-family: monospace; font-size: 12px; color: #2d543a; background: #eef6f0; padding: 3px 8px; border-radius: 5px; border: 1px solid #c7dcd1; font-weight: 500; white-space: nowrap; }
+.jvm-panel-inline .jvm-flags-adjusted { background: #fef6e8; color: #7d4a00; border-color: #e8c88c; }
+.jvm-adjust-tag { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 3px; background: #f3e1c6; color: #7d4a00; font-weight: 600; letter-spacing: 0.5px; }
+.jvm-panel-inline .jvm-empty { color: #96a79c; font-size: 12px; }
+.jvm-panel-inline .jvm-adjust-trigger { font-size: 11px; padding: 3px 10px; white-space: nowrap; }
+
+.jvm-adjust-form { display: grid; gap: 10px; }
+.jvm-current { display: inline-block; background: #f3f8f5; padding: 1px 5px; border-radius: 3px; color: #2d543a; }
+.jvm-adjust-field { display: grid; gap: 4px; font-size: 12px; }
+.jvm-adjust-field span { color: #5a6f62; }
+.jvm-export-form { display: grid; gap: 12px; }
+.jvm-export-form .jvm-adjust-field select,
+.jvm-export-select {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid #d4e0d6;
+  border-radius: 6px;
+  background: white;
+  font-size: 13px;
+  color: #2d4a35;
+}
+.jvm-export-date-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.jvm-history { font-size: 12px; }
+.jvm-history summary { cursor: pointer; color: #3a664b; font-weight: 600; }
+.jvm-history ul { margin: 8px 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.jvm-history li { display: grid; gap: 2px; padding: 6px 8px; background: #f7faf8; border: 1px solid #e1ebe3; border-radius: 5px; }
+.jvm-history li span { color: #7b8f81; font-size: 11px; }
+.jvm-history li code { color: #3a664b; font-size: 11px; }
+.jvm-history li small { color: #889a8d; font-size: 11px; }

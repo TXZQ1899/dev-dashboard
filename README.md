@@ -1,6 +1,6 @@
-# Env-Scope
+# Application Atlas
 
-Env-Scope 是一个面向应用部署、基础设施资源与网络访问链路的采集、关联、拓扑与治理工具。
+Application Atlas 是一个面向应用部署、基础设施资源与网络访问链路的采集、关联、拓扑与治理工具。
 
 当前系统已经能够采集并关联多类数据，包括：
 
@@ -27,7 +27,7 @@ Env-Scope 是一个面向应用部署、基础设施资源与网络访问链路�
 
 ## 1. 项目目标
 
-Env-Scope 希望回答三类问题。
+Application Atlas 希望回答三类问题。
 
 ### 1.1 Inventory：我们有什么资源？
 
@@ -98,7 +98,7 @@ AI 开发约束与项目工作方式见：
 
 ## 3. 运行模型：Docker 是正式运行边界
 
-Env-Scope 的正式运行方式是 **Docker 容器**。
+Application Atlas 的正式运行方式是 **Docker 容器**。项目源码目录为 `environment-web`；当前部署位于 Docker context `lenovo`，应用容器名为 `envscope-local`，其镜像标签为 `envscope:local`。所有构建、运行和运行数据检查均须显式使用 `docker --context lenovo`。需要登录服务器核实问题时，必须从该应用容器通过 JumpServer 登录相关服务器。
 
 `environment-web` 会被构建为 Docker 镜像，并在容器中启动。后续功能设计、代码实现、测试和运行方式都应以容器环境为默认目标，而不是以宿主机直接执行为默认前提。
 
@@ -113,7 +113,7 @@ Docker image
         ↓
 Docker container
         ↓
-Env-Scope runtime
+Application Atlas runtime
 ```
 
 容器内负责：
@@ -137,7 +137,7 @@ Env-Scope runtime
 
 ### 3.1 当前采集入口
 
-当前采集入口为容器中的 Env-Scope 看板：
+当前采集入口为容器中的 Application Atlas 看板：
 
 ```text
 http://localhost:3001/settings
@@ -165,11 +165,17 @@ envscope-data
 
 工作空间提供「部署单元」菜单（`/deployment-units`），使用已有应用快照自动建立部署单元与分环境实例。Compose 增加 MySQL 8.4 服务及独立持久卷 `envscope-mysql`；领域、系统先建空表，归属待维护。采集仍写原有 JSON 快照，数据库作为独立管理目录，不改变 snapshot 定义。启动、配置、更新及备份方式见 [`environment-web/SETTINGS.md`](environment-web/SETTINGS.md#部署单元与-mysql)，本期规则见 [`Analysis/06-deployment-catalog-implementation.md`](Analysis/06-deployment-catalog-implementation.md)。
 
-### 3.3 单应用上下游核验
+### 3.3 单应用进程分析
 
 JumpServer 服务器进程页保留无 root 账号可见的主机 TCP 监听端口；未确认 PID 的端口仍可在服务器展开行查看。唯一进程候选以「推断」显示并支持端口搜索，与直接采集的 PID 监听分开保存；RabbitMQ 可按 socket UID 与主进程角色排除 EPMD / Erlang 辅助进程，多节点或证据冲突则保留歧义。端口查询失败不会显示为已确认的零监听。此调整在部署新镜像并重新采集后生效，旧快照不回填推断结果。
 
-在 `/jumpserver` 按 IP 查询后，Tomcat / Java 及中间件进程行可点击 **检测上下游**，在新标签页打开独立页面。页面提供 **TCP 连接检测**、**配置文件**、**日志文件** 三个页签，默认打开 TCP；配置和日志可直接使用，无需先执行 TCP 检测。切换页签保留已打开的内容和任务状态。
+在 `/jumpserver` 按 IP 查询后，Tomcat / Java 及中间件进程行可点击 **进程分析**，在新标签页打开独立页面。页面提供 **TCP 连接检测**、**配置文件**、**日志文件**、**JVM 分析** 四个页签，默认打开 TCP；配置、日志和 JVM 分析可直接使用，无需先执行 TCP 检测。切换页签保留已打开的内容和任务状态。
+
+**JVM 分析** 页提供普通转储和 Full GC 后转储（`live`）。两种转储都会暂停进程。选择 `live` 时需确认允许暂停，任务在转储前后分别执行一次 `jstat -gc`，用同一进程的 Full GC 计数差值核实回收是否发生。报告显示 JVM 生效的 `Xms`、`Xmx`、GC 收集器，以及 Young、Old 和整个堆的采样用量。「拟调整 Xms」和「拟调整 Xmx」以文字展示建议值。建议与报告一起保存到数据卷。同一进程重新打开页面时显示最近一份有效建议，容器重启后也可以查看。业务高峰和定时任务的余量仍需通过灰度验证。
+
+「拟调整」用已核实的单次 Full GC 前后堆已用量 `B` 和 `A` 计算灰度建议。`Xms` 候选为 `max(B, 2 × A)`，`Xmx` 候选为 `max(2 × B, 3 × A)`。当前 `Xmx` 至少为 3 GiB 时按 1 GiB 向上取整，否则按 256 MiB 向上取整。候选最多保留当前配置，拟调整的 `Xms` 不高于拟调整的 `Xmx`。仅在有更小候选值时显示参数。缺少可比较样本或回收后用量高于回收前时，保留上次有效评估。进程离开当前快照后，可用原进程链接只读查看历史结果。
+
+转储压缩后经 JumpServer 传回容器，用 MAT 离线解析。校验通过的压缩文件保存在数据卷 `/data/jvm/dumps/<应用ID>_<应用名>/<YYYY-MM-DD>/<任务ID>.hprof.gz`，后续分析失败也会保留。无法唯一匹配应用时，使用 `<IP>_<进程ID>` 作为归档目录名。日期按北京时间生成。文件可能包含敏感数据，由操作人员按需手动清理。目标机临时文件、容器内解压文件及 MAT 索引在任务结束后清理，报告和日志继续保留。首次部署或使用新数据卷时执行 `docker --context lenovo exec envscope-local python3 /app/runtime/install_jvm_tools.py` 安装 MAT 和 JDK 21（详见 `.trae/skills/jvm-heap-analysis/SKILL.md`）。
 
 TCP 页设置 10–300 秒观察时间。部署环境根据目标进程、监听端口和部署记录自动识别；无法唯一识别时保留未确认，不跨环境关联应用。后台复用 JumpServer 授权会话，在目标进程及全部已发现、能唯一匹配资产的对端服务器上并行检查 TCP socket，上游、下游均不设对端台数上限；同机连接独立核验。每次仍最多观察 100 条连接，超限明确警告。输出对端 IP、端口、PID、进程名以及 DevOps 应用 ID / 名称。应用多候选和不可登录的对端保留为未解析结果。
 
@@ -201,7 +207,7 @@ TCP 页设置 10–300 秒观察时间。部署环境根据目标进程、监听
 
 Socket 探针兼容不支持 `-H` 的 `iproute2-ss130716`。等待 JumpServer 终端返回超时时，只对只读 socket 探针重试一次；持续失败显示 `SOCKET_PROBE_TIMEOUT` 和检查阶段。部分失败仍保留已观察时长、连接及最后有效进程身份，不把失败等待时间当成新增观察覆盖。
 
-下游连接遇到 Docker 发布端口时，会继续进入对端候选容器的网络空间核对实际 socket 和服务进程，展示“宿主机发布端口 → 容器端口”、容器名及实际进程 PID，可识别使用自定义端口的 Redis、MQ 等中间件。Docker 代理仅作为转发证据，服务进程归属与 DevOps 应用归属独立判断。仅找到端口映射/监听进程时保留推断；多个容器候选、权限不足、容器重启或客户端地址被代理/SNAT 改写时保留未解析结果。对端需要具备 Docker 查询权限与 `nsenter`，无需在业务容器中安装诊断工具，也无需给 EnvScope 挂载 Docker socket。
+下游连接遇到 Docker 发布端口时，会继续进入对端候选容器的网络空间核对实际 socket 和服务进程，展示“宿主机发布端口 → 容器端口”、容器名及实际进程 PID，可识别使用自定义端口的 Redis、MQ 等中间件。Docker 代理仅作为转发证据，服务进程归属与 DevOps 应用归属独立判断。仅找到端口映射/监听进程时保留推断；多个容器候选、权限不足、容器重启或客户端地址被代理/SNAT 改写时保留未解析结果。对端需要具备 Docker 查询权限与 `nsenter`，无需在业务容器中安装诊断工具，也无需给 Application Atlas 挂载 Docker socket。
 
 当前采用 `ss` 周期采样及 socket 字节计数差值，最多记录 100 条连接。短连接可能漏采，UDP / Unix Socket、代理或 NAT 前的原始调用方、jar 内配置和配置中心暂不覆盖。Tomcat 共用 JVM 时，只能确认进程级连接；应用归属保留多候选。网络活动不能单独证明存在业务请求，也不能用无流量结果直接判断可删除。
 
@@ -613,7 +619,7 @@ Risk Analyzer                  下一阶段
 Architecture Renderer          后续
 ```
 
-目标是让 Env-Scope 从“资源采集工具”逐步演进为：
+目标是让 Application Atlas 从“资源采集工具”逐步演进为：
 
 > **Application Infrastructure Topology & Architecture Governance Platform**
 

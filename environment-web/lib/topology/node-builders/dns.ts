@@ -53,6 +53,7 @@ export function buildDnsNodes(graph: GraphCollector, input: SnapshotInput, hosts
       reference: record.tenantId ? `cloud-dns-snapshot.json (${text(record.tenantId)}/public/${text(record.zoneId)}/${text(record.id)})`
         : `environment-web/lib/dns-snapshot.json (${text(record.source)} row ${text(record.row)})`,
       detail: `DNS ${type} ${name} -> ${value}, line ${text(record.line)}, status ${text(record.status)}`,
+      ...(type !== 'CNAME' ? { dnsAddress: value } : {}),
       observedAt: toIso(record.observedAt) ?? toIso(root.collectedAt) ?? toIso(root.snapshotDate),
     };
     const source = domainNode(name, status, evidence, {

@@ -12,7 +12,7 @@
 
 ## Context
 
-EnvScope 已经存在：
+Application Atlas 已经存在：
 
 - TopologyGraph
 - TopologyNode

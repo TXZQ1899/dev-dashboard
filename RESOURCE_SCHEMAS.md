@@ -1,4 +1,4 @@
-# EnvScope 资源采集数据 Schema 整理
+# Application Atlas 资源采集数据 Schema 整理
 
 - 整理对象：`environment-web` 当前使用的快照数据与 `/resources` 宽表计算结果。
 - 说明：字段类型按 JSON 实际数据和代码定义归纳；`?` 表示可空/条件存在；`[]` 后的 `T` 表示数组元素类型。
@@ -650,11 +650,17 @@ AccessKey 采集按 LB 隔离故障。列表或详情明确为 `inactive` / `loc
 
 ### 本地机房服务器规格
 
+JumpServer 提权映射支持 `method: sudo-su`，表示已验证免密 `sudo -n su`，不保存密码。每次采集优先尝试该方式，包括已有 `password_error` 标记的资产；成功后更新映射，失败后沿用原有映射和密码探测规则。失败标记仍阻止重复密码尝试。
+
 仅资产地址中含有效 IPv4 且属于 `10.58.1.0/24`、`10.58.9.0/24`、`10.58.10.0/24`、`10.58.140.0/24` 的资产采集规格。登录成功后、提权之前采集；规格命令超时会关闭失步终端，重新登录并重试一次。CPU 沿用 `nproc` 的当前进程可用逻辑 CPU 口径，内存为 `/proc/meminfo` 的 MemTotal。CPU、内存和 OS 独立保留，缺失数值用 0 表示未知，不能解释为真实容量为零。
 
 规格写入版本内 `server-specs.json` 的 `specs[]`，包括 `assetId`、`ip`、`hostname`、`loginStatus`、`checkedAt`、`cpu`、`memoryMB`、`os`、`cpuSource`、`specsStatus`、`specsReason`；`specsStatus` 为 `complete`、`partial`、`failed`、`not_collected`，`specsReason` 是安全的失败类别或逗号分隔的缺失字段。`specsCollected` 表示 CPU 和内存均为正值；OS 缺失时仍可为 true。旧快照缺少新增字段仍可读取。单台重新采集只更新该资产，其他记录保留各自检查时间；本次失败不会冒充上次成功数据。显示层可独立展示已采集字段。
 
 ### JumpServer 页面纳管总览
+
+部署单元应用实例详情的 `processObservation` 是快照的派生观察：`status` 为 `MATCHED`、`NOT_FOUND`、`AMBIGUOUS` 或 `UNKNOWN`，并可包含采集时间、PID、进程启动时间、采集时运行秒数、PID 持有的监听端口和端口采集状态。应用关联依据同环境、主机及进程名称推断；同主机多部署还需唯一端口。仅完整进程采集且未按名称匹配时返回 `NOT_FOUND`，不等同于实时确认进程不存在；历史目录、未采集和歧义不推断无进程。端口不使用声明值或命令行参数补全。目录更新时计算观察，原子保存至数据卷 `catalog-process-observations.json`，绑定目录导入 ID、DevOps 快照哈希和当前版本 ID；展开实例只读取结果。手动更新强制重新计算，既有后台同步在版本变化或结果缺失时更新。版本或目录不一致时显示待确认，不复用旧结果。
+
+应用环境巡检通过 `POST /api/catalog/environment-check` 接收 `unitId` 和正式环境，通过 `GET /api/catalog/environment-check?id=...` 返回任务阶段、进度事件和报告就绪状态，`GET /api/catalog/environment-check/download?id=...` 下载 Excel。任务固定当前版本与目录范围，执行配置、Nginx、Kong、DNS、进程/JVM、日志、Dubbo 与逐实例 300 秒 TCP；无法确认唯一资产、PID 或启动时间的实例保留 `unresolved`。事件是受限的程序进度信息，不记录原始终端输出；报告保留错误、未解析条目与覆盖限制。任务、Excel、原始 TCP 报告、脱敏配置摘要和原始日志归档保存于数据卷 `checks/<任务ID>/`，重启时未完成条目标记失败，保留已保存结果。报告中的目标服务器历史资源分析仍为 `UNKNOWN`。
 
 总览基于当前版本快照派生，不回写采集数据。JumpServer 图按授权资产计数，ECS 图按实例计数；两图统计范围不同。使用 JumpServer 资产地址与 ECS 私网 / 公网地址的有效 IPv4 建立双向唯一匹配，未匹配仅表示在当前可见清单中找不到对应地址。地址缺失或格式未识别、多候选、以及本地机房网段与 ECS 证据冲突保留为「关联待确认」；不推断停机或真实纳管状态。本地机房按 `datacenter-networks.ts` 已确认网段识别。
 
@@ -678,6 +684,12 @@ AccessKey 采集按 LB 隔离故障。列表或详情明确为 `inactive` / `loc
 服务器进程页面对指定的运维、监控和系统辅助进程做展示过滤（包括 tuned、salt-minion、AliYunDunMonitor、AliYunDun、AliYunDunUpdate、systemd-journald、cloudmonitor wrapper、指定的 cloudmonitor Java 应用、aliyun-service、rsync daemon、lvmetad、haveged、snmpd、Postfix master/qmgr/pickup、process-exporter 和 node_exporter）。过滤依据可执行文件及必要的命令参数，不改变原始采集、其他查询或端口证据；整机 CPU 差异判断仍计入隐藏的非系统进程。系统进程标记基于有限规则，未标记不证明一定是业务进程。
 
 服务器进程详情从 Java 启动命令的 JVM 参数中提取 `-Xms` 和 `-Xmx`，显示采集时 RSS（MiB）及 RSS / Xmx 百分比。只使用命令中明确给出的有效 Xmx，不推测 JVM 默认值；未识别、缺少 RSS 或非 Java 进程的比值显示为未知。RSS 包含堆外内存，因此比值可以超过 100%；Nginx worker 合并行不代表单一进程，不展示其 RSS。
+
+JVM 堆分析在数据卷 `/data/jvm/dumps/<应用ID>_<应用名>/<YYYY-MM-DD>/<任务ID>.hprof.gz` 保留校验成功的压缩转储，日期按北京时间生成。报告 `dump.archivePath` 和 `dump.application` 记录位置与应用归属。按同版本部署主机和进程名称线索匹配，唯一候选为 `INFERRED`。多候选或未知保留 `AMBIGUOUS` / `UNKNOWN`，以 `<IP>_<进程ID>` 命名归档目录。应用名仅作安全路径字符转换。后续分析失败或取消时保留已归档转储，任务结束时清理目标服务器临时文件、未校验文件、解压文件及 MAT 索引。归档由操作人员手动删除，文件可能包含敏感堆数据。
+
+JVM 分析的 `POST /api/settings/application-jvm` 可选 `dumpMode`，默认为 `all`。`live` 需同时提供 `confirmFullGc: true`，执行前复核进程启动标识。任务的 `dumpMode` 与报告的 `dump.mode` 记录采集方式。`runtime.flags` 保存从 `jcmd VM.flags` 读取的生效参数。`runtime.dumpGc` 保存 `live` 转储前后的 `jstat` 样本及 Full GC 次数和累计耗时差值。`status` 区分观察到一次、观察到多次、未观察到、计数不可比较与进程身份未确认。缺失指标省略。前后样本是转储附近的运行时占用，MAT 堆对象统计使用单独口径。旧报告可缺少这些可选字段。
+
+已完成且包含可比较 Full GC 样本的 `report.json` 保存可选 `heapSizing`，包含规则版本、来源任务和完成时间、当前及拟调整 `Xms/Xmx`、计算用量和取整档位，容量单位均为字节。`GET /api/settings/application-jvm?asset=<资产ID>&pid=<PID>` 按资产、PID 和进程启动时间恢复最近任务及最近有效 `recommendation`。当前快照缺少该进程或请求带 `history=1` 时，返回只读历史结果并设置 `historical: true`。失败、取消和无有效样本的任务不会覆盖此前有效建议。旧任务可用原快照核对进程启动时间，证据齐全的旧报告可在读取时补存建议。原有按任务 ID 查询仍可用。
 
 “服务器与进程”的可登录列表支持导出 Excel：服务器清单和进程明细覆盖当前全局筛选后的全部分页，不受单台进程详情的展开状态、分类标签、搜索或分页影响。明细采用默认可见的非系统进程及相同展示过滤，Nginx worker 沿用页面合并口径；监听端口的推断标记、容器分类推断标记和采集状态保留。系统进程告警可出现在服务器分类中，但不纳入默认进程明细。
 
@@ -905,7 +917,7 @@ DNS 域名详情仅在展开时读取归档，同一页面按配置版本和资�
 
 # 10. Topology Graph Schema
 
-> 本节描述 Env-Scope 在原始快照和 `/resources` 宽表之上的统一拓扑模型。  
+> 本节描述 Application Atlas 在原始快照和 `/resources` 宽表之上的统一拓扑模型。
 > 原始快照仍然是事实来源；Topology 不取代原始 Schema，而是为路径查询、架构图和风险分析提供统一图模型。
 
 ## 10.1 设计目标
@@ -1725,7 +1737,9 @@ Redis 使用宿主机网络的容器，如果已核对容器进程、启动脚�
 
 ### 请求路径中的 Kong 查询时证据
 
-请求链路在 `PRODUCT` / `TEST` 分别识别用户提供的 Kong Admin 地址 `10.179.4.220:8001` / `10.179.2.144:8001`；两台节点通过 Admin 配置核实 HTTP proxy 监听 8000。只有链路实际到达对应环境的 `IP:8000` 才只读查询该节点的 Admin API。查询时从 route、service、upstream 和正权重 IP target 获取证据并附观察时间；结果不写入拓扑快照，健康状态和插件行为未核实。仅唯一可能匹配且无需未知请求条件、正则或其他未支持路由条件的 route 可继续；接口失败、路由不唯一或无法识别时保留未解析。target 按 IP 和端口与部署关联；不得将 Admin 端口当成请求路径的后端端口。Nginx 转发 URI 基于已采集的 `proxy_pass` 推导，未采集的 rewrite 和 Host 覆盖可能改变结果，路径置信度保留推断与警告。未指定环境或 `SIMULATION` 不自动选择 Kong。
+`PRODUCT` 另有两台已核实的生产 Kong 网关 `10.58.16.5`、`10.58.6.145`。到达其 `IP:8000` 时，通过对应 JumpServer 资产只读查询网关本机的 `127.0.0.1:8001`，因为容器无法直接访问这两个 Admin 地址。导出使用来源快照中的唯一资产和 Kong 监听证据，失败保留原因。
+
+请求链路识别已核实的 Kong Admin 地址：`PRODUCT` 的 `10.179.4.220:8001`、`10.179.4.73:8001`，以及 `TEST` 的 `10.179.2.144:8001`。只有链路实际到达对应环境的 `IP:8000` 才只读查询该节点的 Admin API。同环境的多个网关各自查询，观察按代理端点区分。查询时从 route、service、upstream 和正权重 IP target 获取证据并附观察时间；结果不写入拓扑快照，健康状态和插件行为未核实。仅唯一可能匹配且无需未知请求条件、正则或其他未支持路由条件的 route 可继续；接口失败、路由不唯一或无法识别时保留未解析。target 按 IP 和端口与部署关联；不得将 Admin 端口当成请求路径的后端端口。Nginx 转发 URI 基于已采集的 `proxy_pass` 推导，未采集的 rewrite 和 Host 覆盖可能改变结果，路径置信度保留推断与警告。未指定环境或 `SIMULATION` 不自动选择 Kong。
 
 同一环境中多个 DevOps 部署声明了相同 IP 和端口时，请求解析可使用该端点的 JumpServer `appPorts` Java 进程观察收窄候选：必须有 PID、所有端口观察一致且运行时应用名精确匹配唯一候选应用。应用名与部署的关联为 `INFERRED`，保留观察时间和原始证据；观察缺失、冲突或无法唯一匹配时仍保留全部歧义候选，不修改原始部署声明。
 

@@ -41,6 +41,10 @@ OPTIONAL_DEFAULTS = {'clb-snapshot.json': EMPTY_CLB, 'nat-snapshot.json': EMPTY_
                      'server-specs.json': EMPTY_SPECS, 'dms-snapshot.json': EMPTY_DMS, 'cloud-dns-snapshot.json': EMPTY_DNS}
 TOPOLOGY_DYNAMIC_FILES = FILES + OPTIONAL_FILES
 TOPOLOGY_STATIC_FILES = ('dns-snapshot.json', 'eip-snapshot.json')
+NGINX_EXPORT_FILES = {
+    'nginx-routes-full.csv': 'text/csv; charset=utf-8',
+    'nginx-applications.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+}
 PATH_KINDS = ('domain', 'application', 'host')
 PATH_NODE_TYPES = ('DOMAIN','EIP','NAT_GATEWAY','DNAT_RULE','CLB','CLB_LISTENER','SERVER_GROUP','HOST','ENDPOINT','NGINX_ROUTE','UPSTREAM','APPLICATION','DEPLOYMENT','REPOSITORY')
 PATH_ENVIRONMENTS = ('PRODUCT','TEST','SIMULATION','GLOBAL','UNKNOWN')
@@ -210,6 +214,7 @@ class Service:
         (DATA / 'versions').mkdir(exist_ok=True)
         if (DATA/'secrets/cookies.json').exists(): write(DATA/'secrets/cookies.json', credentials())
         self.lock = threading.RLock()
+        self.nginx_export_job = None
         self.git_check_job = {'status': 'idle'}
         self.collection_inputs = {}
         # Serialises the whole build/launch/swap in activate() so a concurrent
@@ -217,6 +222,21 @@ class Service:
         self.activate_lock = threading.Lock()
         self.catalog_store = Catalog.from_environment()
         self.catalog_lock = threading.Lock()
+        self.environment_check_job = read(DATA/'checks/environment-latest.json')
+        if self.environment_check_job and self.environment_check_job.get('status') == 'running':
+            for item in self.environment_check_job.get('items', []):
+                if item.get('status') in ('running', 'pending'):
+                    item.update(status='failed', reason='容器重启，巡检未完成')
+            for node in self.environment_check_job.get('nodes', []):
+                if node.get('status') in ('running', 'pending'):
+                    node.update(status='unknown', reason='容器重启，TCP 检查未完成')
+            self.environment_check_job.update(status='failed', finishedAt=now(), error='容器重启，巡检已中断')
+            write(DATA/'checks/environment-latest.json', self.environment_check_job)
+            write(DATA/'checks'/self.environment_check_job['id']/'environment-job.json', self.environment_check_job)
+        try:
+            self.catalog_process_cache = read(DATA/'catalog-process-observations.json', {})
+        except (OSError, ValueError):
+            self.catalog_process_cache = {}
         self.config_sync_job = read(DATA/'application-config-job.json', {'status':'idle'})
         if self.config_sync_job.get('status') in ('queued', 'running'):
             self.config_sync_job.update(status='failed', finishedAt=now(), error='容器重启，同步已中断；可手动重试')
@@ -251,6 +271,12 @@ class Service:
             self.check_job.update(status='failed', phase='容器重启，核验任务已中断', finishedAt=now())
             write(DATA/'checks/latest.json', self.check_job)
             write(DATA/'checks'/self.check_job['id']/'job.json', self.check_job)
+        self.jvm_cancel = threading.Event()
+        self.jvm_job = read(DATA/'jvm/latest.json')
+        if self.jvm_job and self.jvm_job.get('status') == 'running':
+            self.jvm_job.update(status='failed', phase='容器重启，JVM 堆分析已中断', finishedAt=now())
+            write(DATA/'jvm/latest.json', self.jvm_job)
+            write(DATA/'jvm'/self.jvm_job['id']/'job.json', self.jvm_job)
         self.job = read(DATA / 'job.json')
         if self.job and self.job.get('status') == 'running':
             self.job.update(status='failed', phase='容器重启，任务已中断；当前版本保持不变', finishedAt=now())
@@ -515,7 +541,7 @@ class Service:
                 self.config_sync_job.update(status='failed', finishedAt=now(), error='应用配置同步中断，请检查数据库、数据卷和凭据后重试')
                 write(DATA/'application-config-job.json', self.config_sync_job)
 
-    def catalog_sync_once(self):
+    def catalog_sync_once(self, force_process_refresh=False):
         if not self.catalog_lock.acquire(blocking=False):
             return dict(self.catalog_job)
         try:
@@ -525,12 +551,28 @@ class Service:
             expected_hash = hashlib.sha256(raw).hexdigest()
             def still_current():
                 try:
-                    return hashlib.sha256(self.catalog_context()[1]).hexdigest() == expected_hash
+                    current_id, current_raw = self.catalog_context()
+                    return current_id == identifier and hashlib.sha256(current_raw).hexdigest() == expected_hash
                 except (CatalogError, OSError):
                     return False
             result = self.catalog_store.import_snapshot(raw, identifier, f'versions/{identifier}/snapshot.json', can_apply=still_current)
             if not result.get('unchanged'):
                 self.catalog_store.clear_category_cache()
+            cache = getattr(self, 'catalog_process_cache', {})
+            if not result.get('historical') and (force_process_refresh or cache.get('version') != identifier or
+                    cache.get('snapshotSha256') != expected_hash or cache.get('runId') != result.get('id')):
+                from catalog_processes import build_process_observations
+                inputs = self.catalog_store.application_process_inputs()
+                if inputs['snapshotSha256'] != expected_hash or inputs['runId'] != result.get('id'):
+                    raise CatalogError('部署目录已变化，请重新更新进程观察')
+                jump = read(DATA/'versions'/identifier/'jumpserver-snapshot.json', {})
+                observations = build_process_observations(inputs['rows'], json.loads(raw).get('apps', []), jump.get('assets', []))
+                if not still_current():
+                    raise CatalogError('更新期间快照已切换，本批进程观察未发布')
+                cache = {'version': identifier, 'snapshotSha256': expected_hash, 'runId': inputs['runId'],
+                         'observations': observations, 'refreshedAt': now()}
+                write(DATA/'catalog-process-observations.json', cache)
+                self.catalog_process_cache = cache
             self.catalog_job = {'status': 'ready', 'finishedAt': now(), 'result': result}
         except CatalogError as exc:
             self.catalog_job = {'status': 'failed', 'finishedAt': now(), 'error': str(exc)}
@@ -550,7 +592,7 @@ class Service:
             raise CatalogError('部署单元数据库未配置，请通过 Compose 启动 MySQL 或配置 ENVSCOPE_DB_HOST')
         if not self.catalog_lock.locked():
             self.catalog_job = {'status': 'queued'}
-            threading.Thread(target=self.catalog_sync_once, daemon=True, name='catalog-import').start()
+            threading.Thread(target=self.catalog_sync_once, args=(True,), daemon=True, name='catalog-import').start()
         return {'job': dict(self.catalog_job)}
 
     def catalog_loop(self):
@@ -584,6 +626,11 @@ class Service:
             add_dms_instance_ips(result.get('instances', []))
         current_snapshot = json.loads(raw)
         current_hash = hashlib.sha256(raw).hexdigest()
+        if unit_id and result.get('unitType') == 'APPLICATION':
+            cache = getattr(self, 'catalog_process_cache', {})
+            valid = cache.get('version') == identifier and cache.get('snapshotSha256') == current_hash and bool(result['source'] and result['source']['snapshotSha256'] == current_hash and result['source'].get('runId') == cache.get('runId'))
+            for instance in result.get('instances', []):
+                instance['processObservation'] = (cache.get('observations', {}).get(instance['id']) if valid and instance.get('presenceStatus') == 'PRESENT' else None) or {'status': 'UNKNOWN', 'reason': '进程观察尚未更新，请从当前快照创建或更新'}
         result['activeSnapshot'] = {'version': identifier, 'collectedAt': current_snapshot.get('collectedAt'),
                                     'matchesCatalog': bool(result['source'] and result['source']['snapshotSha256'] == current_hash)}
         result['job'] = dict(self.catalog_job)
@@ -648,6 +695,149 @@ class Service:
             threading.Thread(target=run, daemon=True).start()
             return dict(self.git_check_job)
 
+    def environment_check_state(self, identifier):
+        if not isinstance(identifier, str) or not re.fullmatch(r'[A-Za-z0-9-]{1,80}', identifier):
+            raise ValueError('无效巡检任务 ID')
+        with self.lock:
+            job = read(DATA/'checks'/identifier/'environment-job.json')
+            if not job: raise ValueError('巡检任务不存在')
+            folder = DATA/'checks'/identifier/'inspection'
+            return {'job': job, 'reportReady': job.get('status') != 'running' and (folder/'巡检结果.xlsx').is_file() and (folder/'inspection-status.json').is_file()}
+
+    def start_environment_check(self, payload):
+        from application_check import ips
+        unit_id, environment = payload.get('unitId'), payload.get('environment')
+        if not isinstance(unit_id, str) or not re.fullmatch(r'[0-9a-f-]{36}', unit_id) or environment not in REQUEST_ENVIRONMENTS:
+            raise ValueError('无效部署单元或环境')
+        with self.lock:
+            if self.environment_check_job and self.environment_check_job.get('status') == 'running': raise ValueError('已有环境巡检任务正在运行')
+            if self.check_job and self.check_job.get('status') == 'running': raise ValueError('请等待当前应用检测完成')
+            if self.files_lock.locked() or self.archive_job and self.archive_job.get('status') == 'running': raise ValueError('请等待应用文件读取或下载完成')
+            if self.job and self.job.get('status') == 'running' or any(j.get('status') == 'running' for j in self.extra_jobs): raise ValueError('请等待当前采集或版本切换完成')
+            data = self.catalog_query({'unitId':[unit_id], 'environment':[environment], 'presence':['present']})
+            if data.get('unitType') != 'APPLICATION': raise ValueError('仅应用部署单元支持环境巡检')
+            if not data.get('activeSnapshot', {}).get('matchesCatalog'): raise ValueError('目录与当前快照不同，请先更新部署单元')
+            rows = data.get('instances', [])
+            if not rows: raise ValueError('该环境没有可巡检的部署实例')
+            source = data['activeSnapshot']['version']
+            snapshot = read(DATA/'versions'/source/'jumpserver-snapshot.json', {})
+            targets, nodes = [], []
+            for row in rows:
+                observation = row.get('processObservation') or {}
+                assets = [asset for asset in snapshot.get('assets', []) if row.get('ip') in ips(asset.get('ip'))]
+                pid = observation.get('pid')
+                processes = [process for process in (assets[0].get('inspection') or {}).get('processes', []) if process.get('pid') == pid] if len(assets) == 1 else []
+                valid = observation.get('status') == 'MATCHED' and len(processes) == 1 and bool(observation.get('startedAt')) and processes[0].get('startedAt') == observation.get('startedAt')
+                item = {'instanceId':row['id'], 'ip':row.get('ip'), 'pid':pid if valid else None, 'name':'TCP 上下游检测',
+                        'status':'pending' if valid else 'unresolved', 'reason':None if valid else observation.get('reason', '进程或资产未能唯一确认')}
+                nodes.append(item)
+                targets.append({'instanceId':row['id'], 'ip':row.get('ip'), 'assetId':assets[0]['id'] if valid else None,
+                                'pid':pid if valid else None, 'startedAt':observation.get('startedAt') if valid else None,
+                                'ports':observation.get('ports', []) if valid else [],
+                                'reason':None if valid else item['reason']})
+            keys = [(target['assetId'], target['pid']) for target in targets if target['assetId']]
+            for index, target in enumerate(targets):
+                if target['assetId'] and keys.count((target['assetId'], target['pid'])) > 1:
+                    target.update(assetId=None, pid=None, startedAt=None, ports=[], reason='多个部署实例对应同一进程，关联待确认')
+                    nodes[index].update(status='unresolved', reason=target['reason'], pid=None)
+            identifier = datetime.now(TZ).strftime('%Y%m%d-%H%M%S-%f')
+            app_id = data.get('appId')
+            if not app_id: raise ValueError('部署单元没有可确认的来源应用 ID')
+            names = ['Nginx', '配置引用', 'Kong', 'DNS', '进程与 JVM', '日志采集与分析', '应用配置与关联组件', 'Dubbo', '300 秒 TCP 检查', '目标服务器资源', '生成 Excel 报告']
+            self.environment_check_job = {'id':identifier, 'status':'running', 'unitId':unit_id, 'unitName':data.get('unitName'),
+                'appId':str(app_id), 'environment':environment, 'sourceVersion':source, 'startedAt':now(),
+                'items':[{'name':name, 'status':'unknown', 'reason':'历史资源分析尚未实现'} if name == '目标服务器资源' else {'name':name, 'status':'pending'} for name in names], 'nodes':nodes, 'events':[]}
+            targets_path = DATA/'checks'/identifier/'inspection-targets.json'
+            write(targets_path, targets)
+            self.save_environment_check()
+            threading.Thread(target=self.work_environment_check, args=(identifier,), daemon=True, name='environment-check').start()
+            return {'job':deepcopy(self.environment_check_job)}
+
+    def save_environment_check(self):
+        job = self.environment_check_job
+        write(DATA/'checks'/job['id']/'environment-job.json', job)
+        write(DATA/'checks/environment-latest.json', job)
+
+    @staticmethod
+    def environment_check_stage_result(rows):
+        if not rows: return 'unknown'
+        values = [str(row[1]).upper() for row in rows if len(row) > 1]
+        if not values or all(value == 'UNKNOWN' for value in values): return 'unknown'
+        if all(value == 'FAILED' for value in values): return 'failed'
+        if any(value in ('FAILED', 'UNKNOWN', 'PARTIAL') for value in values): return 'partial'
+        return 'complete'
+
+    def work_environment_check(self, identifier):
+        import sys
+        job = self.environment_check_job
+        folder = DATA/'checks'/identifier
+        output = folder/'inspection'
+        command = [sys.executable, str(APP/'runtime'/'environment_inspection'/'run.py'),
+            '--app-id',job['appId'], '--environment',job['environment'], '--version',job['sourceVersion'],
+            '--targets',str(folder/'inspection-targets.json'), '--output',str(output)]
+        groups = {'Nginx 与配置引用': [('Nginx', 'Nginx'), ('配置引用', '配置引用')],
+                  '进程与 JVM、日志分析': [('进程与 JVM', '当前进程 '), ('日志采集与分析', '应用日志 ')]}
+        try:
+            env = dict(os.environ, ENVSCOPE_DATA=str(DATA))
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=env)
+            for line in process.stdout:
+                try: event = json.loads(line)
+                except ValueError: continue
+                with self.lock:
+                    job = self.environment_check_job
+                    name = event.get('name')
+                    entries = groups.get(name, [(name, None)])
+                    indexes = [(i, prefix) for selected, prefix in entries for i, item in enumerate(job['items']) if item['name'] == selected]
+                    if event.get('event') == 'stage' and indexes:
+                        for index, _ in indexes: job['items'][index]['status'] = 'running'
+                        job['currentIndex'] = indexes[0][0]
+                    elif event.get('event') == 'stage_end' and indexes:
+                        for index, prefix in indexes:
+                            rows = [row for row in event.get('rows', []) if not prefix or row[0] == prefix or prefix.endswith(' ') and row[0].startswith(prefix)]
+                            job['items'][index].update(status=self.environment_check_stage_result(rows), details=rows)
+                    elif event.get('event') == 'log':
+                        message = str(event.get('message') or '')[:500]
+                        job['events'].append({'at':now(), 'item':job.get('currentIndex'), 'message':message})
+                        del job['events'][:-200]
+                    elif event.get('event') == 'node':
+                        node = next((node for node in job['nodes'] if node['instanceId'] == event.get('instanceId')), None)
+                        if node is not None and node['status'] != 'unresolved':
+                            node.update(status=event.get('status', 'unknown'), reason=event.get('reason'))
+                    self.save_environment_check()
+            rc = process.wait()
+            with self.lock:
+                job = self.environment_check_job
+                status_path = output/'inspection-status.json'
+                if rc or not (output/'巡检结果.xlsx').is_file() or not status_path.is_file():
+                    for item in job['items']:
+                        if item['status'] in ('running', 'pending'): item.update(status='failed', reason='巡检任务中断')
+                    job.update(status='failed', finishedAt=now(), error='巡检任务执行失败，请检查任务日志后重试')
+                else:
+                    rows = read(status_path, {}).get('status', [])
+                    job['items'][-1]['status'] = 'complete'
+                    for item in job['items']:
+                        if item['status'] in ('running', 'pending'): item.update(status='unknown', reason='该检查未执行')
+                    incomplete = any(len(row) > 1 and str(row[1]).upper() in ('FAILED', 'UNKNOWN', 'PARTIAL') for row in rows)
+                    job['status'] = 'complete' if not incomplete and all(item['status'] == 'complete' for item in job['items']) else 'partial'
+                    job.update(finishedAt=now(), results=rows)
+                for node in job['nodes']:
+                    if node['status'] in ('running', 'pending'): node.update(status='unknown', reason='TCP 检查未完成')
+                self.save_environment_check()
+        except Exception:
+            with self.lock:
+                job = self.environment_check_job
+                for item in job['items']:
+                    if item['status'] in ('running', 'pending'): item.update(status='failed', reason='巡检执行中断')
+                for node in job['nodes']:
+                    if node['status'] in ('running', 'pending'): node.update(status='unknown', reason='TCP 检查未完成')
+                job.update(status='failed', finishedAt=now(), error='巡检执行中断，请重试')
+                self.save_environment_check()
+
+    def environment_check_report(self, identifier):
+        state = self.environment_check_state(identifier)
+        if not state['reportReady']: raise ValueError('巡检报告尚未生成')
+        return DATA/'checks'/identifier/'inspection'/'巡检结果.xlsx'
+
     def application_check_state(self, identifier=None):
         with self.lock:
             if identifier is None:
@@ -662,6 +852,10 @@ class Service:
 
     def start_application_check(self, payload):
         with self.lock:
+            if self.environment_check_job and self.environment_check_job.get('status') == 'running':
+                raise ValueError('请等待环境巡检完成后再开始检测')
+            if self.jvm_job and self.jvm_job.get('status') == 'running':
+                raise ValueError('请等待 JVM 堆分析完成后再开始检测')
             if self.files_lock.locked():
                 raise ValueError('请等待应用文件读取或下载完成后再开始检测')
             if self.archive_job and self.archive_job.get('status') == 'running':
@@ -766,6 +960,193 @@ class Service:
                 self.check_cancel.set()
                 self.update_application_check_progress(identifier, '正在结束检查并保存已观察证据', stage='cancelling')
             return self.application_check_state(identifier)
+
+    def jvm_analysis_state(self, identifier=None):
+        with self.lock:
+            if identifier is None:
+                job = self.jvm_job
+            else:
+                if not isinstance(identifier, str) or not re.fullmatch(r'[A-Za-z0-9-]{1,80}', identifier):
+                    raise ValueError('无效 JVM 分析任务 ID')
+                job = read(DATA/'jvm'/identifier/'job.json')
+                if not job: raise ValueError('JVM 分析任务不存在')
+            report = read(DATA/'jvm'/job['id']/'report.json') if job else None
+            return {'job': deepcopy(job), 'report': report, 'recommendation': (report or {}).get('heapSizing')}
+
+    def jvm_process_history(self, asset_id, pid, history_only=False):
+        """Restore sizing evidence for the current JVM or a read-only archived JVM."""
+        from jvm_heap import heap_sizing_recommendation
+
+        with self.lock:
+            source, start = None, None
+            if not history_only:
+                try:
+                    source, _, _, _, selected = self.application_process_target({'asset': asset_id, 'pid': pid})
+                    start = selected.get('startedAt')
+                except ValueError:
+                    history_only = True
+            state = {'job': None, 'report': None, 'recommendation': None, 'historical': history_only}
+            if not start and not history_only:
+                return state
+            legacy_starts = {}
+            for job_file in sorted((DATA/'jvm').glob('*/job.json'), reverse=True):
+                identifier = job_file.parent.name
+                if not re.fullmatch(r'\d{8}-\d{6}-\d{6}', identifier):
+                    continue
+                job = read(job_file, {})
+                if (job.get('assetId'), job.get('pid')) != (asset_id, pid):
+                    continue
+                job_start = job.get('processStartedAt')
+                version = job.get('sourceVersion')
+                if not job_start and version == source:
+                    job_start = start
+                elif not job_start and isinstance(version, str) and re.fullmatch(r'[A-Za-z0-9-]{1,80}', version):
+                    if version not in legacy_starts:
+                        snapshot = read(DATA/'versions'/version/'jumpserver-snapshot.json', {})
+                        matches = [p.get('startedAt') for asset in snapshot.get('assets', []) if asset.get('id') == asset_id
+                                   for p in (asset.get('inspection') or {}).get('processes', []) if p.get('pid') == pid]
+                        legacy_starts[version] = matches[0] if len(matches) == 1 else None
+                    job_start = legacy_starts[version]
+                report_file = job_file.with_name('report.json')
+                if history_only and not state['job']:
+                    if not report_file.is_file():
+                        continue
+                    start = job_start
+                elif not start or job_start != start:
+                    continue
+                report = read(report_file)
+                if not state['job']:
+                    state.update(job={**job, 'processStartedAt': job_start}, report=report)
+                if not report:
+                    continue
+                recommendation = report.get('heapSizing')
+                if not recommendation:
+                    recommendation = heap_sizing_recommendation({**report, 'taskId': identifier})
+                    if recommendation:
+                        report['heapSizing'] = recommendation
+                        write(report_file, report)
+                if recommendation:
+                    state['recommendation'] = recommendation
+                    break
+            return state
+
+    def start_jvm_analysis(self, payload):
+        dump_mode = payload.get('dumpMode', 'all')
+        if dump_mode not in ('all', 'live'):
+            raise ValueError('无效堆转储模式')
+        if dump_mode == 'live' and payload.get('confirmFullGc') is not True:
+            raise ValueError('请确认 live 转储会请求 Full GC 并暂停进程')
+        with self.lock:
+            if self.environment_check_job and self.environment_check_job.get('status') == 'running':
+                raise ValueError('请等待环境巡检完成后再进行 JVM 分析')
+            if self.check_job and self.check_job.get('status') == 'running':
+                raise ValueError('请等待上下游检测完成后再进行 JVM 分析')
+            if self.jvm_job and self.jvm_job.get('status') == 'running':
+                raise ValueError('已有 JVM 堆分析任务正在运行')
+            if self.files_lock.locked() or self.archive_job and self.archive_job.get('status') == 'running':
+                raise ValueError('请等待应用文件读取或日志下载完成后再进行 JVM 分析')
+            if self.job and self.job.get('status') == 'running' or any(j.get('status') == 'running' for j in self.extra_jobs):
+                raise ValueError('请等待当前采集或版本切换完成后再进行 JVM 分析')
+            saved = credentials()
+            if not saved.get('jumpserver', {}).get('value'):
+                raise ValueError('请先保存 JumpServer Cookie')
+            source, source_folder, _, asset, selected = self.application_process_target(payload)
+            from jvm_heap import archive_application
+            application = archive_application(selected, asset, read(source_folder/'snapshot.json', {}).get('apps', []))
+            identifier = datetime.now(TZ).strftime('%Y%m%d-%H%M%S-%f')
+            folder = DATA/'jvm'/identifier
+            folder.mkdir(parents=True, mode=0o700, exist_ok=True)
+            self.jvm_cancel = threading.Event()
+            self.jvm_job = {'id':identifier, 'status':'running', 'phase':'正在通过 JumpServer 登录目标服务器',
+                            'startedAt':now(), 'updatedAt':now(), 'sourceVersion':source,
+                            'assetId':asset['id'], 'serverIp':asset.get('ip'), 'pid':selected['pid'],
+                            'processName':selected.get('name'), 'processStartedAt':selected.get('startedAt'),
+                            'dumpMode':dump_mode, 'progress':{}, 'events':[]}
+            write(DATA/'jvm/latest.json', self.jvm_job)
+            write(folder/'job.json', self.jvm_job)
+            threading.Thread(target=self.work_jvm_analysis,
+                             args=(identifier, asset, selected, folder, self.jvm_cancel, application, dump_mode),
+                             daemon=True, name='jvm-heap').start()
+            return self.jvm_analysis_state(identifier)
+
+    def update_jvm_progress(self, identifier, phase, **stats):
+        """只记录本地生成的阶段与计数，不保存终端输出。"""
+        with self.lock:
+            job = self.jvm_job
+            if not job or job['id'] != identifier or job['status'] != 'running':
+                return
+            stamp = now()
+            job['phase'] = phase
+            job['updatedAt'] = stamp
+            progress = job.setdefault('progress', {})
+            for key in ('transferred', 'total', 'dumpBytes', 'compressedBytes'):
+                if key in stats:
+                    progress[key] = stats[key]
+            if 'stage' in stats:
+                job['stage'] = stats['stage']
+            events = job.setdefault('events', [])
+            if not events or events[-1]['message'] != phase:
+                events.append({'at':stamp, 'message':phase})
+                del events[:-80]
+            write(DATA/'jvm/latest.json', job)
+            write(DATA/'jvm'/identifier/'job.json', job)
+
+    def work_jvm_analysis(self, identifier, asset, selected, folder, cancel, application, dump_mode):
+        def progress(phase, **stats):
+            if cancel.is_set():
+                return
+            self.update_jvm_progress(identifier, phase, **stats)
+        try:
+            from jvm_heap import analyze, heap_sizing_recommendation
+            report = analyze(folder, asset, selected, credentials(),
+                             read(DATA/'secrets/ip-password-map.json'),
+                             progress=progress, cancelled=cancel.is_set, application=application, dump_mode=dump_mode)
+            report.update(taskId=identifier, sourceVersion=self.jvm_job['sourceVersion'])
+            recommendation = heap_sizing_recommendation(report)
+            if recommendation:
+                report['heapSizing'] = recommendation
+            write(folder/'report.json', report)
+            status = report['status']
+            phase = {'complete':'分析完成', 'cancelled':'分析已取消', 'failed':'分析失败，请查看结果中的原因'}.get(status, '分析结束')
+            if report.get('error'):
+                phase = report['error']['message'] if status == 'failed' else phase
+        except Exception as exc:
+            status, phase = 'failed', 'JVM 分析执行异常'
+            write(folder/'report.json', {
+                'schemaVersion':1, 'taskId':identifier, 'sourceVersion':self.jvm_job['sourceVersion'],
+                'status':'failed', 'startedAt':self.jvm_job['startedAt'], 'finishedAt':now(),
+                'target':{'assetId':asset['id'], 'serverIp':asset.get('ip'), 'pid':selected['pid'],
+                          'processName':selected.get('name')},
+                'dump':{'mode':dump_mode}, 'heap':{}, 'runtime':{}, 'rss':[], 'topComponents':[], 'suspects':[],
+                'reports':{}, 'warnings':[],
+                'error':{'stage':'worker', 'code':'JVM_ANALYSIS_INTERNAL',
+                         'message':'内部异常：'+type(exc).__name__}})
+        with self.lock:
+            self.update_jvm_progress(identifier, phase, stage=status)
+            self.jvm_job.update(status=status, phase=phase, finishedAt=now(), updatedAt=now())
+            write(DATA/'jvm/latest.json', self.jvm_job)
+            write(folder/'job.json', self.jvm_job)
+
+    def cancel_jvm_analysis(self, identifier):
+        with self.lock:
+            if not self.jvm_job or self.jvm_job['id'] != identifier:
+                raise ValueError('JVM 分析任务不存在')
+            if self.jvm_job['status'] == 'running':
+                self.jvm_cancel.set()
+                self.update_jvm_progress(identifier, '正在停止分析并保留已完成部分')
+            return self.jvm_analysis_state(identifier)
+
+    def jvm_report_file(self, identifier, doc):
+        if doc not in ('overview', 'suspects', 'top'):
+            raise ValueError('无效报告类型')
+        state = self.jvm_analysis_state(identifier)
+        entry = (state['report'] or {}).get('reports', {}).get(doc)
+        if not entry or not re.fullmatch(r'[A-Za-z0-9_.-]{1,160}', entry.get('file', '')):
+            raise ValueError('分析报告尚未生成')
+        path = DATA/'jvm'/state['job']['id']/entry['file']
+        if not path.is_file():
+            raise ValueError('分析报告文件不存在')
+        return path, entry['name']
 
     def application_process_target(self, payload):
         pid = payload.get('pid')
@@ -931,7 +1312,8 @@ class Service:
         if action not in ('list', 'read', 'cached') or (action == 'cached' and kind != 'config'):
             raise ValueError('无效文件操作')
         with self.lock:
-            if self.check_job and self.check_job.get('status') == 'running': raise ValueError('请等待当前 TCP 连接检测完成后再读取文件')
+            if self.check_job and self.check_job.get('status') == 'running' or self.environment_check_job and self.environment_check_job.get('status') == 'running': raise ValueError('请等待当前检测完成后再读取文件')
+            if self.jvm_job and self.jvm_job.get('status') == 'running': raise ValueError('请等待 JVM 堆分析完成后再读取文件')
             if self.job and self.job.get('status') == 'running' or any(j.get('status') == 'running' for j in self.extra_jobs):
                 raise ValueError('请等待当前采集或版本切换完成')
             if not self.files_lock.acquire(blocking=False): raise ValueError('正在读取或下载应用文件，请稍后重试')
@@ -1033,7 +1415,8 @@ class Service:
         if group not in ('all', 'history'): raise ValueError('无效日志打包范围')
         with self.lock:
             if self.archive_job and self.archive_job.get('status') == 'running': raise ValueError('已有日志下载任务正在运行')
-            if self.check_job and self.check_job.get('status') == 'running': raise ValueError('请等待当前应用检测完成')
+            if self.check_job and self.check_job.get('status') == 'running' or self.environment_check_job and self.environment_check_job.get('status') == 'running': raise ValueError('请等待当前应用检测完成')
+            if self.jvm_job and self.jvm_job.get('status') == 'running': raise ValueError('请等待 JVM 堆分析完成')
             if self.job and self.job.get('status') == 'running' or any(j.get('status') == 'running' for j in self.extra_jobs): raise ValueError('请等待当前采集或版本切换完成')
             if not (read(DATA/'checks'/identifier/'files-log.json') or read(DATA/'checks'/identifier/'files.json')):
                 raise ValueError('请先读取日志文件列表')
@@ -1156,18 +1539,90 @@ class Service:
                 # Only expose the password when the entry is known-good; never
                 # surface a stored value alongside a password_error marker.
                 'password': entry.get('password') if status == 'normal' else None,
-                'updatedAt': entry.get('updatedAt'),
+                'updatedAt': entry.get('updatedAt') or entry.get('verifiedAt'),
                 'source': 'ip-password-map',
             }
             if status == 'password_error':
-                info['note'] = '映射表已标记密码错误，采集时跳过此服务器的 root 提权；请在 JumpServer 页面"单独采集"时输入新 root 密码清除标记'
+                info['note'] = '提权失败，仅普通用户；采集时先尝试免密 sudo su，其他方式暂不重试，可在 JumpServer 页面“单独采集”时输入新 root 密码后重试'
+            elif status == 'normal' and method == 'sudo-su':
+                info['note'] = '采集时优先尝试免密 sudo su 提权到 root'
             elif status == 'normal' and method in ('sudo-i', 'su'):
                 info['note'] = f'采集时使用 {method} 提权到 root；密码来自最近一次成功的提权或手动配置'
             else:
                 info['note'] = '映射表存在此 IP 的记录，但方法或状态不完整'
         else:
-            info['note'] = '未在 ip-password-map 中配置此服务器的提权方式；采集时按默认探测顺序：sudo -i（folidev）→ su -l（备选 root 密码1）→ su -l（备选 root 密码2）'
+            info['note'] = '未在 ip-password-map 中配置此服务器的提权方式；采集时按默认探测顺序：免密 sudo su → sudo -i（folidev）→ su -l（备选 root 密码1）→ su -l（备选 root 密码2）'
         return info
+
+    def nginx_export_status(self):
+        with self.lock:
+            current = read(DATA/'current.json', {}).get('id')
+            result = None
+            if current and re.fullmatch(r'[A-Za-z0-9-]{1,80}', current):
+                manifest = read(DATA/'nginx-exports'/current/'latest.json', {})
+                identifier = manifest.get('id', '')
+                if re.fullmatch(r'export-[a-f0-9]{32}', identifier) and all(
+                    (DATA/'nginx-exports'/current/identifier/name).is_file() for name in NGINX_EXPORT_FILES
+                ):
+                    result = {**manifest, 'downloads': {
+                        name: f'/api/settings/nginx-export/{current}/{identifier}/{name}' for name in NGINX_EXPORT_FILES
+                    }}
+            return {'job': self.nginx_export_job, 'result': result, 'sourceVersion': current}
+
+    def start_nginx_export(self, expected_version):
+        with self.lock:
+            running = self.nginx_export_job
+            if running and running['status'] == 'running':
+                raise ValueError('Nginx 导出正在生成，请等待完成')
+            current = read(DATA/'current.json', {}).get('id')
+            if not current or expected_version != current:
+                raise ValueError('激活数据版本已变化，请刷新 Settings 后再生成')
+            if not re.fullmatch(r'[A-Za-z0-9-]{1,80}', current):
+                raise ValueError('无效数据版本')
+            source = DATA/'versions'/current
+            if read(source/'version.json', {}).get('status') != 'ready':
+                raise ValueError('当前数据版本未就绪')
+            job = {'id': 'export-'+uuid.uuid4().hex, 'sourceVersion': current, 'startedAt': now(), 'status': 'running'}
+            self.nginx_export_job = job
+            threading.Thread(target=self.run_nginx_export, args=(job, source), daemon=True).start()
+            return self.nginx_export_status()
+
+    def run_nginx_export(self, job, source):
+        parent = DATA/'nginx-exports'/job['sourceVersion']
+        target = parent/job['id']
+        status = {'status': 'succeeded'}
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix='nginx-export-', dir=parent) as temp:
+                output = Path(temp)/'files'
+                output.mkdir()
+                proc = subprocess.run(
+                    ['node', str(APP/'runtime/generate-nginx-export.mjs'), str(source), str(APP/'lib'),
+                     str(output), job['sourceVersion'], str(parent)],
+                    cwd=APP, capture_output=True, text=True, timeout=300, check=True,
+                )
+                if not all((output/name).stat().st_size for name in NGINX_EXPORT_FILES):
+                    raise ValueError('Nginx export generated an empty file')
+                manifest = {'id': job['id'], 'sourceVersion': job['sourceVersion'], 'generatedAt': now(), 'counts': json.loads(proc.stdout)}
+                write(output/'manifest.json', manifest)
+                output.rename(target)
+                with self.lock:
+                    write(parent/'latest.json', manifest)
+        except Exception as exc:
+            status = {'status': 'failed', 'error': '生成 Nginx 导出失败，请查看容器日志后重试'}
+            # Log the exception class and exit diagnostics without printing snapshot data.
+            print(f"Nginx export {job['id']} failed: {type(exc).__name__}", flush=True)
+        with self.lock:
+            self.nginx_export_job = {**job, **status, 'finishedAt': now()}
+
+    def nginx_export_file(self, version, identifier, filename):
+        if not re.fullmatch(r'[A-Za-z0-9-]{1,80}', version) or not re.fullmatch(r'export-[a-f0-9]{32}', identifier) or filename not in NGINX_EXPORT_FILES:
+            raise ValueError('导出文件不存在')
+        folder = DATA/'nginx-exports'/version/identifier
+        manifest = read(folder/'manifest.json', {})
+        if (manifest.get('sourceVersion'), manifest.get('id')) != (version, identifier):
+            raise ValueError('导出文件不存在')
+        return folder/filename
 
     def topology_status(self):
         pointer=read(DATA/'topology/latest.json')
@@ -1708,7 +2163,7 @@ class Service:
             if kind == 'local_gitlab': raise ValueError('Local GitLab 采集任务已下线')
             if self.files_lock.locked(): raise ValueError('请等待应用文件读取或下载完成后再采集或切换版本')
             if self.archive_job and self.archive_job.get('status') == 'running': raise ValueError('请等待日志下载结束后再采集或切换版本')
-            if self.check_job and self.check_job.get('status') == 'running': raise ValueError('请等待应用核验任务结束后再采集或切换版本')
+            if self.check_job and self.check_job.get('status') == 'running' or self.environment_check_job and self.environment_check_job.get('status') == 'running': raise ValueError('请等待应用核验任务结束后再采集或切换版本')
             if self.backend is None: raise ValueError('应用正在恢复当前版本，请稍后重试')
             source_modes = ('codeup', 'ecs', 'clb', 'nat', 'dms', 'cloud-dns', 'aliyun', 'jumpserver', 'devops', 'jumpserver_asset', 'devops_app')
             # While a job is running only a single-source retry whose source already
@@ -2029,6 +2484,23 @@ class Handler(BaseHTTPRequestHandler):
         return host in ALLOWED_HOSTS
     def do_GET(self):
         if not self.allowed_host():return self.json(403,{'error':'仅允许本机访问'})
+        request_path = urlsplit(self.path).path
+        if request_path == '/api/settings/nginx-export':
+            return self.json(200, self.server.service.nginx_export_status())
+        if request_path.startswith('/api/settings/nginx-export/'):
+            parts = request_path[len('/api/settings/nginx-export/'):].split('/')
+            if len(parts) != 3: return self.json(404, {'error': '导出文件不存在'})
+            try:
+                body = self.server.service.nginx_export_file(*parts).read_bytes()
+            except (OSError, ValueError):
+                return self.json(404, {'error': '导出文件不存在'})
+            self.send_response(200)
+            self.send_header('Content-Type', NGINX_EXPORT_FILES[parts[-1]])
+            self.send_header('Content-Disposition', f'attachment; filename="{parts[-1]}"')
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            return self.wfile.write(body)
         if urlsplit(self.path).path == '/api/settings/git-address-check':
             return self.json(200, self.server.service.git_check_state())
         if urlsplit(self.path).path == '/api/settings/application-config-sync':
@@ -2073,6 +2545,41 @@ class Handler(BaseHTTPRequestHandler):
             except (CatalogInputError, ValueError) as exc: return self.json(400, {'error': str(exc)})
             except CatalogError as exc: return self.json(503, {'error': str(exc)})
             except Exception: return self.json(503, {'error': '部署单元暂不可用，请稍后重试'})
+        if urlsplit(self.path).path == '/api/catalog/jvm-adjustments':
+            params = parse_qs(urlsplit(self.path).query)
+            try:
+                instance_id = params.get('instanceId', [None])[0]
+                unit_id = params.get('unitId', [None])[0]
+                ip = params.get('ip', [None])[0]
+                environment = params.get('environment', [None])[0]
+                limit = int(params.get('limit', ['50'])[0])
+                return self.json(200, {'items': self.server.service.catalog_store.list_jvm_adjustments(instance_id=instance_id, unit_id=unit_id, ip=ip, environment=environment, limit=limit)})
+            except CatalogError as exc: return self.json(503, {'error': str(exc)})
+            except Exception: return self.json(503, {'error': 'JVM 调整历史暂不可用，请稍后重试'})
+        if urlsplit(self.path).path == '/api/catalog/jvm-adjustments/export':
+            params = parse_qs(urlsplit(self.path).query)
+            try:
+                from datetime import date as _date
+                start = _date.fromisoformat(params.get('startDate', [''])[0] or '')
+            except ValueError: return self.json(400, {'error': 'startDate 格式无效（需要 YYYY-MM-DD）'})
+            try:
+                end = _date.fromisoformat(params.get('endDate', [''])[0] or '')
+            except ValueError: return self.json(400, {'error': 'endDate 格式无效（需要 YYYY-MM-DD）'})
+            environment = params.get('environment', [None])[0] or None
+            if start > end: return self.json(400, {'error': '开始日期不能晚于结束日期'})
+            try:
+                body = self.server.service.catalog_store.export_jvm_adjustments_csv(start, end, environment=environment)
+            except CatalogError as exc: return self.json(503, {'error': str(exc)})
+            except Exception: return self.json(503, {'error': 'JVM 调整记录导出失败，请稍后重试'})
+            env_tag = (environment or 'ALL').lower()
+            filename = f'jvm-adjustments-{start}-{end}-{env_tag}.csv'
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/csv; charset=utf-8')
+            self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            return self.wfile.write(body)
         if urlsplit(self.path).path in ('/api/settings/application-check/logs', '/api/settings/application-check/logs/download',
                                        '/api/settings/application-files/logs', '/api/settings/application-files/logs/download'):
             identifier = parse_qs(urlsplit(self.path).query).get('id', [''])[0]
@@ -2087,6 +2594,48 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 return self.json(200, self.server.service.log_archive_state(identifier))
             except ValueError as exc: return self.json(404, {'error':str(exc)})
+        if urlsplit(self.path).path == '/api/catalog/environment-check/download':
+            identifier = parse_qs(urlsplit(self.path).query).get('id', [''])[0]
+            try:
+                path = self.server.service.environment_check_report(identifier)
+                with path.open('rb') as source:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                    self.send_header('Content-Disposition', f'attachment; filename="inspection-{identifier}.xlsx"')
+                    self.send_header('Cache-Control', 'no-store')
+                    self.send_header('Content-Length', str(os.fstat(source.fileno()).st_size))
+                    self.end_headers()
+                    shutil.copyfileobj(source, self.wfile, 262144)
+                return
+            except (ValueError, OSError): return self.json(404, {'error':'巡检报告不存在或尚未生成'})
+        if urlsplit(self.path).path == '/api/catalog/environment-check':
+            params = parse_qs(urlsplit(self.path).query)
+            try: return self.json(200, self.server.service.environment_check_state(params.get('id', [None])[0]))
+            except ValueError as exc: return self.json(404, {'error':str(exc)})
+        if urlsplit(self.path).path == '/api/settings/application-jvm':
+            params = parse_qs(urlsplit(self.path).query)
+            try:
+                if 'asset' in params or 'pid' in params:
+                    asset = params.get('asset', [''])[0]
+                    pid = params.get('pid', [''])[0]
+                    if not asset or not re.fullmatch(r'[0-9]{1,10}', pid) or not 0 < int(pid) <= 2**31-1:
+                        raise ValueError('无效 JVM 进程')
+                    history_only = params.get('history', [''])[0] == '1'
+                    return self.json(200, self.server.service.jvm_process_history(asset, int(pid), history_only))
+                return self.json(200, self.server.service.jvm_analysis_state(params.get('id',[None])[0]))
+            except ValueError as exc: return self.json(404,{'error':str(exc)})
+        if urlsplit(self.path).path == '/api/settings/application-jvm/report':
+            params = parse_qs(urlsplit(self.path).query)
+            try:
+                path, name = self.server.service.jvm_report_file(params.get('id',[''])[0], params.get('doc',[''])[0])
+                with path.open('rb') as source:
+                    self.send_response(200); self.send_header('Content-Type','application/zip')
+                    self.send_header('Content-Disposition','attachment; filename="jvm-%s-%s.zip"' % (name, params.get('id',[''])[0]))
+                    self.send_header('Cache-Control','no-store')
+                    self.send_header('Content-Length',str(os.fstat(source.fileno()).st_size))
+                    self.end_headers(); shutil.copyfileobj(source, self.wfile, 262144)
+                return
+            except (ValueError, OSError) as exc: return self.json(404,{'error':str(exc)})
         if urlsplit(self.path).path == '/api/settings/application-check':
             params = parse_qs(urlsplit(self.path).query)
             try: return self.json(200,self.server.service.application_check_state(params.get('id',[None])[0]))
@@ -2131,7 +2680,9 @@ class Handler(BaseHTTPRequestHandler):
             payload=json.loads(self.rfile.read(length))
             if not isinstance(payload,dict):raise ValueError('请求格式无效')
             service=self.server.service
-            if self.path=='/api/settings/git-address-check':
+            if self.path=='/api/settings/nginx-export':
+                return self.json(202, service.start_nginx_export(payload.get('sourceVersion')))
+            elif self.path=='/api/settings/git-address-check':
                 return self.json(202, service.start_git_check())
             elif self.path=='/api/settings/application-config-sync':
                 return self.json(202, service.start_config_sync(payload))
@@ -2154,11 +2705,23 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError: return self.json(503, {'error':'人工标签保存失败，请检查数据卷'})
             elif self.path=='/api/catalog/deployment-units/import':
                 return self.json(202, service.start_catalog_sync())
+            elif self.path=='/api/catalog/jvm-adjustments':
+                try:
+                    item = service.catalog_store.save_jvm_adjustment(payload)
+                    return self.json(201, item)
+                except CatalogError as exc: return self.json(503, {'error': str(exc)})
+                except Exception: return self.json(503, {'error': 'JVM 调整记录保存失败，请稍后重试'})
             elif self.path=='/api/settings/config':service.save_settings(payload)
+            elif self.path=='/api/catalog/environment-check':
+                return self.json(202,service.start_environment_check(payload))
             elif self.path=='/api/settings/application-check':
                 return self.json(202,service.start_application_check(payload))
             elif self.path=='/api/settings/application-check/cancel':
                 return self.json(200,service.cancel_application_check(payload.get('id')))
+            elif self.path=='/api/settings/application-jvm':
+                return self.json(202,service.start_jvm_analysis(payload))
+            elif self.path=='/api/settings/application-jvm/cancel':
+                return self.json(200,service.cancel_jvm_analysis(payload.get('id')))
             elif self.path in ('/api/settings/application-check/files', '/api/settings/application-files'):
                 return self.json(200,service.application_files(payload))
             elif self.path=='/api/settings/container-info':

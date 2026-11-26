@@ -40,7 +40,7 @@ Settings 按已完成、部分完成、失败和跳过分别展示应用；部�
 
 ## 阿里云多租户采集
 
-Settings 顶部的「阿里云租户管理」可为每个已有租户单独配置 Cookie、修改名称和启停。Cookie 留空保留已保存的值，不回显。Codeup 固定绑定现有租户，其企业 ID 在该租户中配置。Cookie 采集支持上海地域的 ECS、CLB、NAT 和 DMS；云 DNS 暂无 Cookie 采集能力，全量同步时保留该来源的既有数据及观察时间。旧版 AccessKey 配置和客户端 API 保持兼容。
+Settings 顶部的「阿里云租户管理」可为每个已有租户单独配置 Cookie、修改名称和启停。Codeup 绑定租户还可选择 AccessKey 采集并配置 AccessKey ID 和 Secret；凭据留空保留已保存的值，Secret 和 Cookie 不回显，更换 AccessKey ID 时须同时填写 Secret。Codeup 企业 ID 在绑定租户中配置。Cookie 采集支持上海地域的 ECS、CLB、NAT 和 DMS；云 DNS 暂无 Cookie 采集能力，全量同步时保留该来源的既有数据及观察时间。
 
 「一键同步」和每日任务覆盖所有启用租户及 DevOps、Codeup、JumpServer，不采集 Local GitLab。沿用总计三个采集槽位。「ECS / CLB / DMS / NAT / DNS 独立同步范围」可选全部启用租户或一个租户；「同步所选租户全部云资源」只更新五类云资源，不调用 Codeup、DevOps 或 JumpServer。独立任务按租户替换切片，保留其他租户、其他来源及其观察时间。任务启动后固定配置和凭据版本，运行中保存设置只影响后续任务。
 
@@ -51,6 +51,48 @@ Settings 顶部的「阿里云租户管理」可为每个已有租户单独配�
 为使旧客户端和租户更新在一次原子写入中保持一致，租户配置及凭据统一保存在原 `/data/secrets/cookies.json` 的 `aliyunTenants` 对象中（0600），现有租户保留旧字段兼容别名。`/api/settings/state` 只返回脱敏租户列表；`POST /api/settings/config` 的 `aliyunTenants` 是单租户或多租户增量 upsert 数组，更新携带 `id` 和 `credentialVersion`，省略的租户不删除。`POST /api/settings/sync/{ecs|clb|dms|nat|cloud-dns|aliyun}` 可传 `{ "tenantId": "..." }`，省略则处理全部启用租户。`aliyun` 表示五类云资源。
 
 快照保持原文件入口，增加 schemaVersion=2、逐资源租户信息及逐租户/地域的观察元数据。ECS、CLB、NAT、DMS 和 IP 全景支持租户筛选；DMS CSV 附加租户 ID、名称、采集账号 UID。按预先规划的不重叠网段沿用 IP 关联，拓扑增加租户来源信息，云 DNS 同步支持全部启用租户或单租户。历史快照文件不重写。
+
+## Nginx 路由与应用导出
+
+每日采集完成后，在 Settings 的“Nginx 路由与应用导出”点击“生成导出文件”。任务使用点击时的激活版本，完成后提供 `nginx-routes-full.csv` 和 `nginx-applications.xlsx` 两个下载，并按「应用匹配说明」统计后端行数。重新生成失败时仍可下载同一来源版本的最近成功结果。切换版本后，页面显示新激活版本的导出结果。
+
+CSV 展开 JumpServer 快照中已采集的 Nginx 路由和 upstream 成员。Excel 的前端表收录具有部署目录的 `static/other` 应用路径，过滤文件、验证用 TXT 模式和无法形成具体 URL 的正则 location。后端表收录 `proxy_pass`，从已采集后端出发沿 DNS、NAT、CLB 和 Nginx 追踪。来源版本的公网云 DNS 和镜像内静态 DNS/EIP 沿用 Topology 口径。到达已配置的 Kong 代理端点时，使用与请求拓扑相同的只读 Admin 查询，Excel 记录实时查询时间。
+
+`localhost`、IPv4 和 IPv6 回环转发在「服务IP+端口」以发起转发的 Nginx 资产 IP 和原端口显示，原始回环地址留作证据。进程匹配按回环监听核对；已知 Nginx 在容器或 Pod 中且缺少对应网络命名空间证据时，不使用宿主机的监听归属。该显示口径不表示端口对外监听。
+
+生产 Kong `10.58.16.5` 和 `10.58.6.145` 通过对应 JumpServer 资产访问本机 Admin API。继续追踪要求链路到达已确认的 Kong 代理端点，其他使用 `8000` 的应用仍按普通后端处理。
+
+应用 ID 和名称要求最终端点具备 JumpServer 的实际 TCP 监听和 PID 证据，并能与同地址的 DevOps 应用唯一关联。Kong 的 HTTP(S) Target 保留已知的 TCP 协议；若通过去除 Tomcat 目录的实例编号或 Java 启动包的版本后缀识别应用，要求实际监听端口与部署声明一致。下游 Nginx 按代表性 URI 查询，可能匹配的正则会保留为未解析。证据不足、链路中断或歧义的行保留状态及说明，应用列可为空。文件和结果清单位于数据卷的 `nginx-exports/<source-version>/<export-id>/`。
+
+同一 Nginx 实例、域名和路由经 Kong 到达相同最终端点（IP、端口、协议）时，后端表只计一行。合并行保留各条完整代理链及网关查询信息。不同最终端点和未解析分支各自保留。
+
+后端表在「服务IP+端口」后显示「应用匹配说明」。当前 ECS 清单有该地址但 JumpServer 未收录时标记 `JumpServer未收录`。完整 ECS 清单未找到该地址，且 JumpServer 未收录或无法登录时，按清单口径标记 `资产已下线`。JumpServer 无法登录且明确记录缺少 SSH 授权或访问被拒时，标记 `无权限访问`。未明确为权限问题的登录失败保留原有采集说明。
+
+最终业务后端 IP 的双清单比对独立于进程和应用匹配，保留原有链路置信度。已识别的 CLB、NAT 公网入口、EIP 和 Kong 地址沿用各自的链路证据。历史 EIP 的已失效 ECS 绑定按下文的独立规则处理。
+
+最终端点有通过 JumpServer 确认的监听进程，但找不到与进程和端口一致的 DevOps 应用时，标记 `未能匹配应用`。导出保留 PID 和监听证据，应用 ID 留空；该标识不推断部署来源。
+
+JumpServer 的 TCP 监听采集已完成，但未观察到最终端点对应地址和端口的监听时，标记 `端口未监听`。该标识基于快照观察时间。监听采集失败、未采集或已观察到监听但无法确认 PID 的记录保留各自说明。
+
+完整 CLB 清单确认链路所用的监听端口未配置时，标记 `Proxy Pass后端配置失效`，停止说明记录 CLB 和端口。当前快照可在数据卷 `nginx-exports/<source-version>/invalid-proxy-endpoints.json` 中记录用户确认未监听的后端 `ip` 和 `port`，导出也使用此标记并注明用户确认。若快照观测到该端口监听，则按采集证据判断。
+
+Kong Admin API 完整返回路由清单，但当前请求 URI 的候选路由为零时，标记 `Kong网关无此路由`。已匹配路由和 Service，且 Admin API 完整返回空的 Target 清单时，标记 `Kong网关无Target`。Admin 查询失败、候选路由有歧义和非空清单中没有可解析的正权重 IP Target 保留各自说明。
+
+后端域名或 CNAME 链因当前快照缺少适用于该链路的 DNS 地址或 CNAME 记录而中止时，标记 `DNS待核实`，最终服务端点和应用列留空。
+
+可为当前快照的 Nginx 来源资产记录已核实的 PrivateZone 地址。导出读取数据卷 `nginx-exports/<source-version>/private-dns-confirmations.json` 中的数组，每项包含 `sourceAssetId`、`zoneId`、`hostname` 和 `ip`。快照必须仍有对应内网 Zone 的启用 A 或 AAAA 记录。导出附核实说明并继续按原请求匹配下游路由，对应 DNS 步骤使用 `INFERRED` 置信度。
+
+有具体的下游请求 URI，已命中对应域名，归档确认没有匹配的 `location`、落到 `server` 的默认处理时，标记 `后端路由不存在`。以转发后的实际 URI 为准，`/` 还需核对是否有明确的静态首页配置。最终服务端点和应用列留空，停止原因记录下游 Host、URI 和配置文件。显式 `location /`、候选路由有歧义或缺少可用归档的记录保留原有说明。
+
+当实际转发 URI 未命中业务路由，且同一虚拟主机的归档里有唯一对应的代理路径时，标记 `URI配置错误`，保留实际 URI 和配置路径。归档确认有重定向或条件直接响应时，标记 `重定向或条件响应` 并记录状态码。Nginx 为代理前缀自动补全末尾斜杠的 301 也归入该项。归档显示 `try_files` 可以转向 PHP 入口时，记录 PHP 回退及其条件。Kong 自身的内部变量转发及发往已配置 Admin 端点的链路标记 `Kong内部或管理流量`。
+
+依赖 Cookie、语言或其他运行时变量的目标标记 `运行时变量代理待核实`。归档中默认分支和每个条件分支的 upstream 均明确指向同一组 IP 和端口时，以 `INFERRED` 保留后端候选，再按 JumpServer 进程证据匹配应用。
+
+入口 `proxy_pass` 链路的某个分支可根据归档确认命中下游 Nginx 静态目录时，该分支归入前端应用清单。该行保留入口域名、URI 和监听端口，并展示下游静态目录及服务器端点。下游收到的 Host 未匹配且没有明确的默认虚拟主机时，只有归档确认该监听端口存在唯一虚拟主机，才推断其为默认匹配。配置了静态目录且在缓存未命中时回源的路径也可归入前端。
+
+前端和后端应用清单跳过入口 URI `@unbuffered`、`@unbuffered_request`、`@unbuffered_response`、`= /kong_buffered_http`。这些 location 仍出现在完整路由表中，根 URI `/` 按应用清单的常规规则处理。下游 Nginx 在已有配置处停止时，说明写明命中的 Host、URI、配置文件和可确认的处理方式，例如重定向或直接响应。
+
+当链路到达历史静态 EIP 清单中明确绑定 ECS 的地址，且绑定实例 ID 在已核对覆盖范围的完整 ECS 清单中缺失时，后端应用清单标记 `资产已下线`，保留 EIP 和绑定实例 ID。采集范围用同一 CSV 来源中仍可按实例 ID 对应的 ECS 核对。当前 ECS、NAT、CLB 或可登录的 JumpServer 资产有该 IP 的证据时，继续按现有链路判断。
 
 ## Topology 版本生成与下载
 
@@ -74,13 +116,17 @@ Compose 使用命名卷 `envscope-data`，挂载到 `/data`。Cookie、运行记
 - `/data/extra-jobs.json`：与主任务并发运行的单独数据源重试任务；容器重启后中断任务标为失败。
 - `/data/catalog-job.json`：最近一次部署目录导入结果；不包含数据库密码。
 
-`docker compose up -d --build`、`docker compose restart` 和普通 `docker compose down` 不删除数据卷。`docker compose down -v` 会删除全部历史和 Cookie，不应用于日常更新。备份时备份整个数据卷，并将其作为包含凭据的私密备份保存。
+`docker --context lenovo compose up -d --build`、`docker --context lenovo compose restart` 和普通 `docker --context lenovo compose down` 不删除数据卷。`docker --context lenovo compose down -v` 会删除全部历史和 Cookie，不应用于日常更新。备份时备份整个数据卷，并将其作为包含凭据的私密备份保存。
 
 ## 部署单元与 MySQL
 
-`/deployment-units` 展示部署单元。一个应用创建一个部署单元，三个环境分别保存关联；真实部署记录生成实例。点击环境可查看 IP、声明端口、分支、部署/配置 ID、发布时间和发布状态。实例 ID、来源观察及最后观察时间保留在数据库与 API 中，不在展开表格展示。按目录中实际存在的应用或组件技术类型分 Tab，浏览器缓存上次的类型列表以便快速展示，服务端类型缓存最长保留 30 秒以发现其他进程导入的变化。汇总展示筛选范围内的单元数及各环境当前观察实例数 / 按 IP 去重的服务器数；汇总跨所有分页，搜索及历史单元筛选会影响统计范围。支持搜索、分页及包含未再观察到的来源。业务领域、业务系统表已建立，暂不自动填充归属。
+`/deployment-units` 展示部署单元。一个应用创建一个部署单元，三个环境分别保存关联；真实部署记录生成实例。应用实例展示 DevOps IP、声明端口、分支和部署 ID，以及 JumpServer 采集的进程监听端口、PID、启动时间和截至采集时的运行天数。仅完整采集且按应用名称未匹配进程时显示“无进程”；采集不完整、历史记录或关联有歧义时显示待确认。进程关联是基于同环境、主机及名称的推断，并非实时状态。组件实例保留原有字段。实例 ID、来源观察及最后观察时间保留在数据库与 API 中。按目录中实际存在的应用或组件技术类型分 Tab，浏览器缓存上次的类型列表以便快速展示，服务端类型缓存最长保留 30 秒以发现其他进程导入的变化。汇总展示筛选范围内的单元数及各环境当前观察实例数 / 按 IP 去重的服务器数；汇总跨所有分页，搜索及历史单元筛选会影响统计范围。支持搜索、分页及包含未再观察到的来源。业务领域、业务系统表已建立，暂不自动填充归属。
 
-在 `environment-web` 中执行 `docker compose up -d --build`，会同时启动 MySQL 8.4，健康后启动应用。首次启动自动迁移、读取当前已完成应用快照；随后独立线程每 30 秒检查当前版本，也可使用 Tab 中的「从当前快照创建 / 更新」。数据库失败不会使原采集或版本激活失败；Tab 显示最近任务错误，并保留上次成功目录。
+“从当前快照创建 / 更新”会重新生成进程关联并保存到数据卷；原有后台目录同步也会在快照版本变化时更新。展开实例仅读取已保存结果，同一页面内再次展开复用明细；新快照尚未完成更新时显示待确认。
+
+应用部署单元的环境明细提供“一键巡检”：容器内按环境执行 Nginx 与配置引用、Kong、DNS、进程/JVM、近一周日志采集分析、应用配置与关联组件、Dubbo 及逐实例 300 秒 TCP 检测，并生成多 Sheet Excel。Kong 仅检查已配置环境的网关；Dubbo 仅检查明确声明的 ZooKeeper 默认路径。无法唯一识别资产或进程、身份变化及重复目标保留为待确认，缺失数据或失败不会当作通过。任务与采集、单进程检测和应用文件操作互斥；过程日志、报告、TCP 原始结果、脱敏配置摘要及采集到的原始日志归档保存在数据卷 `checks/<任务ID>/`，原始日志可能包含敏感信息。页面日志是程序生成的进度事件，不包含服务器终端原始输出；报告保留范围和限制，目标服务器历史资源分析尚未实现。
+
+在 `environment-web` 中执行 `docker --context lenovo compose up -d --build`，会同时启动 MySQL 8.4，健康后启动应用。首次启动自动迁移、读取当前已完成应用快照；随后独立线程每 30 秒检查当前版本，也可使用 Tab 中的「从当前快照创建 / 更新」。数据库失败不会使原采集或版本激活失败；Tab 显示最近任务错误，并保留上次成功目录。
 
 MySQL 持久数据独立保存于 `envscope-mysql:/var/lib/mysql`，不发布宿主机端口。首次初始化前可在 Compose `.env` 设置 `ENVSCOPE_DB_PASSWORD`、`ENVSCOPE_DB_ROOT_PASSWORD`；内置默认值只供本地启动。修改已有数据库密码需同步修改数据库账号，修改环境变量不会重置已初始化卷内账号。外部 MySQL 部署可直接配置应用环境变量 `ENVSCOPE_DB_HOST`、`ENVSCOPE_DB_PORT`、`ENVSCOPE_DB_NAME`、`ENVSCOPE_DB_USER`、`ENVSCOPE_DB_PASSWORD`，可选 `ENVSCOPE_DB_SSL_CA`（容器内 CA 文件路径）。账号需要目标库的建表、索引及读写权限。
 
@@ -128,7 +174,7 @@ Settings 增加 **folidev 用户密码**。密码保存到同一私密凭据文�
 
 JumpServer 页面新增登录结果、原因、检查时间、进程和 Nginx 明细，以及按登录状态、IP/主机名、最短运行天数筛选。365 天按钮按采集时的 `etimes >= 31536000` 统计；它反映当前存活进程，不是历史重启事件或去重应用数量。旧版本显示“未检查”，不会混用其他版本的结果。不能登录的资产会保留在新版本中，不使整个同步失败。
 
-进程命令为 `LC_ALL=C TZ=UTC ps -eww`，保存 PID、PPID、用户、启动时间（UTC）、运行秒数及脱敏命令。排除内核线程和明确识别的系统守护进程，保留未知进程供核对，不能仅凭名称保证业务/系统分类绝对准确。先执行 `sudo -i` 进入 root 登录 shell，免密则直接进入，否则仅向密码提示输入一次 folidev 密码。密码错误立即中断 sudo，明确标记“sudo 密码错误”并跳过 Nginx 采集，不重试密码；普通账号仍采集可见进程并标记不完整。登录成功后采集失败仍标为可登录，并单独记录采集失败。
+进程命令为 `LC_ALL=C TZ=UTC ps -eww`，保存 PID、PPID、用户、启动时间（UTC）、运行秒数及脱敏命令。排除内核线程和明确识别的系统守护进程，保留未知进程供核对，不能仅凭名称保证业务/系统分类绝对准确。先以 `sudo -n su` 尝试免密提权并验证 root 身份；失败后尝试映射中已保存的方法，再依次尝试 `sudo -i` 和已配置的 root 密码。已标记提权失败的资产仍会尝试免密方式，但不会重复尝试密码，除非更新其映射。全部失败时普通账号仍采集可见进程并标记不完整。登录成功后采集失败仍标为可登录，并单独记录采集失败。
 
 对每个可见的 Nginx master，使用 `/proc/<pid>/exe -T` 和其 `-c`、`-p`、`-g` 参数读取磁盘配置；不会 reload/restart。展开 `-T` 输出中的 include，保存 server_name、listen、location、proxy/fastcgi/grpc 等目标及 upstream 成员的主机与端口，支持 IPv6。动态变量、域名和 Unix socket 不伪造成 IP；缺失 include、配置解析或权限问题标记不完整。不保存原始终端记录。Nginx 原始配置按 `-T` 返回的文件清单逐个以 Base64 传回，保留精确文件字节、完整路径及 master 实例。原文单独存放在版本目录 `nginx-configs/`（0600），不打包进前端静态脚本；页面按需读取，支持查看和下载原始文件。其他来源独立同步沿用原 JumpServer 配置版本引用，切换历史版本不会混用配置。磁盘配置未必已经 reload 到进程；容器内进程、无法读取的命名空间及特殊进程标题可能无法完整定位 Nginx，此时显示无法确认。
 

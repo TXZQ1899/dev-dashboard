@@ -22,9 +22,9 @@
 
 ## 2. 如何获取 DevOps 平台链接
 
-### 2.1 从 EnvScope 的“应用列表”获取
+### 2.1 从 Application Atlas 的“应用列表”获取
 
-1. 打开当前 EnvScope 页面。本次连接的页面来源为 `http://10.58.5.44:3001`。
+1. 打开当前 Application Atlas 页面。本次连接的页面来源为 `http://10.58.5.44:3001`。
 2. 在导航中进入“应用列表”，对应页面路径为 `/applications`。
 3. 在“搜索应用、HTTP 名、端口或 IP…”搜索框中输入 `fotour-orderapi`。
 4. 找到应用名称完全等于 `fotour-orderapi` 的行，核对名称，避免选到相似应用。

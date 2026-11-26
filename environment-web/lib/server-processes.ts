@@ -81,6 +81,23 @@ export function jvmMemory(process: Process): {config: string; rssToXmxPercent: n
   const percent=xmxBytes!==null&&rss!=null&&Number.isFinite(rss)&&rss>=0?rss*1024/xmxBytes*100:null;
   return {config:options.join(' '),rssToXmxPercent:percent!==null&&Number.isFinite(percent)?percent:null};
 }
+// Extract -Xmx/-Xms/-Xmn/-Xss flags directly from a raw process command string.
+// Returns empty string for non-Java or non-matching commands.
+export function extractJvmFlags(command: string): string {
+  if(!command) return '';
+  const tokens=args(command);
+  const executable=(tokens[0]||'').split('/').pop()||'';
+  if(!/^(?:java|jsvc)$/i.test(executable)) return '';
+  const options: string[]=[];
+  const optionsWithValue=new Set(['-cp','-classpath','--class-path','-p','--module-path','--upgrade-module-path','--add-modules','--limit-modules','--add-exports','--add-opens','--add-reads','--patch-module']);
+  for(let i=1;i<tokens.length;i++) {
+    const token=tokens[i];
+    if(token==='-jar'||token==='-m'||token==='--module'||token==='--'||!token.startsWith('-'))break;
+    if(optionsWithValue.has(token)){i++;continue;}
+    if(/^-Xm[sxn]\d+[kKmMgG]?$/.test(token)) options.push(token);
+  }
+  return options.join(' ');
+}
 // Display-only exclusions. Use executable identity, not arbitrary arguments or
 // substring matches, so similarly named business processes remain visible.
 export function hideOperationalProcess(process: Process): boolean {
@@ -139,7 +156,7 @@ export function processType(process: Process): ProcessType {
   return '其他进程';
 }
 // 中间件进程：数据库/缓存/消息队列/搜索等共享基础服务，通常不归属任何 DevOps
-// 应用，但同样处于业务链路中，需要与业务应用一样提供“检测上下游”入口。
+// 应用，但同样处于业务链路中，需要与业务应用一样提供“进程分析”入口。
 // 已单独归类的中间件按类型判断；MongoDB/Elasticsearch/原生 RabbitMQ 等未归类的
 // 中间件按可执行文件名或命令行关键字识别。
 const middlewareTypes=new Set<ProcessType>(['MySQL','PostgreSQL','Redis','Kafka','Elasticsearch','Kibana','ZooKeeper','神策数据','Nacos','Kong','Canal','RabbitMQ','RocketMQ','ActiveMQ','MongoDB']);

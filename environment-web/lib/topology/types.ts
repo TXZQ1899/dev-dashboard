@@ -54,6 +54,8 @@ export type Evidence = {
   source: EvidenceSource;
   reference: string;
   detail: string;
+  /** Observed A/AAAA value when the destination node represents a logical host. */
+  dnsAddress?: string;
   /** Original observation timestamp, normalized to ISO-8601 when possible. */
   observedAt: string | null;
 };

@@ -1,6 +1,7 @@
 export type CatalogEnvironment = 'TEST' | 'SIMULATION' | 'PRODUCT' | 'UNIDENTIFIED';
 
 export type CatalogSource = {
+  runId: string;
   sourceVersion: string;
   snapshotSha256: string;
   observedAt: string | null;
@@ -41,6 +42,7 @@ export type CatalogInstance = {
   presenceStatus: string;
   managementStatus: string;
   lastSeenAt: string | null;
+  processObservation?: { status: 'MATCHED' | 'NOT_FOUND' | 'UNKNOWN' | 'AMBIGUOUS'; reason: string; observedAt?: string; pid?: number; startedAt?: string; elapsedSeconds?: number; ports?: number[]; portStatus?: string; command?: string };
   attributes: {
     componentRole?: string;
     deploy?: string;
@@ -61,7 +63,7 @@ export type CatalogInstance = {
 export type CatalogResult = {
   source: CatalogSource | null;
   activeSnapshot: { version: string; collectedAt: string | null; matchesCatalog: boolean };
-  job: { status: string; error?: string };
+  job: { status: string; error?: string; finishedAt?: string };
   units: CatalogUnit[];
   pagination: { page: number; pageSize: number; total: number; totalPages: number };
   summary: { units: number; presentUnits: number; instances: number };

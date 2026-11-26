@@ -11,7 +11,8 @@ function evaluate(file,requireModule=()=>{}) {
  return sandbox.exports;
 }
 const lib=evaluate('lib/server-processes.ts');
-const processExport=evaluate('lib/server-process-export.ts',id=>id==='fflate'?require('fflate'):id==='./server-processes'?lib:undefined);
+const xlsx=evaluate('lib/xlsx.ts',id=>id==='fflate'?require('fflate'):undefined);
+const processExport=evaluate('lib/server-process-export.ts',id=>id==='./xlsx'?xlsx:id==='./server-processes'?lib:undefined);
 const overviewLib=evaluate('lib/jumpserver-overview.ts',()=>({isLocalDatacenterIp:()=>false}));
 // 组件的时间展示已统一委托给 lib/datetime.ts。
 const datetimeLib=evaluate('lib/datetime.ts');

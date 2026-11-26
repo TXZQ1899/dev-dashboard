@@ -5,6 +5,7 @@ import { CollectionProgress } from '@/components/collection-progress';
 import { ApplicationConfigLog } from '@/components/application-config-log';
 import { ApplicationConfigResults, type ConfigExclusion } from '@/components/application-config-results';
 import { AliyunTenantSettings, type AliyunTenant } from '@/components/aliyun-tenant-settings';
+import { NginxExportSettings } from '@/components/nginx-export-settings';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -555,6 +556,7 @@ export default function SettingsPage() {
               <p className="settings-hint">一键同步失败会重试部分完成、失败、跳过及未处理的应用，保留已完成结果；标记为不用同步的应用不再重试。标记变更从下一次批量任务起生效。</p>
               <p className="settings-hint">读取 master 分支；无法唯一匹配模块、无法访问仓库或无法解析 Nacos 时保留原因。配置原文可能包含敏感信息。</p>
             </section>
+            <NginxExportSettings sourceVersion={state.current.id} />
             <section className="panel settings-panel" id="topology-settings">
               <h2>Topology 数据</h2>
               {state.topology ? (

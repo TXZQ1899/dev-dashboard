@@ -32,6 +32,8 @@ services:
       MYSQL_USER: envscope
       MYSQL_PASSWORD: ${ENVSCOPE_DB_PASSWORD:-envscope-local-password}
       MYSQL_ROOT_PASSWORD: ${ENVSCOPE_DB_ROOT_PASSWORD:-envscope-local-root-password}
+    ports:
+      - "3306:3306"
     restart: unless-stopped
     volumes:
       - envscope-mysql:/var/lib/mysql

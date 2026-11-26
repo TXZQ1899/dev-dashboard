@@ -3,7 +3,9 @@
 No collection or process discovery happens here. Source records remain evidence;
 platform identities and manually managed fields survive subsequent imports.
 """
+import csv
 import hashlib
+import io
 import ipaddress
 import json
 import os
@@ -12,7 +14,7 @@ import time
 import uuid
 from collections import Counter, defaultdict
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ENVIRONMENTS = ('TEST', 'SIMULATION', 'PRODUCT')
@@ -291,7 +293,147 @@ class Catalog:
                             self.execute(conn, statement)
                     self.execute(conn, statements[2])
                     self.execute(conn, 'INSERT INTO catalog_schema_migration VALUES (2,%s,%s)', (checksum, utcnow()))
+                path = Path(__file__).with_name('migrations') / '003_jvm_adjustment.sql'
+                sql = path.read_text()
+                checksum = hashlib.sha256(sql.encode()).hexdigest()
+                applied = self.execute(conn, 'SELECT checksum FROM catalog_schema_migration WHERE version=3')
+                if applied and applied[0]['checksum'] != checksum:
+                    raise CatalogError('部署目录迁移文件校验失败，请使用追加迁移升级')
+                if not applied:
+                    for statement in sql.split(';'):
+                        if statement.strip():
+                            self.execute(conn, statement)
+                    self.execute(conn, 'INSERT INTO catalog_schema_migration VALUES (3,%s,%s)', (checksum, utcnow()))
             self._migrated = True
+
+    def save_jvm_adjustment(self, payload):
+        """Save a manual JVM parameter adjustment record for audit history."""
+        self.migrate()
+        with self.connection() as conn:
+            values = {
+                'id': identifier(),
+                'deployment_instance_id': payload.get('instanceId') or None,
+                'instance_ip': payload.get('ip') or None,
+                'unit_id': payload.get('unitId') or None,
+                'environment': payload.get('environment') or None,
+                'current_jvm_config': (payload.get('currentJvmConfig') or '')[:512] or None,
+                'xms_new': (payload.get('xmsNew') or '').strip()[:32] or None,
+                'xmx_new': (payload.get('xmxNew') or '').strip()[:32] or None,
+                'operator': (payload.get('operator') or 'system')[:191],
+                'note': payload.get('note') or None,
+                'source': (payload.get('source') or 'MANUAL')[:30],
+                'created_at': utcnow(),
+            }
+            self.insert(conn, 'jvm_adjustment', values)
+            values['createdAt'] = values['created_at'].isoformat() + 'Z'
+            del values['created_at']
+            values['id'] = values['id']
+            return values
+
+    def list_jvm_adjustments(self, instance_id=None, unit_id=None, ip=None, environment=None, limit=50):
+        """List JVM adjustment history, newest first. Filter by instance_id / unit_id / ip / environment — all ANDed."""
+        self.migrate()
+        clauses, args = [], []
+        if instance_id:
+            clauses.append('deployment_instance_id=%s'); args.append(instance_id)
+        if unit_id:
+            clauses.append('unit_id=%s'); args.append(unit_id)
+        if ip:
+            clauses.append('instance_ip=%s'); args.append(ip)
+        if environment:
+            clauses.append('environment=%s'); args.append(environment)
+        where = ('WHERE ' + ' AND '.join(clauses)) if clauses else ''
+        limit = max(1, min(int(limit), 200))
+        with self.connection() as conn:
+            rows = self.execute(conn, f'''
+                SELECT id, deployment_instance_id, instance_ip, unit_id, environment,
+                       current_jvm_config, xms_new, xmx_new, operator, note, source,
+                       created_at
+                FROM jvm_adjustment {where}
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s''', (*args, limit))
+        def _fmt(dt):
+            return dt.isoformat(timespec='seconds') + 'Z' if dt else None
+        return [{
+            'id': r['id'], 'instanceId': r['deployment_instance_id'],
+            'ip': r['instance_ip'], 'unitId': r['unit_id'],
+            'environment': r['environment'], 'currentJvmConfig': r['current_jvm_config'],
+            'xmsNew': r['xms_new'], 'xmxNew': r['xmx_new'],
+            'operator': r['operator'], 'note': r['note'], 'source': r['source'],
+            'createdAt': _fmt(r['created_at']),
+        } for r in rows]
+
+    def export_jvm_adjustments_csv(self, start_date, end_date, environment=None):
+        """Export JVM adjustment records within [start_date, end_date) as CSV bytes.
+
+        Only the *latest* adjustment per (unit_id, environment) pair is included.
+        start_date / end_date may be date or datetime objects. environment=None
+        (or 'ALL') means no environment filter — PRODUCT/TEST/SIMULATION/UNIDENTIFIED
+        are all accepted.
+        """
+        self.migrate()
+        # Normalise to [start-of-start_date, end-of-end_date] both inclusive (naive, UTC).
+        if isinstance(start_date, datetime):
+            start_dt = start_date.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+        else:
+            start_dt = datetime(start_date.year, start_date.month, start_date.day)
+        if isinstance(end_date, datetime):
+            end_dt = end_date.replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=None)
+        else:
+            end_dt = datetime(end_date.year, end_date.month, end_date.day, 23, 59, 59, 999999)
+        clauses = ['a.created_at >= %s', 'a.created_at <= %s', 'a.unit_id IS NOT NULL']
+        args = [start_dt, end_dt]
+        if environment and environment.upper() not in ('ALL', ''):
+            clauses.append('a.environment = %s')
+            args.append(environment.upper())
+        where = 'WHERE ' + ' AND '.join(clauses)
+        with self.connection() as conn:
+            rows = self.execute(conn, f'''
+                SELECT a.id, a.unit_id, a.environment, a.current_jvm_config,
+                       a.xms_new, a.xmx_new, a.operator, a.created_at, a.note,
+                       u.code AS app_code, u.name AS app_name
+                FROM jvm_adjustment a
+                LEFT JOIN deployment_unit u ON u.id = a.unit_id
+                {where}
+                ORDER BY a.created_at DESC, a.id DESC''', tuple(args))
+        # Deduplicate: keep only the latest per (unit_id, environment)
+        seen = {}
+        for r in rows:
+            key = (r['unit_id'], r['environment'])
+            if key not in seen:
+                seen[key] = r
+        # Sort by environment then app name for stable output
+        ordered = sorted(seen.values(), key=lambda r: (r['environment'] or '', r['app_name'] or '', r['created_at']))
+        buf = io.StringIO(newline='')
+        writer = csv.writer(buf)
+        writer.writerow(['应用ID', '应用名称', '环境', '修改前JVM参数', '修改后JVM参数', '修改时间', '操作人', '备注'])
+        def _fmt(dt):
+            if not dt:
+                return ''
+            # MySQL datetime is naive UTC; convert to Beijing time (UTC+8)
+            local = dt + timedelta(hours=8)
+            return local.strftime('%Y-%m-%d %H:%M:%S')
+        env_label = {
+            'PRODUCT': '生产', 'TEST': '测试', 'SIMULATION': '仿真', 'UNIDENTIFIED': '待识别',
+        }
+        for r in ordered:
+            before = r['current_jvm_config'] or ''
+            after_parts = []
+            if r['xms_new']:
+                after_parts.append(f'-Xms{r["xms_new"]}')
+            if r['xmx_new']:
+                after_parts.append(f'-Xmx{r["xmx_new"]}')
+            after = ' '.join(after_parts) or ''
+            writer.writerow([
+                r['app_code'] or r['unit_id'] or '',
+                r['app_name'] or '',
+                env_label.get(r['environment'], r['environment'] or ''),
+                before, after,
+                _fmt(r['created_at']),
+                r['operator'] or '',
+                r['note'] or '',
+            ])
+        return buf.getvalue().encode('utf-8-sig')
 
     def head(self, conn):
         rows = self.execute(conn, 'SELECT * FROM catalog_import_run WHERE source_instance_key=%s AND is_current=TRUE', (self.source_key,))
@@ -526,6 +668,32 @@ class Catalog:
                                   'appId': text(decode(r.get('native_key_json'), {}).get('appId')) if r.get('object_kind') == 'DEVOPS_APPLICATION' else None}
                                  for r in rows]}
 
+    def application_process_inputs(self):
+        """Read all current DevOps members for a versioned process refresh."""
+        self.migrate()
+        with self.connection() as conn:
+            conn.begin()
+            try:
+                head = self.head(conn)
+                if not head:
+                    raise CatalogError('部署单元目录尚未导入')
+                rows = self.execute(conn, """SELECT i.id,i.primary_ip,i.declared_port_raw,i.presence_status,
+                    e.unit_id,e.environment,s.native_key_json FROM deployment_instance i
+                    JOIN deployment_unit_environment e ON e.id=i.unit_environment_id
+                    JOIN deployment_unit u ON u.id=e.unit_id
+                    JOIN deployment_unit_source s ON s.unit_id=u.id
+                    WHERE s.source_instance_key=%s AND s.object_kind='DEVOPS_APPLICATION'
+                    AND s.presence_status='PRESENT' AND u.unit_type='APPLICATION'
+                    AND i.presence_status='PRESENT'""", (self.source_key,))
+                conn.commit()
+                return {'snapshotSha256': head['snapshot_sha256'], 'runId': head['id'], 'rows': [
+                    {'id': r['id'], 'unitId': r['unit_id'], 'appId': decode(r['native_key_json'], {}).get('appId'),
+                     'environment': r['environment'], 'ip': r['primary_ip'], 'port': r['declared_port_raw'],
+                     'presenceStatus': r['presence_status']} for r in rows]}
+            except Exception:
+                conn.rollback()
+                raise
+
     def read(self, *, query='', page=1, page_size=20, presence='present', unit_id=None, environment=None, category=None, business=None):
         self.migrate()
         with self.connection() as conn:
@@ -540,11 +708,11 @@ class Catalog:
 
     def _read(self, conn, query, page, page_size, presence, unit_id, environment, category, business):
         head = self.head(conn)
-        source = None if not head else {'sourceVersion': head['source_version'], 'snapshotSha256': head['snapshot_sha256'],
+        source = None if not head else {'runId': head['id'], 'sourceVersion': head['source_version'], 'snapshotSha256': head['snapshot_sha256'],
             'observedAt': iso(head['observed_at']), 'importedAt': iso(head['imported_at']),
             'counts': decode(head['counts_json'], {})}
         if unit_id:
-            unit = self.execute(conn, 'SELECT u.id FROM deployment_unit u JOIN deployment_unit_source s ON s.unit_id=u.id WHERE u.id=%s AND s.source_instance_key IN (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)', (unit_id, self.source_key, self.source_key + ':zookeeper', self.source_key + ':nacos', self.source_key + ':nginx', self.source_key + ':kong', self.source_key + ':redis', self.source_key + ':elasticsearch', self.source_key + ':rabbitmq', self.source_key + ':canal', self.source_key + ':kafka', self.source_key + ':mongodb', self.source_key + ':postgresql', self.source_key + ':jenkins', self.source_key + ':mysql', self.source_key + ':mysql-process'))
+            unit = self.execute(conn, 'SELECT u.id,u.name,u.unit_type,s.native_key_json FROM deployment_unit u JOIN deployment_unit_source s ON s.unit_id=u.id WHERE u.id=%s AND s.source_instance_key IN (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)', (unit_id, self.source_key, self.source_key + ':zookeeper', self.source_key + ':nacos', self.source_key + ':nginx', self.source_key + ':kong', self.source_key + ':redis', self.source_key + ':elasticsearch', self.source_key + ':rabbitmq', self.source_key + ':canal', self.source_key + ':kafka', self.source_key + ':mongodb', self.source_key + ':postgresql', self.source_key + ':jenkins', self.source_key + ':mysql', self.source_key + ':mysql-process'))
             if not unit:
                 raise CatalogInputError('部署单元不存在')
             sql = 'SELECT i.*,e.environment,o.source_attributes_json AS attributes,r.source_version AS observation_version FROM deployment_instance i JOIN deployment_unit_environment e ON e.id=i.unit_environment_id LEFT JOIN catalog_observation o ON o.id=i.current_observation_id LEFT JOIN catalog_import_run r ON r.id=o.import_run_id WHERE e.unit_id=%s'
@@ -555,7 +723,7 @@ class Catalog:
             if presence == 'present':
                 sql += " AND i.presence_status='PRESENT'"
             rows = self.execute(conn, sql + ' ORDER BY e.environment,i.primary_ip,i.id', tuple(args))
-            return {'source': source, 'instances': [{'id': r['id'], 'environment': r['environment'],
+            return {'source': source, 'unitName': unit[0]['name'], 'unitType': unit[0]['unit_type'], 'appId': decode(unit[0]['native_key_json'], {}).get('appId'), 'instances': [{'id': r['id'], 'environment': r['environment'],
                 'ip': r['primary_ip'], 'port': r['declared_port_raw'], 'identityQuality': r['identity_quality'],
                 'presenceStatus': r['presence_status'], 'managementStatus': r['management_status'],
                 'lastSeenAt': iso(r['last_seen_at']), 'observationVersion': r['observation_version'], 'attributes': decode(r['attributes'], {})} for r in rows]}

@@ -906,12 +906,20 @@ class Terminal:
     def elevate(self, password=None):
         """Enter the authorized sudo login shell once; never retry a wrong password."""
         pw = password if password is not None else self.password
+        return self._elevate_sudo(pw, False)
+
+    def elevate_sudo_su(self):
+        """Try sudo su without prompting for or supplying a password."""
+        return self._elevate_sudo(None, True)
+
+    def _elevate_sudo(self, pw, sudo_su):
         rc, body = self.run('id -u', timeout=15)
         if rc == 0 and body.strip() == '0': return 'root', ''
         token = 'SUDO'+uuid.uuid4().hex
         prompt = token+'_PASSWORD'
         has_password = bool(pw)
-        command = 'sudo -p '+shlex.quote(prompt)+' -i' if has_password else 'sudo -n -i'
+        command = 'sudo -n su' if sudo_su else ('sudo -p '+shlex.quote(prompt)+' -i' if has_password else 'sudo -n -i')
+        label = 'sudo su' if sudo_su else 'sudo -i'
         self.send("printf '\\n%s%s\\n' "+token+" _BEGIN; "+command+"; r=$?; printf '\\n%s%s:%s\\n' "+token+" _EXIT \"$r\"\r")
         deadline=time.monotonic()+45; buf=''; supplied=False
         while time.monotonic()<deadline:
@@ -940,7 +948,7 @@ class Terminal:
                 continue
             if re.search(r'(?m)^'+token+r'_EXIT:\d+',body):
                 if re.search(r'password.*required|需要密码',body,re.I): return 'password_required','sudo 需要 folidev 密码'
-                return 'denied','sudo -i 不可用或无权限'
+                return 'denied',label+' 不可用或无权限'
             if re.search(r'[^\n]*[#$>]\s*$',body):
                 # sudo -i started a fresh login shell; it may still be running
                 # .bash_profile / MOTD output after the prompt first appears.
@@ -949,9 +957,9 @@ class Terminal:
                 time.sleep(0.5)
                 rc, identity=self.run('id -u',timeout=15)
                 if rc==0 and identity.strip()=='0': return ('password' if supplied else 'passwordless'),''
-                return 'denied','sudo -i 未获得 root 权限'
+                return 'denied',label+' 未获得 root 权限'
         self.send('\x03')
-        return 'timeout','sudo -i 超时'
+        return 'timeout',label+' 超时'
 
     def elevate_su(self, root_password):
         """Switch to root via `su -l` with the given root password; never retry."""
@@ -1311,11 +1319,20 @@ def resolve_elevation(terminal, ip, folidev_pw, root_alt1, root_alt2, ip_map):
     """
     entry = ip_map.get(ip) if ip_map else None
 
-    # 1. Map says password_error — skip all attempts.
-    if entry and entry.get('status') == 'password_error':
-        return 'password_error', '映射表标记密码错误，跳过 root 提权', None, None, False
+    # Always try the new passwordless default, including for old failure markers.
+    status, reason = terminal.elevate_sudo_su()
+    print(f'  [{ip}] sudo su 免密尝试：{status} — {reason}', flush=True)
+    if status == 'root':
+        return status, reason, None, None, False
+    if status == 'passwordless':
+        unchanged = bool(entry and entry.get('status') == 'normal' and entry.get('method') == 'sudo-su')
+        return status, reason, 'sudo-su', None, not unchanged
 
-    # 2. Map says normal — try the mapped method first.
+    # A previous failure marker still suppresses repeated password attempts.
+    if entry and entry.get('status') == 'password_error':
+        return 'password_error', '免密提权失败；映射表已有失败标记，跳过密码尝试，仅使用当前登录账号', None, None, False
+
+    # Try the mapped password-based method before the remaining probes.
     if entry and entry.get('status') == 'normal':
         method = entry.get('method')
         saved_pw = entry.get('password')
@@ -1329,7 +1346,7 @@ def resolve_elevation(terminal, ip, folidev_pw, root_alt1, root_alt2, ip_map):
             return status, reason, method, saved_pw, False
         # Mapped method failed — fall through to probe.
 
-    # 3. Probe: sudo-i with folidev password first, then su -l with root passwords.
+    # Probe: sudo-i with folidev password first, then su -l with root passwords.
     #   sudo-i validates the *current user's* password (folidev), not root's.
     #   su -l validates the *root* password.
     #   So we never cross-try: folidev pw only for sudo-i, root pw only for su.
@@ -1347,7 +1364,7 @@ def resolve_elevation(terminal, ip, folidev_pw, root_alt1, root_alt2, ip_map):
         if status in ('root', 'passwordless', 'password'):
             return status, reason, 'su', root_pw, True
 
-    return 'password_error', '提权失败，root 密码登录错误', None, None, True
+    return 'password_error', '提权失败，仅使用当前登录账号采集', None, None, True
 
 
 def inspect_asset(asset, accounts, cookie, folidev_pw, root_alt1, root_alt2, ip_map, terminal_factory=Terminal):
@@ -1408,6 +1425,8 @@ def inspect_asset(asset, accounts, cookie, folidev_pw, root_alt1, root_alt2, ip_
                 result['elevationInfo'] = {'ip': ip, 'method': method, 'password': used_pw,
                     'status': 'normal' if method else 'password_error',
                     'verifiedAt': datetime.now(timezone.utc).isoformat()}
+                if not method:
+                    result['elevationInfo']['note'] = '提权失败，仅普通用户'
             rc, body=terminal.run(PS)
             rows, excluded, malformed=parse_processes(body) if rc==0 else ([],0,0)
             result.update(processes=rows,excludedSystemProcesses=excluded,processStatus='complete' if rc==0 and not malformed and elevated else 'partial' if rc==0 else 'failed')

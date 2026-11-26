@@ -7,7 +7,7 @@ import { NODE_TYPE_BY_KIND, buildGraphIndex, explorePaths } from '../lib/topolog
 import { exploreDomainChain } from '../lib/topology/domain-chain.ts';
 import { findNginxLocations } from '../lib/topology/nginx-location.ts';
 import { createDefaultResolverRegistry, resolveRequestPathWithIndex } from '../lib/topology/request/index.ts';
-import { KONG_GATEWAYS, KongResolver, kongEnvironmentWarnings, loadKongData } from '../lib/topology/request/kong.ts';
+import { KONG_GATEWAYS, KongResolver, kongEnvironmentWarnings, loadKongData, matchesKongGateway } from '../lib/topology/request/kong.ts';
 
 // stdout is a pipe whenever this script is driven by the runtime service or any
 // other program. console.log is fire-and-forget and process.exit() then drops
@@ -143,12 +143,15 @@ async function main() {
         maxPaths: Number.isFinite(options.maxPaths) ? options.maxPaths : undefined,
       };
       trace = resolveRequestPathWithIndex(index, query, { ...resolveOptions, registry: createDefaultResolverRegistry() });
-      const gateway = KONG_GATEWAYS[options.env];
-      const queries = gateway ? trace.paths.filter(p => p.nodes.some(n => n.type === 'ENDPOINT' && String(n.identity.ip) === gateway.ip && Number(n.identity.port) === gateway.proxyPort)).map(p => p.effectiveRequest) : [];
-      const kong = gateway && queries.length ? await loadKongData(options.env, queries) : null;
-      if (kong) {
-        trace = resolveRequestPathWithIndex(index, query, { ...resolveOptions, registry: createDefaultResolverRegistry().register(new KongResolver(kong)) });
-        if (kong.error) trace.warnings.push(`Kong Admin API unavailable or incomplete: ${kong.error}`);
+      const observations = (await Promise.all(KONG_GATEWAYS.filter(gateway => gateway.environment === options.env).map(gateway => {
+        const queries = trace.paths.filter(p => p.nodes.some(node => matchesKongGateway(node, gateway))).map(p => p.effectiveRequest);
+        return loadKongData(gateway, queries);
+      }))).filter(Boolean);
+      if (observations.length) {
+        trace = resolveRequestPathWithIndex(index, query, { ...resolveOptions, registry: createDefaultResolverRegistry().register(new KongResolver(observations)) });
+        for (const observation of observations) {
+          if (observation.error) trace.warnings.push(`Kong Admin ${observation.gateway.ip}:${observation.gateway.adminPort} unavailable or incomplete: ${observation.error}`);
+        }
       }
       trace.warnings.push(...kongEnvironmentWarnings(trace.paths, options.env || null));
     } catch (error) {

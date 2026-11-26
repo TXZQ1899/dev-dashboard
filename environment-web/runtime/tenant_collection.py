@@ -115,7 +115,10 @@ def build_tasks(saved, folder, source=None, tenant_id=None):
             verify(tenant)
         except Exception as exc:
             raise tenant_error(exc, tenant, source or 'ecs') from None
-        for kind in ((source,) if source else sources_for(tenant)):
+        kinds = sources_for(tenant)
+        if source:
+            kinds = [k for k in kinds if k == source]
+        for kind in kinds:
             for region in ([''] if kind in ('dms', 'cloud-dns') else tenant['regions']):
                 key = task_key(tenant['id'], kind, region)
                 contexts[key] = {'tenantId': tenant['id'], 'tenantName': tenant['name'],

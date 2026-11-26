@@ -37,6 +37,8 @@ export type ResolutionResult = {
   /** Stable rule identifier recorded on the ResolutionStep. */
   rule: string;
   moves: ResolutionMove[];
+  /** Stable reason when this resolver cannot continue from the current node. */
+  stopReason?: string;
   /** Confidence of the step; defaults to UNKNOWN when omitted. */
   confidence?: Confidence;
   evidence?: Evidence[];

@@ -1,11 +1,11 @@
-# Env-Scope Project Guide
+# Application Atlas Project Guide
 
-> 本文件是 Env-Scope 面向 AI Coding Agent 的主要项目规则与长期上下文。  
+> 本文件是 Application Atlas 面向 AI Coding Agent 的主要项目规则与长期上下文。
 > Codex、TRAE、GitHub Copilot 等工具应尽量复用本文件，而不是各维护一套完整项目说明。
 
 ## 1. Project Purpose
 
-Env-Scope collects, normalizes and correlates application deployment and infrastructure metadata.
+Application Atlas collects, normalizes and correlates application deployment and infrastructure metadata.
 
 The project currently covers:
 
@@ -64,9 +64,9 @@ If documentation and implementation disagree:
 
 ## 3. Container-First Runtime Contract
 
-Docker is the formal runtime boundary for Env-Scope.
+Docker is the formal runtime boundary for Application Atlas.
 
-`environment-web` is built into a Docker image and started as a container. All production behavior must be designed with that runtime model in mind.
+Application Atlas is built from the `environment-web` source directory and runs in Docker context `lenovo` as container `envscope-local`, using image tag `envscope:local`. All production behavior must be designed with that runtime model in mind.
 
 ### Required Docker context and data checks
 
@@ -521,7 +521,7 @@ Tool-specific instruction files should remain thin and point back to this guide.
 
 ## 21. 服务器登录与远程命令（仅限 JumpServer）
 
-需要登录服务器查看日志、进程或配置时，必须通过 Docker context `lenovo` 的 `envscope-local` 容器，经 JumpServer 建立终端，禁止从宿主机直接 SSH 目标机器，也不要使用仓库内的明文密码自行拼装登录命令。
+需要登录相关服务器核实问题（包括查看日志、进程或配置）时，必须通过 Docker context `lenovo` 的 `envscope-local` 容器，经 JumpServer 建立终端，禁止从宿主机直接 SSH 目标机器，也不要使用仓库内的明文密码自行拼装登录命令。
 
 原因：
 

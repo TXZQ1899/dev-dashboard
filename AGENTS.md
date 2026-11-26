@@ -1,4 +1,4 @@
-# Env-Scope Agent Instructions
+# Application Atlas Agent Instructions
 
 Read and follow:
 
@@ -8,7 +8,8 @@ Read and follow:
 ## Working rules
 
 - Keep the current task narrowly scoped.
-- Treat Docker as the production runtime boundary: new runtime features must work inside the `environment-web` container.
+- Treat Docker as the production runtime boundary: Application Atlas is built from `environment-web` and new runtime features must work inside its container.
+- Application Atlas runs as container `envscope-local` using image `envscope:local`. For issue verification that requires server access, first log in to the relevant server through JumpServer from this container; never SSH directly from the host.
 - Use Docker context `lenovo` for all builds and runtime operations; perform all runtime data checks against the `envscope-local` container in that context.
 - Daily snapshots and other persistent runtime data reside in the volume mounted by `envscope-local`; inspect that mounted data through the container, not repository copies or the disposable container layer.
 - Do not introduce host-only paths, host cron dependencies, or required host-global packages unless explicitly requested.

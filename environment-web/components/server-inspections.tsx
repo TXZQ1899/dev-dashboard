@@ -176,7 +176,7 @@ function ServerDetails({asset, inspectState, onInspect}: {asset: Asset; inspectS
   return <div className="space-y-4 border rounded-lg p-4">
     <h3 className="font-semibold">{asset.ip} · {asset.hostname} · 服务器详情</h3>
     <p>检查时间：{date(inspection.checkedAt)} · 账号：{inspection.account||'—'} · 进程：{statuses[inspection.processStatus]} · Nginx：{statuses[inspection.nginxStatus]}</p>
-    <p>sudo：{({root:'已是 root',passwordless:'免密 sudo -i',password:'密码 sudo -i 成功',password_error:'sudo 密码错误',password_required:'未配置密码',denied:'无权限',timeout:'超时'} as Record<string,string>)[inspection.sudoStatus||'']||'未检查'}</p>
+    <p>sudo：{({root:'已是 root',passwordless:'免密提权成功',password:'密码提权成功',password_error:'提权失败',password_required:'未配置密码',denied:'无权限',timeout:'超时'} as Record<string,string>)[inspection.sudoStatus||'']||'未检查'}</p>
     {inspection.serverUsage&&<p>CPU 使用率：<strong className={inspection.serverUsage.cpuPercent>=80?'text-red-600':inspection.serverUsage.cpuPercent>=50?'text-amber-600':''}>{inspection.serverUsage.cpuPercent}%</strong> · 内存使用率：<strong className={inspection.serverUsage.memPercent>=80?'text-red-600':inspection.serverUsage.memPercent>=50?'text-amber-600':''}>{inspection.serverUsage.memPercent}%</strong>（{inspection.serverUsage.memUsedMB>=1024?`${(inspection.serverUsage.memUsedMB/1024).toFixed(1)}G`:`${inspection.serverUsage.memUsedMB}M`} / {inspection.serverUsage.memTotalMB>=1024?`${(inspection.serverUsage.memTotalMB/1024).toFixed(1)}G`:`${inspection.serverUsage.memTotalMB}M`}）</p>}
     <div className="space-y-1">
       <button className="border rounded p-2 text-sm" disabled={inspectState?.busy} onClick={()=>onInspect(asset)}>{inspectState?.busy?'任务启动中…':'单独重新采集此服务器'}</button>

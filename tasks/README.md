@@ -1,4 +1,4 @@
-# EnvScope Tasks
+# Application Atlas Tasks
 
 本目录用于按阶段驱动 Trae Agent 实现 Ingress Path Resolution V1。
 

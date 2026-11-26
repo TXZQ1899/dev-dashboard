@@ -185,6 +185,33 @@ function matchLocation(uri: string, path: string): LocationMatch | 'regex' | nul
   return path === normalized || path.startsWith(normalized) ? { kind: 'prefix', length: normalized.length } : null;
 }
 
+// For a small, safe subset of PCRE, absence of a mandatory literal proves the
+// regex cannot match this representative request URI. All other patterns stay
+// possible. Do not run a collected regex in the JavaScript regex engine.
+function regexMayMatchUri(location: string, uri: string): boolean {
+  const match = /^~(\*)?\s*(.+)$/.exec(location.trim());
+  if (!match || /[^\x20-\x7e]/.test(uri)) return true;
+  const pattern = match[2];
+  // A bounded character-class path ending in a literal file extension cannot
+  // match a URI that lacks that extension. No collected regex is executed.
+  const fixedExtension = /^\^\/\[[a-z\d-]+\]\{\d{1,4}\}\\\.([a-z\d]+)\$$/i.exec(pattern);
+  if (fixedExtension && !(match[1] ? uri.toLowerCase() : uri).endsWith(
+    '.' + (match[1] ? fixedExtension[1].toLowerCase() : fixedExtension[1]),
+  )) return false;
+  // A group containing only a wildcard repetition, such as (.*), adds no
+  // literal requirement. This grammar excludes alternatives, optional
+  // groups and backreferences, which could invalidate the literal check.
+  if (!/^\^?(?:[A-Za-z0-9_/-]|\\\.|\.[*+]?|\(\.[*+]\))+\$?$/.test(pattern)) {
+    return true;
+  }
+  const literals = pattern.match(/(?:[A-Za-z0-9_/-]|\\\.)+/g) ?? [];
+  const candidate = match[1] ? uri.toLowerCase() : uri;
+  return literals.every(chunk => {
+    const literal = chunk.replace(/\\\./g, '.');
+    return candidate.includes(match[1] ? literal.toLowerCase() : literal);
+  });
+}
+
 const LOCATION_TIER: Record<LocationMatch['kind'], number> = { exact: 2, prefix: 1, stream: 0 };
 
 type RouteMatch = {
@@ -192,6 +219,8 @@ type RouteMatch = {
   serverName: Exclude<ServerNameKind, null>;
   location: LocationMatch;
 };
+type RouteIssue = 'no-routes' | 'no-port' | 'no-server' | 'regex' | 'no-location' | 'request-path';
+type RouteOptions = { requireRequestPath?: boolean; allowSoleHttpServer?: boolean };
 
 /**
  * Select the nginx routes on one host that carry the request. Priority:
@@ -199,14 +228,16 @@ type RouteMatch = {
  * then location tier (exact `=` > longest prefix > stream port-only). Ties on
  * both tiers stay as candidates and surface as AMBIGUOUS.
  */
-function selectRouteMatches(context: ResolverContext, host: TopologyNode): {
+function selectRouteMatches(context: ResolverContext, host: TopologyNode, strictPort?: number, streamOnly = false, options: RouteOptions = {}): {
   matches: RouteMatch[];
   warnings: string[];
   candidates: TopologyNode[];
   portInferred: boolean;
+  issue?: RouteIssue;
 } {
   const warnings: string[] = [];
-  const routes = routesForHost(context.index, host);
+  const routes = routesForHost(context.index, host)
+    .filter(route => !streamOnly || text(route.attributes.context) === 'stream');
   if (routes.length === 0) {
     return {
       matches: [],
@@ -215,6 +246,7 @@ function selectRouteMatches(context: ResolverContext, host: TopologyNode): {
         `No nginx routes are collected for host ${host.id}; nginx presence is unknown (the host may be unreachable or the nginx inspection is incomplete).`,
       ],
       portInferred: false,
+      issue: 'no-routes',
     };
   }
 
@@ -223,10 +255,13 @@ function selectRouteMatches(context: ResolverContext, host: TopologyNode): {
     warnings.push(`Nginx inspection on host ${host.id} is "${inspectionStatus}"; route data may be incomplete.`);
   }
 
-  const ports = arrivalPorts(context);
+  const ports = strictPort === undefined ? arrivalPorts(context) : [strictPort];
   let portRoutes = routes.filter(route => listenMatchesPort(route, ports));
   let portInferred = false;
   if (portRoutes.length === 0) {
+    if (strictPort !== undefined) {
+      return { matches: [], candidates: [], warnings: [`No collected Nginx route on ${host.id} listens on port ${strictPort}.`], portInferred, issue: 'no-port' };
+    }
     // The front proxy (CLB/SLB) often terminates TLS on 443 and forwards to
     // nginx on a different port (e.g. 80); the CLB backend endpoint may not
     // carry a usable port.  Fall back to port-agnostic matching so the chain
@@ -244,6 +279,11 @@ function selectRouteMatches(context: ResolverContext, host: TopologyNode): {
     );
   }
 
+  if (options.requireRequestPath && context.query.domainOnly && !streamOnly) {
+    return { matches: [], candidates: portRoutes, warnings: [...warnings, '下游 Nginx 有监听配置，缺少可确认的请求 URI'],
+      portInferred, issue: 'request-path' };
+  }
+
   // server_name tier: exact > wildcard > default/fallback (empty server_name or default_server flag).
   const exact = portRoutes.filter(route => serverNameKind(route, context.query.host) === 'exact');
   const wildcard = portRoutes.filter(route => serverNameKind(route, context.query.host) === 'wildcard');
@@ -258,6 +298,12 @@ function selectRouteMatches(context: ResolverContext, host: TopologyNode): {
   } else {
     pool = portRoutes.filter(route => routeDomains(route).length === 0 || listenHasDefaultServer(route));
     serverName = 'default';
+    if (pool.length === 0 && options.allowSoleHttpServer && !streamOnly &&
+        portRoutes.every(route => route.attributes.nginxStatus === 'complete' && route.attributes.context === 'http') &&
+        new Set(portRoutes.map(route => JSON.stringify([route.identity.assetId, route.attributes.instance,
+          routeDomains(route), route.attributes.listen]))).size === 1) {
+      pool = portRoutes;
+    }
     if (pool.length > 0) {
       warnings.push(
         `No nginx server_name on host ${host.id} matches "${context.query.host}"; using the default/fallback server block (INFERRED).`,
@@ -270,6 +316,7 @@ function selectRouteMatches(context: ResolverContext, host: TopologyNode): {
       candidates: portRoutes,
       warnings: [`No nginx server_name on host ${host.id} matches "${context.query.host}" and no default/fallback route exists.`],
       portInferred,
+      issue: 'no-server',
     };
   }
 
@@ -277,9 +324,10 @@ function selectRouteMatches(context: ResolverContext, host: TopologyNode): {
   const matches: RouteMatch[] = [];
   let sawRegex = false;
   for (const route of pool) {
-    const match = matchLocation(text(route.identity.uri), context.query.path);
+    const uri = text(route.identity.uri);
+    const match = matchLocation(uri, context.query.path);
     if (match === 'regex') {
-      sawRegex = true;
+      if (strictPort === undefined || regexMayMatchUri(uri, context.query.path)) sawRegex = true;
       continue;
     }
     if (match) matches.push({ route, serverName, location: match });
@@ -296,13 +344,17 @@ function selectRouteMatches(context: ResolverContext, host: TopologyNode): {
         `URI required to continue routing: the query for "${context.query.host}" is domain-only, and the nginx locations on host ${host.id} are path-specific. Re-run with the full URL (e.g. ${context.query.scheme}://${context.query.host}/<path>).`,
       );
     }
-    return { matches: [], candidates: pool, warnings, portInferred };
+    return { matches: [], candidates: pool, warnings, portInferred, issue: sawRegex ? 'regex' : 'no-location' };
   }
 
   const bestTier = Math.max(...matches.map(match => LOCATION_TIER[match.location.kind]));
   let best = matches.filter(match => LOCATION_TIER[match.location.kind] === bestTier);
   const bestLength = Math.max(...best.map(match => match.location.length));
   best = best.filter(match => match.location.length === bestLength);
+  if (strictPort !== undefined && sawRegex && bestTier === LOCATION_TIER.prefix &&
+      !best.every(match => text(match.route.identity.uri).startsWith('^~'))) {
+    return { matches: [], candidates: pool, warnings: ['A regex location may override the prefix match.'], portInferred, issue: 'regex' };
+  }
   if (bestTier === LOCATION_TIER.stream) {
     warnings.push(`Stream-context nginx route on host ${host.id} matched by listen port only; L7 server_name/location routing does not apply.`);
   }
@@ -440,10 +492,12 @@ export class NginxResolver implements PathResolver {
   }
 
   // Steps 2-4: HOST → NGINX_ROUTE (listen + server_name + location selection).
-  private resolveRoutes(context: ResolverContext, host: TopologyNode): ResolutionResult {
-    const selection = selectRouteMatches(context, host);
+  /** For a known proxy backend, do not fall back to routes on a different port. */
+  resolveRoutes(context: ResolverContext, host: TopologyNode, strictPort?: number, streamOnly = false,
+    options: RouteOptions = {}): ResolutionResult & { issue?: RouteIssue } {
+    const selection = selectRouteMatches(context, host, strictPort, streamOnly, options);
     if (selection.matches.length === 0) {
-      return { rule: 'nginx:route', moves: [], warnings: selection.warnings };
+      return { rule: 'nginx:route', moves: [], warnings: selection.warnings, ...(selection.issue ? { issue: selection.issue } : {}) };
     }
     const warnings: string[] = [...selection.warnings];
     const evidence: Evidence[] = [...host.evidence];

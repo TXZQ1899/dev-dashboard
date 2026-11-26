@@ -10,7 +10,7 @@ function RootPasswordDialog({asset, busy, error, onConfirm, onDirect, onClose}: 
   return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-labelledby="root-password-dialog-title">
     <div className="w-full max-w-md space-y-4 rounded-lg border bg-background p-6 shadow-lg">
       <h3 id="root-password-dialog-title" className="font-semibold">{asset.ip} · {asset.hostname}</h3>
-      <p className="text-sm text-muted-foreground">该服务器提权失败（sudo 与 root 密码均验证错误），进程采集不完整。可填写新的 root 密码，确认后更新密码映射表中这台服务器的记录并重新采集；也可以不更新密码，按原有流程直接采集（不提权，仅采集当前账号可见进程）。</p>
+      <p className="text-sm text-muted-foreground">该服务器提权失败，仅使用普通用户采集，进程采集不完整。可填写新的 root 密码，确认后更新密码映射表中这台服务器的记录并重新采集；也可以不更新密码，按原有流程直接采集（不提权，仅采集当前账号可见进程）。</p>
       <Input type="password" aria-label="新的 root 密码" placeholder="新的 root 密码" value={password} onChange={e=>setPassword(e.target.value)}/>
       {error&&<p role="alert" className="text-sm text-red-700">{error}</p>}
       <div className="flex flex-wrap justify-end gap-2">
